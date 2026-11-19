@@ -634,3 +634,33 @@ witness: curl-sys-abi handle_tests::a_handle_being_cleaned_up_is_not_added_from_
             Home::Alone(_) | Home::Nowhere => Some(NotDetached::InUse),
 --- new
             Home::Alone(_) | Home::Nowhere => unreachable!("a handle on its own"),
+
+=== a handle being cleaned up is still one the application may call as its caches are saved
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_call_from_the_hsts_write_function_at_cleanup_is_refused
+--- old
+    // `Curl_close` has cleared the magic (`CURLE_BAD_FUNCTION_ARGUMENT`).
+    easy.magic.set(0);
+--- new
+    // `Curl_close` has cleared the magic (`CURLE_BAD_FUNCTION_ARGUMENT`).
+
+=== a call is let in while the handle's transfer is lent out of it
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_lock_function_s_call_during_upkeep_is_refused
+--- old
+        if self.home.try_borrow_mut().is_err() {
+--- new
+        if false && self.home.try_borrow_mut().is_err() {
+
+=== an added handle's upkeep reaches the multi without counting as a call on it
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::a_lock_function_s_call_during_upkeep_is_refused
+--- old
+            let on_multi = m.stack.hold();
+            let Ok(Reach::Direct(direct)) = on_multi.as_ref().map(|e| e.reach) else {
+                return CURLE_RECURSIVE_API_CALL;
+            };
+            let mut ev = ShimEvents::new(m);
+--- new
+            let direct = m.stack.between_performs();
+            let mut ev = ShimEvents::new(m);

@@ -131,7 +131,8 @@ fn reach_noting(
         Some((multi, id)) => {
             // SAFETY: the handle's multi outlives its `Added`.
             let m = unsafe { multi.as_ref() };
-            match m.stack.reach() {
+            let on_multi = m.stack.hold();
+            match on_multi.as_ref().map(|e| e.reach) {
                 // SAFETY: nothing runs on the multi.
                 Ok(Reach::Direct(direct)) => Ok(unsafe { m.core_mut(direct) }
                     .ws(id, call, notes)
@@ -397,7 +398,7 @@ pub unsafe extern "C" fn curl_ws_meta(curl: *mut CURL) -> *const curl_ws_frame {
     };
     // SAFETY: the handle's multi outlives its `Added`.
     let m = unsafe { multi.as_ref() };
-    let Ok(Reach::Frame(GateFrame::Transfer(cx))) = m.stack.reach() else {
+    let Some(GateFrame::Transfer(cx)) = m.stack.frame() else {
         return ptr::null();
     };
     // SAFETY: the callback lent its context and does not use it until it

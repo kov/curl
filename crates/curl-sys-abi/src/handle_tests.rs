@@ -27,7 +27,6 @@ use crate::ffi::{
     CURLE_OK, CURLE_RECURSIVE_API_CALL, CURLE_UNKNOWN_OPTION, CURLINFO, CURLM, CURLM_OK, CURLcode,
     CURLoption, curl_header, curl_off_t,
 };
-use crate::gate::Reach;
 use crate::getinfo::curl_easy_getinfo;
 use crate::multi::{
     curl_multi_add_handle, curl_multi_cleanup, curl_multi_get_offt, curl_multi_info_read,
@@ -56,9 +55,7 @@ fn off(c: *mut CURL, o: CURLoption, v: curl_off_t) -> CURLcode {
     reason = "the gate's witness keeps the borrow unique"
 )]
 fn core_of(m: &crate::multi::ShimMulti) -> &mut curl_core::multi::Multi<crate::multi::CHost> {
-    let Ok(Reach::Direct(direct)) = m.stack.reach() else {
-        panic!("nothing runs on the multi between a test's calls");
-    };
+    let direct = m.stack.between_performs();
     // SAFETY: nothing runs on the multi, as the gate says, and the test
     // makes no call on it while the borrow lasts.
     unsafe { m.core_mut(direct) }
@@ -11483,4 +11480,202 @@ fn a_cookie_command_from_a_callback_changes_the_jar() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
     std::fs::remove_file(path).unwrap();
+}
+
+/// What the HSTS write function below was told by the getinfo it made.
+static HSTS_INFO: curl_alloc::Lock<Vec<CURLcode>> = curl_alloc::Lock::new(Vec::new());
+
+/// An HSTS write function that asks the handle it is called for its
+/// private pointer.
+unsafe extern "C" fn hsts_asks_info(
+    e: *mut CURL,
+    _: *mut ffi::curl_hstsentry,
+    _: *mut ffi::curl_index,
+    _: *mut c_void,
+) -> ffi::CURLSTScode {
+    let mut p: *mut c_char = ptr::null_mut();
+    // SAFETY: the handle the function is called for, and the pointer the
+    // info takes.
+    let got = unsafe { curl_easy_getinfo(e, ffi::CURLINFO_PRIVATE, &raw mut p) };
+    HSTS_INFO.lock().unwrap().push(got);
+    ffi::CURLSTS_OK
+}
+
+/// A call on the handle from the HSTS write function as the handle goes
+/// is refused as C refuses it, its handle no longer one once `Curl_close`
+/// clears its magic: not an abort.
+#[test]
+fn a_call_from_the_hsts_write_function_at_cleanup_is_refused() {
+    let mut seen = HstsSeen {
+        give: vec![(b"b.example".to_vec(), b"".to_vec(), false)],
+        last: ffi::CURLSTS_DONE,
+        ..HstsSeen::default()
+    };
+    let (c, _url) = hsts_handle(&mut seen);
+    let take: ffi::curl_hstswrite_callback = Some(hsts_asks_info);
+    // SAFETY: a function of the option's type.
+    let take = unsafe { core::mem::transmute::<ffi::curl_hstswrite_callback, *mut c_void>(take) };
+    assert_eq!(pointer(c, ffi::CURLOPT_HSTSWRITEFUNCTION, take), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(*HSTS_INFO.lock().unwrap(), [CURLE_BAD_FUNCTION_ARGUMENT]);
+}
+
+/// What the lock function below does once armed.
+#[derive(Clone, Copy)]
+enum Reenter {
+    /// Ask this handle its private pointer.
+    Getinfo(usize),
+    /// Perform this multi.
+    Perform(usize),
+}
+
+static REENTER: curl_alloc::Lock<Option<Reenter>> = curl_alloc::Lock::new(None);
+static REENTERED: curl_alloc::Lock<Vec<c_long>> = curl_alloc::Lock::new(Vec::new());
+
+/// A share's lock function that, armed, calls back into libcurl, once per
+/// lock, and keeps what each call answered.
+unsafe extern "C" fn reentering_lock(
+    _: *mut CURL,
+    _: ffi::curl_lock_data,
+    _: ffi::curl_lock_access,
+    _: *mut c_void,
+) {
+    // Disarmed while it calls, so a lock the call takes calls nothing.
+    let Some(what) = REENTER.lock().unwrap().take() else {
+        return;
+    };
+    let got = match what {
+        Reenter::Getinfo(h) => {
+            let mut p: *mut c_char = ptr::null_mut();
+            // SAFETY: a live handle, and the pointer the info takes.
+            let got =
+                unsafe { curl_easy_getinfo(h as *mut CURL, ffi::CURLINFO_PRIVATE, &raw mut p) };
+            c_long::from(got.0)
+        }
+        Reenter::Perform(m) => {
+            let mut running: c_int = 0;
+            // SAFETY: a live multi, and the count it fills.
+            let got = unsafe { curl_multi_perform(m as *mut CURLM, &raw mut running) };
+            c_long::from(got.0)
+        }
+    };
+    REENTERED.lock().unwrap().push(got);
+    *REENTER.lock().unwrap() = Some(what);
+}
+
+unsafe extern "C" fn quiet_unlock(_: *mut CURL, _: ffi::curl_lock_data, _: *mut c_void) {}
+
+/// A server that answers one request on one connection and keeps it open
+/// until `stop` is sent, so that the client's pool holds it.
+fn serve_kept() -> (
+    u16,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::Write as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (stop, stopped) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = curl_core::test_server::accept(&listener);
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        read_request(&mut peer);
+        peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            .unwrap();
+        let _ = stopped.recv_timeout(Duration::from_secs(10));
+    });
+    (port, stop, server)
+}
+
+/// A handle sharing its connections through a share whose lock function
+/// calls back into libcurl, its one transfer done over a connection the
+/// pool keeps.
+fn reentering_share(port: u16) -> (*mut ffi::CURLSH, *mut CURL) {
+    use crate::share::{curl_share_init, curl_share_setopt};
+    let sh = curl_share_init();
+    // SAFETY: a live share, the functions and the data its options take.
+    unsafe {
+        let lock: ffi::curl_lock_function = Some(reentering_lock);
+        let unlock: ffi::curl_unlock_function = Some(quiet_unlock);
+        let lock = lock.map_or(ptr::null_mut(), |f| f as *mut c_void);
+        let unlock = unlock.map_or(ptr::null_mut(), |f| f as *mut c_void);
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_LOCKFUNC, lock),
+            ffi::CURLSHE_OK
+        );
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_UNLOCKFUNC, unlock),
+            ffi::CURLSHE_OK
+        );
+        let connect = ffi::CURL_LOCK_DATA_CONNECT.0 as c_int;
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_SHARE, connect),
+            ffi::CURLSHE_OK
+        );
+    }
+    let c = curl_easy_init();
+    assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_UPKEEP_INTERVAL_MS, 0), CURLE_OK);
+    let sink: WriteFn = discard;
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_WRITEFUNCTION, sink as *mut c_void),
+        CURLE_OK
+    );
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    (sh, c)
+}
+
+unsafe extern "C" fn discard(_: *mut c_char, size: usize, n: usize, _: *mut c_void) -> usize {
+    size * n
+}
+
+/// A lock function calling back during `curl_easy_upkeep` finds the call
+/// refused, where the handle's transfer is out to the upkeep: getinfo on a
+/// handle on its own, and the multi's perform on one added to it, which
+/// would otherwise reach the multi the upkeep holds. C answers both
+/// (DIVERGENCE.md, "Calls C lets in from callbacks").
+#[test]
+fn a_lock_function_s_call_during_upkeep_is_refused() {
+    let (port, stop, server) = serve_kept();
+    let (sh, c) = reentering_share(port);
+    REENTERED.lock().unwrap().clear();
+    *REENTER.lock().unwrap() = Some(Reenter::Getinfo(c as usize));
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { easy::curl_easy_upkeep(c) }, CURLE_OK);
+    *REENTER.lock().unwrap() = None;
+    let got = std::mem::take(&mut *REENTERED.lock().unwrap());
+    let recursive = c_long::from(CURLE_RECURSIVE_API_CALL.0);
+    assert!(!got.is_empty(), "the upkeep locks the pool");
+    assert!(got.iter().all(|r| *r == recursive), "{got:?}");
+
+    let m = curl_multi_init();
+    // SAFETY: a live multi and handle.
+    assert_eq!(unsafe { curl_multi_add_handle(m, c) }, CURLM_OK);
+    *REENTER.lock().unwrap() = Some(Reenter::Perform(m as usize));
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { easy::curl_easy_upkeep(c) }, CURLE_OK);
+    *REENTER.lock().unwrap() = None;
+    let got = std::mem::take(&mut *REENTERED.lock().unwrap());
+    let recursive = c_long::from(ffi::CURLM_RECURSIVE_API_CALL.0);
+    assert!(!got.is_empty(), "the upkeep locks the pool");
+    assert!(got.iter().all(|r| *r == recursive), "{got:?}");
+    // SAFETY: live handles, not used again.
+    unsafe {
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+        assert_eq!(crate::share::curl_share_cleanup(sh), ffi::CURLSHE_OK);
+    }
+    stop.send(()).unwrap();
+    server.join().unwrap();
 }

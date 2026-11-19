@@ -555,7 +555,8 @@ impl ShimEasy {
         };
         // SAFETY: the handle's multi outlives its `Added`.
         let multi = unsafe { multi.as_ref() };
-        Ok(match multi.stack.reach()? {
+        let on_multi = multi.stack.hold()?;
+        Ok(match on_multi.reach {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
             Reach::Direct(direct) => unsafe { multi.core_mut(direct) }.tls_native(id),
@@ -622,8 +623,14 @@ impl ShimEasy {
         ptr::from_ref(self).cast_mut().cast()
     }
 
-    /// Admit `call` on the handle.
+    /// Admit `call` on the handle. One made while the handle's transfer is
+    /// lent out of it, to a call running the application's code with
+    /// nothing of it lent onward, is refused: it would find the handle
+    /// borrowed.
     pub(crate) fn enter(&self, call: EasyCall) -> Result<crate::gate::EasyEntry<'_>, Recursive> {
+        if self.home.try_borrow_mut().is_err() {
+            return Err(Recursive);
+        }
         let entry = self.stack.enter(call, self.multi_stack())?;
         if call.rules().no_scache_lock && self.sessions_going_out() {
             return Err(Recursive);
@@ -697,7 +704,8 @@ impl ShimEasy {
         };
         // SAFETY: the handle's multi outlives its `Added`.
         let multi = unsafe { multi.as_ref() };
-        match multi.stack.reach() {
+        let on_multi = multi.stack.hold();
+        match on_multi.as_ref().map(|e| e.reach) {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
             Ok(Reach::Direct(direct)) => unsafe { multi.core_mut(direct) }.holds_connection(id),
@@ -742,7 +750,8 @@ impl ShimEasy {
         };
         // SAFETY: the handle's multi outlives its `Added`.
         let multi = unsafe { multi.as_ref() };
-        Ok(match multi.stack.reach()? {
+        let on_multi = multi.stack.hold()?;
+        Ok(match on_multi.reach {
             // SAFETY: nothing runs on the multi, so its core is not
             // borrowed.
             Reach::Direct(direct) => f(HomeRef::Added(unsafe { multi.core_mut(direct) }, id)),
@@ -756,26 +765,30 @@ impl ShimEasy {
         f: impl FnOnce(&mut Options) -> R,
     ) -> Result<R, Recursive> {
         self.with_easy(|e| match e {
-            EasyRef::Easy(mut easy) => f(easy.options_mut()),
+            EasyRef::Easy(mut easy) => Ok(f(easy.options_mut())),
+            // A frame lent for another transfer alone does not reach this
+            // one: refused, as any call it cannot serve.
             EasyRef::Frame(frame, id) => {
                 // SAFETY: the frame is the innermost lent, and the
                 // borrow ends with this call, inside its callback.
                 let options = unsafe { frame.options_mut(id) };
-                f(options.expect("an added handle is in its multi"))
+                options.map(f).ok_or(Recursive)
             }
         })
+        .and_then(core::convert::identity)
     }
 
     /// What the handle's RTSP requests number and read, wherever it is.
     pub(crate) fn rtsp(&self) -> Result<curl_core::easy::RtspState, Recursive> {
         self.with_easy(|e| match e {
-            EasyRef::Easy(easy) => easy.rtsp(),
+            EasyRef::Easy(easy) => Ok(easy.rtsp()),
             EasyRef::Frame(frame, id) => {
                 // SAFETY: as in `with_options`.
                 let rtsp = unsafe { frame.rtsp(id) };
-                rtsp.expect("an added handle is in its multi")
+                rtsp.ok_or(Recursive)
             }
         })
+        .and_then(core::convert::identity)
     }
 
     /// Run `f` on what the handle's RTSP requests number and read,
@@ -785,13 +798,14 @@ impl ShimEasy {
         f: impl FnOnce(Result<&mut curl_core::easy::RtspState, OutOfMemory>) -> R,
     ) -> Result<R, Recursive> {
         self.with_easy(|e| match e {
-            EasyRef::Easy(mut easy) => f(easy.rtsp_mut()),
+            EasyRef::Easy(mut easy) => Ok(f(easy.rtsp_mut())),
             EasyRef::Frame(frame, id) => {
                 // SAFETY: as in `with_options`.
                 let rtsp = unsafe { frame.rtsp_mut(id) };
-                f(rtsp.expect("an added handle is in its multi"))
+                rtsp.map(f).ok_or(Recursive)
             }
         })
+        .and_then(core::convert::identity)
     }
 
     /// Run `f` on what the handle's transfer reports.
@@ -800,13 +814,14 @@ impl ShimEasy {
         f: impl FnOnce(&TransferReport) -> R,
     ) -> Result<R, Recursive> {
         self.with_easy(|e| match e {
-            EasyRef::Easy(easy) => f(easy.report()),
+            EasyRef::Easy(easy) => Ok(f(easy.report())),
             EasyRef::Frame(frame, id) => {
                 // SAFETY: as in `with_options`.
                 let report = unsafe { frame.info(id) };
-                f(report.expect("an added handle is in its multi"))
+                report.map(f).ok_or(Recursive)
             }
         })
+        .and_then(core::convert::identity)
     }
 
     /// Copy a transfer's first reason for failing into ERRORBUFFER, as it
@@ -936,7 +951,8 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
         // fails only after the handle has left, its timer callback refusing
         // or the waker failing, and the handle goes all the same, as
         // `Curl_close` ignores what the removal returns.
-        let Ok(reach @ Reach::Direct(_)) = multi.stack.reach() else {
+        let on_multi = multi.stack.hold();
+        let Ok(reach @ Reach::Direct(_)) = on_multi.as_ref().map(|e| e.reach) else {
             unreachable!("cleanup does not recurse");
         };
         let removed = crate::multi::remove(multi, reach, easy);
@@ -945,6 +961,10 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     // What it keeps of its resolves goes first, said through the debug
     // function while the handle is whole (`Curl_resolv_destroy_all`).
     easy.release_resolves();
+    // No longer a handle the application may call: a call from the
+    // callbacks of what is saved below is refused, as C's is once
+    // `Curl_close` has cleared the magic (`CURLE_BAD_FUNCTION_ARGUMENT`).
+    easy.magic.set(0);
     // The jar is written as the handle goes (`Curl_flush_cookies`); one
     // that cannot be fails nothing, as in C, which says so only in the
     // trace, of which there is none outside a transfer here.
@@ -968,7 +988,6 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     crate::mime::forget_post_state(easy);
     drop(entry);
     let private = easy.private.take();
-    easy.magic.set(0);
     // SAFETY: the handle came from `Box::leak` in `ShimEasy::boxed`, and
     // the caller does not use it again.
     drop(unsafe { Box::from_raw(curl.cast::<ShimEasy>()) });
@@ -1016,7 +1035,8 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         EasyRef::Frame(frame, id) => {
             // SAFETY: as in `with_options`.
             let copy = unsafe { frame.duplicate(id, &mut prepare) };
-            copy.expect("an added handle is in its multi")
+            // One the frame does not reach is not copied.
+            copy.unwrap_or(Err(OutOfMemory))
         }
     });
     let copy = match copy {
@@ -1078,7 +1098,8 @@ pub unsafe extern "C" fn curl_easy_upkeep(curl: *mut CURL) -> CURLcode {
         Some((multi, id)) => {
             // SAFETY: the handle's multi outlives its `Added`.
             let m = unsafe { multi.as_ref() };
-            let Ok(Reach::Direct(direct)) = m.stack.reach() else {
+            let on_multi = m.stack.hold();
+            let Ok(Reach::Direct(direct)) = on_multi.as_ref().map(|e| e.reach) else {
                 return CURLE_RECURSIVE_API_CALL;
             };
             let mut ev = ShimEvents::new(m);
@@ -1406,9 +1427,10 @@ pub unsafe extern "C" fn curl_easy_pause(curl: *mut CURL, action: c_int) -> CURL
     };
     // SAFETY: the handle's multi outlives its `Added`.
     let m = unsafe { multi.as_ref() };
-    let Ok(reach) = m.stack.reach() else {
+    let Ok(on_multi) = m.stack.hold() else {
         return CURLE_RECURSIVE_API_CALL;
     };
+    let reach = on_multi.reach;
     let paused = match reach {
         Reach::Direct(direct) => {
             // SAFETY: nothing runs on the multi.
@@ -1538,7 +1560,8 @@ unsafe fn raw(curl: *mut CURL, call: EasyCall, buffer: Raw, n: *mut usize) -> CU
         Some((multi, id)) => {
             // SAFETY: the handle's multi outlives its `Added`.
             let m = unsafe { multi.as_ref() };
-            let Ok(Reach::Direct(direct)) = m.stack.reach() else {
+            let on_multi = m.stack.hold();
+            let Ok(Reach::Direct(direct)) = on_multi.as_ref().map(|e| e.reach) else {
                 return CURLE_RECURSIVE_API_CALL;
             };
             // SAFETY: nothing runs on the multi.

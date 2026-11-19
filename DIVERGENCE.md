@@ -955,6 +955,17 @@ so: weaknesses kept because C has them.
   `a_handle_being_cleaned_up_is_not_added_from_its_callback`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## Calls C lets in from callbacks
+
+- **A call from a callback lent nothing of the transfer is refused.** `curl_easy_upkeep` holds
+  the handle's transfer, and the multi it is in, while the connection pool's lock functions
+  run (`CURLSHOPT_LOCKFUNC`); the share's lock function is lent nothing of either. Here a
+  `curl_easy_getinfo` from it gets `CURLE_RECURSIVE_API_CALL`, and a `curl_multi_perform` of the
+  handle's multi gets `CURLM_RECURSIVE_API_CALL`, as any call made inside a multi call is; C
+  answers both. Measured 2026-11-19 against C's release build: both return 0 there. Pinned by
+  `a_lock_function_s_call_during_upkeep_is_refused`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
+
 ## Connections C reuses whatever they were set up with
 
 - **An SSH connection serves a transfer that asks for a host key check only if it was checked

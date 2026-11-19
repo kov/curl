@@ -442,7 +442,22 @@ impl MultiStack {
         if !in_notify && !rules.recurse && self.depth.get() > 0 {
             return Err(Recursive);
         }
-        let reach = self.reach()?;
+        self.count(self.reach()?)
+    }
+
+    /// Admit an easy call that reaches the multi: counted as a call on it
+    /// while the entry lives, as an API call is, so that a callback the
+    /// call runs with nothing lent (a share's lock function, a socket's
+    /// close function) cannot reach the core again: its call is refused,
+    /// as one inside any multi call is. The only way an easy call reaches
+    /// the core but through a callback's frame.
+    pub(crate) fn hold(&self) -> Result<MultiEntry<'_>, Recursive> {
+        self.count(self.reach()?)
+    }
+
+    /// A call reaching the core as `reach` says, counted on the multi
+    /// while its entry lives; refused past C's depth.
+    fn count(&self, reach: Reach) -> Result<MultiEntry<'_>, Recursive> {
         if self.depth.get() >= MULTI_MAX_DEPTH {
             return Err(Recursive);
         }
@@ -450,10 +465,28 @@ impl MultiStack {
         Ok(MultiEntry { stack: self, reach })
     }
 
+    /// The context the innermost callback running was lent, if one runs.
+    pub(crate) fn frame(&self) -> Option<Frame> {
+        self.frame.get()
+    }
+
+    /// The witness that nothing runs on a handle's private multi, which
+    /// only `curl_easy_perform` drives and no application call names:
+    /// between its performs, nothing.
+    pub(crate) fn between_performs(&self) -> Direct {
+        match self.reach() {
+            Ok(Reach::Direct(direct)) => direct,
+            Ok(Reach::Frame(_)) | Err(Recursive) => {
+                unreachable!("nothing runs on a private multi between its performs")
+            }
+        }
+    }
+
     /// How a call admitted now reaches the core. A call under way without
-    /// a callback running is one on another thread, which the gate cannot
-    /// let in.
-    pub(crate) fn reach(&self) -> Result<Reach, Recursive> {
+    /// a callback running is one on another thread, or one whose callback
+    /// was lent nothing, which the gate cannot let in. Private: a call
+    /// reaches the core only once counted (`enter`, `hold`).
+    fn reach(&self) -> Result<Reach, Recursive> {
         match self.frame.get() {
             Some(frame) => Ok(Reach::Frame(frame)),
             None if self.depth.get() == 0 => Ok(Reach::Direct(Direct(()))),

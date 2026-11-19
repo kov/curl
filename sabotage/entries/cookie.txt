@@ -440,9 +440,9 @@ witness: curl-core cookie::tests::a_cookie_is_small_and_its_strings_one_block
 file: crates/curl-sys-abi/src/getinfo.rs
 witness: curl-sys-abi handle_tests::the_cookie_list_is_read_from_a_callback
 --- old
-            lines.expect("an added handle is in its multi").ok()
+            lines.ok_or(Recursive).map(Result::ok)
 --- new
-            lines.and(None)
+            lines.ok_or(Recursive).map(|_| None)
 
 === a cookie command from a callback is refused as a recursive call
 file: crates/curl-sys-abi/src/setopt/mod.rs

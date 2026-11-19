@@ -868,9 +868,9 @@ file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi handle_tests::cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go
 --- old
     easy.release_resolves();
-    // The jar is written as the handle goes (`Curl_flush_cookies`); one
+    // No longer a handle the application may call: a call from the
 --- new
-    // The jar is written as the handle goes (`Curl_flush_cookies`); one
+    // No longer a handle the application may call: a call from the
 
 === the C handle's reset says its resolves after its debug function is gone
 file: crates/curl-sys-abi/src/easy.rs

@@ -168,12 +168,7 @@ impl ShimMulti {
     /// The witness that nothing runs on a handle's private multi, which
     /// only `curl_easy_perform` drives: between its performs, nothing.
     pub(crate) fn between_performs(&self) -> Direct {
-        match self.stack.reach() {
-            Ok(Reach::Direct(direct)) => direct,
-            Ok(Reach::Frame(_)) | Err(Recursive) => {
-                unreachable!("nothing runs on a private multi between its performs")
-            }
-        }
+        self.stack.between_performs()
     }
 
     /// The core, borrowed, with the gate's witness that nothing runs on

@@ -247,14 +247,14 @@ fn effective_method(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
 /// the list cannot be made.
 fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
     let lines = easy.with_easy(|e| match e {
-        EasyRef::Easy(mut easy) => easy.cookie_list().ok(),
+        EasyRef::Easy(mut easy) => Ok(easy.cookie_list().ok()),
         EasyRef::Frame(frame, id) => {
             // SAFETY: the frame is the innermost lent, and the borrow ends
             // with this call, inside its callback.
             let lines = unsafe { frame.cookie_list(id) };
-            lines.expect("an added handle is in its multi").ok()
+            lines.ok_or(Recursive).map(Result::ok)
         }
-    })?;
+    })??;
     Ok(Some(list_of(lines.iter().flatten())))
 }
 
@@ -631,7 +631,8 @@ fn active_socket(easy: &ShimEasy) -> Result<Option<SocketKey>, Recursive> {
     };
     // SAFETY: the handle's multi outlives its `Added`.
     let m = unsafe { multi.as_ref() };
-    match m.stack.reach()? {
+    let on_multi = m.stack.hold()?;
+    match on_multi.reach {
         // SAFETY: nothing runs on the multi.
         Reach::Direct(direct) => Ok(unsafe { m.core_mut(direct) }
             .active_socket(id)

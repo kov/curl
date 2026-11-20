@@ -1653,6 +1653,8 @@ impl Quic {
         len: usize,
         gso: usize,
     ) -> (usize, Result<(), Stop>) {
+        // No size known: all of it is one datagram.
+        let gso = if gso == 0 { len } else { gso };
         let (mut sent, mut calls) = (0, 0);
         let mut r = Ok(());
         let start = self.out.sent;
@@ -2454,6 +2456,26 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(q.wants(), Events::IN);
+    }
+
+    /// Without the kernel's cutting, and no datagram size known, what
+    /// waits goes as one datagram (`send_packet_no_gso`, upstream
+    /// d342e8e87b), not as datagrams of no bytes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_send_apart_with_no_size_is_one_datagram() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        q.out.no_gso = true;
+        q.out.bytes = vec![0x51; 1200];
+        q.out.sent = 0;
+        let (sent, r) = q.send_packets(&mut cx, 1200, 0);
+        assert_eq!((sent, r), (1200, Ok(())));
+        assert_eq!(*cx.socket.sent.lock().unwrap(), [(1200, 1200)]);
+        assert_eq!(
+            cx.lines.last().map(String::as_str),
+            Some("vquic_sendmsg(len=1200, gso=1200, calls=1) -> 0, sent=1200")
+        );
     }
 
     /// A run of one size goes in one send, the kernel cutting it; one

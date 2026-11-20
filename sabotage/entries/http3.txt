@@ -1848,3 +1848,11 @@ witness: curl-core proto::http::tests::h3_trace::a_status_after_the_body_over_qu
                 if s.head_done && false {
                     return Heard::Failed;
                 }
+
+=== a send apart with no datagram size sends datagrams of no bytes
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_send_apart_with_no_size_is_one_datagram
+--- old
+        let gso = if gso == 0 { len } else { gso };
+--- new
+        let gso = if gso == 0 { gso } else { gso };

@@ -3591,7 +3591,13 @@ did not, said only when the peer is verified. The pinned key comes last.
 bits and a copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config`
 compares (versions, the options bits, the status check, CA file, path and blob, the CRL, the
 issuer, the client certificate and key with their formats and password, the cipher lists,
-curves, signature algorithms, the pinned key, ECH), but not the handle's context handler. It is
+curves, signature algorithms, the pinned key, ECH), and, where the transfer has a context
+handler, what it sets the TLS up as: its `SetupKey` (the shim's is the C function, whatever its
+data), or the handler itself for one without, kept to compare and never called. A transfer whose
+handler sets contexts up otherwise, or that has none, takes no such connection. The sessions
+made under a handler are keyed by its key (`:CTX-`) and kept local, never exported; one with no
+key keeps none, as nothing outliving it could name them. A store of certificates loaded for such
+a connection is its own, never the multi's kept one. It is
 made only as a connection is set up (`Curl_ssl_conn_config_init`): a transfer's route holds
 `RouteTls::Wanted(Option<SameOrigin>)`, the request's gate's word that its origin is the
 transfer's first (`CredentialGate::same_origin`), the one comparison of the first origin with

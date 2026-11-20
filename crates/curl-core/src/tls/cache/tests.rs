@@ -928,3 +928,51 @@ fn a_ticket_keeps_whether_sectrust_verified_its_peer() {
     assert!(marked.sectrust());
     assert!(!marked.with_sectrust(false).sectrust());
 }
+
+/// A session made under a context handler is kept for transfers whose
+/// handler sets contexts up the same way, and its key, naming the setup
+/// in this process alone, is local: never exported. C keys none.
+#[test]
+fn a_session_made_under_a_context_handler_is_keyed_by_it_and_local() {
+    let ca = keyed("CA", CA);
+    let under = |key: usize| {
+        peer(|i| {
+            i.context = Some(crate::tls::ContextSetup::Keyed(
+                crate::handler::SetupKey::new(key),
+            ))
+        })
+    };
+    assert_eq!(
+        key(&under(0xab)),
+        format!("https:localhost:18443:KEY-V3:TLSVER-6-0:{ca}:CTX-ab:IMPL-13:OpenSSL/3.5.9:L")
+    );
+    assert_eq!(key(&under(0xab)), key(&under(0xab)));
+    assert_ne!(key(&under(0xab)), key(&under(0xcd)));
+    assert!(!key_is_global(under(0xab).key()));
+}
+
+/// A context handler with no key keeps no sessions: nothing that could
+/// outlive the handler names it, and its key finds none made without it.
+#[test]
+fn a_session_made_under_a_context_handler_with_no_key_is_not_kept() {
+    struct Plain;
+    impl crate::handler::TlsContextHandler for Plain {
+        fn configure(
+            &self,
+            _: &mut crate::multi::TransferCx<'_>,
+            _: crate::tls::TlsNative,
+        ) -> Result<(), ErrorKind> {
+            Ok(())
+        }
+    }
+    let handler = crate::handler::Handler::tls_context(Plain).unwrap();
+    let p = peer(|i| i.context = Some(crate::tls::ContextSetup::Own(handler)));
+    assert!(!p.caches());
+    assert!(!p.keeps());
+    assert!(
+        key(&p).ends_with(":CTX-OWN:IMPL-13:OpenSSL/3.5.9:L"),
+        "{}",
+        key(&p)
+    );
+    assert!(peer(|_| {}).caches());
+}

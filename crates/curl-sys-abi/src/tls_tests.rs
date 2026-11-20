@@ -309,6 +309,122 @@ fn the_ssl_ctx_function_and_getinfo_hand_out_the_connection_s_objects() {
     }
 }
 
+/// A server on loopback answering each GET with `ok` on connections kept
+/// alive, until `stop` is set: the number of connections it accepted.
+fn serve_kept(stop: std::sync::Arc<std::sync::atomic::AtomicBool>) -> (u16, JoinHandle<usize>) {
+    use std::sync::atomic::Ordering;
+    let acceptor = std::sync::Arc::new(acceptor());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let mut conns = Vec::new();
+        while !stop.load(Ordering::SeqCst) {
+            let Ok((tcp, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            };
+            tcp.set_nonblocking(false).unwrap();
+            tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let acceptor = acceptor.clone();
+            conns.push(std::thread::spawn(move || {
+                let Ok(mut tls) = acceptor.accept(tcp) else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                loop {
+                    let mut got = Vec::new();
+                    while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match tls.read(&mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => got.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    if tls
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }));
+        }
+        let n = conns.len();
+        for c in conns {
+            c.join().unwrap();
+        }
+        n
+    });
+    (port, server)
+}
+
+/// Another `SSL_CTX` function, doing what `ctx_function` does.
+unsafe extern "C" fn other_ctx_function(
+    curl: *mut CURL,
+    ctx: *mut c_void,
+    data: *mut c_void,
+) -> CURLcode {
+    // SAFETY: as the caller guarantees for this one.
+    unsafe { ctx_function(curl, ctx, data) }
+}
+
+/// The connection a transfer with an `SSL_CTX` function made is reused by
+/// a transfer, on another handle sharing the connections, with the same
+/// function and other data, which is not called; a transfer with another
+/// function, or none, makes its own (DIVERGENCE.md: C reuses it for any).
+#[test]
+fn a_connection_serves_only_transfers_with_the_same_ssl_ctx_function() {
+    use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (port, server) = serve_kept(stop.clone());
+    let sh = curl_share_init();
+    // SAFETY: a live share and an int, as the option takes.
+    let set = unsafe {
+        curl_share_setopt(
+            sh,
+            ffi::CURLSHOPT_SHARE,
+            ffi::CURL_LOCK_DATA_CONNECT.0 as c_int,
+        )
+    };
+    assert_eq!(set, ffi::CURLSHE_OK);
+    type CtxFn = unsafe extern "C" fn(*mut CURL, *mut c_void, *mut c_void) -> CURLcode;
+    let other = other_ctx_function as CtxFn;
+    // Each transfer: the function it has instead of `ctx_function`, if
+    // another, or none; the connections it made; its function's calls.
+    let mut runs = Vec::new();
+    for function in [None, None, Some(other as *const c_void), Some(ptr::null())] {
+        let mut seen = Seen::default();
+        let mut pair: (*mut Seen, *mut CURL) = (&raw mut seen, ptr::null_mut());
+        let c = handle(port, &raw mut seen, &raw mut pair);
+        let mut connects: c_long = -1;
+        // SAFETY: a live handle and share, options of their types, and a
+        // long for the count.
+        unsafe {
+            assert_eq!(curl_easy_setopt(c, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+            if let Some(f) = function {
+                assert_eq!(
+                    curl_easy_setopt(c, ffi::CURLOPT_SSL_CTX_FUNCTION, f),
+                    CURLE_OK
+                );
+            }
+            assert_eq!(crate::easy::curl_easy_perform(c), CURLE_OK);
+            assert_eq!(
+                curl_easy_getinfo(c, ffi::CURLINFO_NUM_CONNECTS, &raw mut connects),
+                CURLE_OK
+            );
+            curl_easy_cleanup(c);
+        }
+        runs.push((connects, seen.calls.len()));
+    }
+    // SAFETY: a live share, its handles cleaned up.
+    assert_eq!(unsafe { curl_share_cleanup(sh) }, ffi::CURLSHE_OK);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let accepted = server.join().unwrap();
+    assert_eq!(runs, [(1, 1), (0, 0), (1, 1), (1, 0)]);
+    assert_eq!(accepted, 3);
+}
+
 /// A debug function's calls, by kind.
 unsafe extern "C" fn debug_kinds(
     _: *mut CURL,

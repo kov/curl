@@ -25,7 +25,7 @@ use crate::conn::io::{Recv, Sent};
 use crate::conn::layer::LayerCalls as _;
 use crate::conn::layer::{Below, LayerCx};
 use crate::error::ErrorKind;
-use crate::handler::DebugKind;
+use crate::handler::{DebugKind, Handler, SetupKey, TlsContextHandler};
 use crate::options::{CaSetting, SslOptions, Tls, TlsOptions};
 use crate::report::CertInfo;
 use crate::time::Instant;
@@ -1811,6 +1811,10 @@ pub struct TlsIdentity {
     pub ca_defaults: CaDefaults,
     /// The origin it was made for, the first or another.
     pub origin: TlsOrigin,
+    /// What the transfer's context handler, if it had one, set it up as:
+    /// a connection made under one serves only transfers whose handler
+    /// sets contexts up the same way.
+    context: Option<ContextSetup>,
     /// Never read: it keeps the struct from being built by a literal.
     #[expect(dead_code, reason = "a seal, not a value")]
     made: Made,
@@ -1846,7 +1850,17 @@ impl TlsIdentity {
             options,
             ca_defaults,
             origin,
+            context: None,
             made: Made(()),
+        }
+    }
+
+    /// The same, made under a context handler that has `key`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_context_for_tests(self, key: SetupKey) -> TlsIdentity {
+        TlsIdentity {
+            context: Some(ContextSetup::Keyed(key)),
+            ..self
         }
     }
 
@@ -1865,6 +1879,7 @@ impl TlsIdentity {
     /// compared with them.
     pub(crate) fn view(&self) -> TlsView<'_> {
         TlsView {
+            context: self.context.as_ref().map(ContextSetup::view),
             verify_peer: self.verify_peer,
             verify_host: self.verify_host,
             options: &self.options,
@@ -1908,6 +1923,73 @@ impl TlsIdentity {
     pub fn native_ca_store(&self) -> bool {
         self.view().native_ca_store()
     }
+
+    /// It was made under the transfer's context handler, which may have
+    /// changed anything of the context, its store of certificates too: a
+    /// store loaded for it is its own, kept for no other connection.
+    pub fn configured_by_handler(&self) -> bool {
+        self.context.is_some()
+    }
+
+    /// What the context handler it was made under set it up as, for the
+    /// key its sessions are kept by.
+    pub(crate) fn context_setup(&self) -> Option<SetupRef<'_>> {
+        self.context.as_ref().map(ContextSetup::view)
+    }
+}
+
+/// What a transfer's context handler set a connection's TLS up as, kept by
+/// the connection: the key that names it, or, for a handler without one,
+/// the handler itself, kept so that no other takes its place. It is never
+/// called through: only compared.
+#[derive(Debug)]
+enum ContextSetup {
+    Keyed(SetupKey),
+    Own(Handler<dyn TlsContextHandler>),
+}
+
+impl ContextSetup {
+    fn view(&self) -> SetupRef<'_> {
+        match self {
+            ContextSetup::Keyed(key) => SetupRef::Keyed(*key),
+            ContextSetup::Own(handler) => SetupRef::Own(handler),
+        }
+    }
+}
+
+/// A context handler's setup as a transfer's settings or an identity see
+/// it: equal where the handlers set contexts up alike.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SetupRef<'a> {
+    Keyed(SetupKey),
+    Own(&'a Handler<dyn TlsContextHandler>),
+}
+
+impl<'a> SetupRef<'a> {
+    fn of(handler: &'a Handler<dyn TlsContextHandler>) -> SetupRef<'a> {
+        handler
+            .setup_key()
+            .map_or(SetupRef::Own(handler), SetupRef::Keyed)
+    }
+
+    fn kept(self) -> ContextSetup {
+        match self {
+            SetupRef::Keyed(key) => ContextSetup::Keyed(key),
+            SetupRef::Own(handler) => ContextSetup::Own(handler.clone()),
+        }
+    }
+}
+
+impl PartialEq for SetupRef<'_> {
+    fn eq(&self, other: &SetupRef<'_>) -> bool {
+        match (self, other) {
+            (SetupRef::Keyed(a), SetupRef::Keyed(b)) => a == b,
+            (SetupRef::Own(a), SetupRef::Own(b)) => Handler::ptr_eq(a, b),
+            (SetupRef::Keyed(_), SetupRef::Own(_)) | (SetupRef::Own(_), SetupRef::Keyed(_)) => {
+                false
+            }
+        }
+    }
 }
 
 /// A transfer's TLS settings where its options hold them, borrowed: what
@@ -1929,6 +2011,9 @@ pub(crate) struct TlsView<'a> {
     /// Who the TLS goes to: an origin not the first is given none of the
     /// client's own identity, as read through this view.
     to: Party,
+    /// What the transfer's context handler sets the TLS up as, if it has
+    /// one: the handle's, an HTTPS proxy's TLS's too.
+    context: Option<SetupRef<'a>>,
 }
 
 /// What a proxy's TLS tries of ECH: nothing.
@@ -1947,6 +2032,7 @@ impl<'a> TlsView<'a> {
             origin: None,
             ca_defaults,
             to: Party::OtherOrigin,
+            context: tls.options.context.as_ref().map(SetupRef::of),
         }
     }
 
@@ -1997,6 +2083,7 @@ impl<'a> TlsView<'a> {
         TlsView {
             origin: Some(origin),
             to: Party::Proxy,
+            context: origin.context.as_ref().map(SetupRef::of),
             ..TlsView::of(proxy, ca_defaults)
         }
     }
@@ -2062,7 +2149,8 @@ impl<'a> TlsView<'a> {
     /// The identity a new connection made with these settings keeps
     /// (`Curl_ssl_conn_config_init`): the options copied, but for the
     /// handle's context handler, which a connection does not keep (it is
-    /// called through the transfer that makes the connection); a proxy's
+    /// called through the transfer that makes the connection), only what
+    /// it sets the TLS up as; a proxy's
     /// with what it takes of the origin's, and without what it never
     /// has; for an origin not the first, without the client's own
     /// identity. Seen again (`TlsIdentity::view`), it is the same as these.
@@ -2106,6 +2194,7 @@ impl<'a> TlsView<'a> {
                 Party::FirstOrigin | Party::Proxy => TlsOrigin::First,
                 Party::OtherOrigin => TlsOrigin::Other,
             },
+            context: self.context.map(SetupRef::kept),
             made: Made(()),
         })
     }
@@ -2133,6 +2222,7 @@ impl<'a> TlsView<'a> {
             // Compared as what it leaves out of the client's identity,
             // below (`first_only`, `ech`, `auto_client_cert`).
             to: _,
+            context,
         } = self;
         let TlsOptions {
             min_version,
@@ -2172,14 +2262,16 @@ impl<'a> TlsView<'a> {
             // The connection's, but C matches no connection by it: a
             // transfer that keeps no session may reuse one that does.
             session_cache: _,
-            // The handle's, called as the context is made; an identity
-            // holds none.
+            // The handle's, called as the context is made; compared as
+            // the view's `context`, what it sets the TLS up as, which an
+            // identity keeps. C matches no connection by it.
             context: _,
             // Compared as a proxy's has it, none, below.
             ech: _,
         } = options;
         let o = other.options;
-        *verify_peer == other.verify_peer
+        *context == other.context
+            && *verify_peer == other.verify_peer
             && *verify_host == other.verify_host
             && *min_version == o.min_version
             && *max_version == o.max_version

@@ -688,3 +688,11 @@ witness: curl-sys-abi mime::tests::a_form_set_again_from_its_read_function_finis
         let cb = self.cb;
         let len = buf.len();
 
+
+=== handles given one SSL_CTX function with other data share no connection
+file: crates/curl-sys-abi/src/tls.rs
+witness: curl-sys-abi tls_tests::a_connection_serves_only_transfers_with_the_same_ssl_ctx_function
+--- old
+        self.easy().tls().ctx.map(|f| SetupKey::new(f as usize))
+--- new
+        self.easy().tls().ctx.map(|f| SetupKey::new(f as usize)).filter(|_| false)

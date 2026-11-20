@@ -12,7 +12,7 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::OutOfMemory;
 use curl_core::error::ErrorKind;
-use curl_core::handler::{Handler, TlsContextHandler};
+use curl_core::handler::{Handler, SetupKey, TlsContextHandler};
 use curl_core::multi::TransferCx;
 use curl_core::options::Options;
 use curl_core::tls::TlsNative;
@@ -87,6 +87,12 @@ impl TlsContextHandler for Adapter {
         // its handle, OpenSSL's `SSL_CTX` and its data, as C gives them.
         let code = self.call(cx, || unsafe { f(handle.cast(), ctx, c.ctx_data) });
         transfer_result(code)
+    }
+
+    /// The function: handles with the same one set contexts up alike,
+    /// whatever data each gives it (DIVERGENCE.md).
+    fn setup_key(&self) -> Option<SetupKey> {
+        self.easy().tls().ctx.map(|f| SetupKey::new(f as usize))
     }
 }
 

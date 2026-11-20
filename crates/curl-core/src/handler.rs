@@ -407,8 +407,34 @@ pub trait SocketCloser: Send + Sync {
 /// the library makes the session of it (`CURLOPT_SSL_CTX_FUNCTION`), to
 /// set it up through the library's own API: `native` holds the context
 /// alone. An error fails the transfer with its kind.
+///
+/// A connection, a TLS session or a store of certificates made under one
+/// handler serves only transfers whose handler sets contexts up the same
+/// way: handlers with the same key (`setup_key`), or, for one without, the
+/// same handler alone.
 pub trait TlsContextHandler: Send + Sync {
     fn configure(&self, cx: &mut TransferCx<'_>, native: TlsNative) -> Result<(), ErrorKind>;
+
+    /// What this handler does to a context, as a key shared by every
+    /// handler that does the same: none if no other does.
+    fn setup_key(&self) -> Option<SetupKey> {
+        None
+    }
+}
+
+/// Names what a TLS context handler does to a context: two handlers with
+/// the same key set contexts up alike (`TlsContextHandler::setup_key`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetupKey(usize);
+
+impl SetupKey {
+    pub const fn new(key: usize) -> SetupKey {
+        SetupKey(key)
+    }
+
+    pub fn get(self) -> usize {
+        self.0
+    }
 }
 
 /// What kind of file a listing says an entry is (`curlfiletype`).

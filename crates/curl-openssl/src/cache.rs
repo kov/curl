@@ -18,10 +18,13 @@ pub(crate) type StoreCache<S> = curl_core::tls::StoreCache<S>;
 /// blob, no revocation list and not the system's own store, asked for
 /// or the library's default (`native_ca_store`). A store loaded under an
 /// OpenSSL provider is left out too, by the session that knows its
-/// provider (`Session::store_cache`, C's `USING_PROVIDER`).
+/// provider (`Session::store_cache`, C's `USING_PROVIDER`). A connection
+/// whose context the transfer's handler sets up keeps its store to itself:
+/// the handler may have changed it (C shares it).
 pub(crate) fn cacheable(identity: &TlsIdentity) -> bool {
     let o = &identity.options;
     o.ca_cache != CaCache::Off
+        && !identity.configured_by_handler()
         && identity.verify_peer
         && identity.ca_blob().is_none()
         && o.crl_file.is_none()
@@ -112,5 +115,21 @@ mod tests {
         assert!(cacheable(&native(CaSetting::Given(b"/ca.pem".to_vec()))));
         // Not verifying the host still caches.
         assert!(cacheable(&identity(|i| i.verify_host = false)));
+        // Nor a connection whose context the transfer's handler sets up:
+        // the store is its own.
+        let plain = || {
+            let mut i = TlsIdentity::for_tests(
+                true,
+                true,
+                TlsOptions::default(),
+                curl_core::tls::CaDefaults::NONE,
+                curl_core::tls::TlsOrigin::First,
+            );
+            i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
+            i
+        };
+        assert!(cacheable(&plain()));
+        let key = curl_core::handler::SetupKey::new(1);
+        assert!(!cacheable(&plain().with_context_for_tests(key)));
     }
 }

@@ -20,7 +20,7 @@ use std::fmt;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use super::{Chosen, TlsIdentity};
+use super::{Chosen, SetupRef, TlsIdentity};
 use crate::conn::{Dial, Peer};
 use crate::error::ErrorKind;
 use crate::hash::{Hash as _, Sha256, hmac_sha256};
@@ -257,9 +257,12 @@ impl SessionPeer {
         (&self.key[self.key_len..], self.kind)
     }
 
-    /// The connection's sessions are kept (`CURLOPT_SSL_SESSIONID_CACHE`).
+    /// The connection's sessions are kept (`CURLOPT_SSL_SESSIONID_CACHE`),
+    /// but for one made under a context handler with no key, which nothing
+    /// that outlives the handler could name.
     pub(crate) fn caches(&self) -> bool {
         self.identity.options.session_cache
+            && !matches!(self.identity.context_setup(), Some(SetupRef::Own(_)))
     }
 
     /// The sessions the peer gives are kept, where its TLS keeps them.
@@ -1125,6 +1128,8 @@ fn write_key(
         // certificate the system picks, below; the rest an origin not
         // the first leaves out is out of `options`.
         origin: _,
+        // Keyed below, as the context handler's setup.
+        context: _,
         // Says only who made it.
         made: _,
     } = identity;
@@ -1242,6 +1247,21 @@ fn write_key(
                 out.bytes(&[b.to_ascii_uppercase()]);
             }
         }
+    }
+    // Made under a context handler: kept for transfers whose handler sets
+    // contexts up the same way, and, the key naming it in this process
+    // alone, never exported. One with no key keeps none (`caches`), and
+    // its key finds none. C keys none.
+    match identity.context_setup() {
+        Some(SetupRef::Keyed(key)) => {
+            w(out, format_args!(":CTX-{:x}", key.get()));
+            local = true;
+        }
+        Some(SetupRef::Own(_)) => {
+            out.bytes(b":CTX-OWN");
+            local = true;
+        }
+        None => {}
     }
     let mut id = Count(0);
     w(&mut id, format_args!("{tls_id}"));

@@ -355,3 +355,11 @@ witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
                 Some(name) if !self.identity.verify_peer => Some(self.ssl().check_host(&name)),
 --- new
                 Some(_) if !self.identity.verify_peer => None,
+
+=== a store a context handler may have changed is kept for the multi
+file: crates/curl-wolfssl/src/trust.rs
+witness: curl-wolfssl trust::tests::a_store_a_context_handler_may_change_is_not_kept
+--- old
+        && !identity.configured_by_handler()
+--- new
+        && true

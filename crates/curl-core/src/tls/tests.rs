@@ -764,3 +764,81 @@ fn a_blob_s_sha256_is_sha256() {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
 }
+
+/// A context handler that answers every context with nothing, and says
+/// what it does as `key`, if it says.
+struct Setup(Option<usize>);
+
+impl TlsContextHandler for Setup {
+    fn configure(
+        &self,
+        _: &mut crate::multi::TransferCx<'_>,
+        _: TlsNative,
+    ) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
+    fn setup_key(&self) -> Option<SetupKey> {
+        self.0.map(SetupKey::new)
+    }
+}
+
+/// The options of a handle with the context handler `context`.
+fn with_context(context: Option<&Handler<dyn TlsContextHandler>>) -> Tls {
+    let mut tls = Tls::NONE;
+    tls.options.make_mut().expect("memory").context = context.cloned();
+    tls
+}
+
+/// A connection made under a context handler serves a transfer whose
+/// handler has the same key, or, without one, is the same handler; a
+/// transfer with none, or another, makes its own. The identity keeps
+/// what the handler set up, never the handler to call, and says it was
+/// made under one.
+#[test]
+fn a_context_handler_s_setup_tells_identities_apart() {
+    let h = |key| Handler::tls_context(Setup(key)).expect("memory");
+    let one = h(Some(1));
+    let one_again = h(Some(1));
+    let two = h(Some(2));
+    let own = h(None);
+    let own_other = h(None);
+    let none = with_context(None);
+    let handles = [
+        with_context(Some(&one)),
+        with_context(Some(&one_again)),
+        with_context(Some(&two)),
+        with_context(Some(&own)),
+        with_context(Some(&own_other)),
+    ];
+    let view = |tls| TlsView::of(tls, CaDefaults::NONE).first(SameOrigin::testing());
+    // Which of `handles` set contexts up alike: the two keyed 1.
+    let alike = |a: usize, b: usize| a == b || matches!((a, b), (0, 1) | (1, 0));
+    for (a, tls) in handles.iter().enumerate() {
+        assert!(!view(tls).same(&view(&none)), "{a} against none");
+        assert!(!view(&none).same(&view(tls)), "none against {a}");
+        let made = view(tls).made().expect("memory");
+        assert!(made.configured_by_handler(), "{a}");
+        assert!(
+            made.options.context.is_none(),
+            "{a}: no handler kept to call"
+        );
+        for (b, other) in handles.iter().enumerate() {
+            assert_eq!(view(tls).same(&view(other)), alike(a, b), "{a} against {b}");
+            assert_eq!(made.view().same(&view(other)), alike(a, b), "{a} made, {b}");
+        }
+    }
+    let made = view(&none).made().expect("memory");
+    assert!(!made.configured_by_handler());
+    assert!(made.view().same(&view(&none)));
+    // An HTTPS proxy's TLS is made under the handle's handler too.
+    let proxy = |origin: &Tls| {
+        TlsView::proxy(&Tls::NONE, &origin.options, CaDefaults::NONE)
+            .made()
+            .expect("memory")
+    };
+    assert!(proxy(&handles[0]).configured_by_handler());
+    assert_eq!(*proxy(&handles[0]), *proxy(&handles[1]));
+    assert_ne!(*proxy(&handles[0]), *proxy(&handles[2]));
+    assert_ne!(*proxy(&handles[0]), *proxy(&none));
+}

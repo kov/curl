@@ -1039,6 +1039,26 @@ so: weaknesses kept because C has them.
   `--next` through one SOCKS5 proxy make one connection there. Pinned by
   `a_socks5_connection_is_reused_only_with_the_same_ways_to_log_in`
   (`crates/curl-core/src/proto/http/tests.rs`).
+- **A TLS connection made under an `SSL_CTX` function serves only transfers with the same
+  function.** The connection's TLS identity keeps the function its transfer set
+  (`CURLOPT_SSL_CTX_FUNCTION`), not its data: a transfer with the same function and other data
+  reuses it, and its function is not called; one with another function, or none, makes a
+  connection of its own, and one with a function takes no connection made without it. The TLS
+  sessions made under a function are kept for transfers with the same function, are not
+  exported (`curl_easy_ssls_export`), and an imported session (`curl_easy_ssls_import`) is not
+  resumed under one; a Rust context handler that names no key keeps none. The store of
+  certificates a connection with a function loads is that connection's, never kept for the
+  multi's next connections. C compares no function, keys no session by it, and keeps the store
+  the function was handed for the multi's next connections. Measured 2026-11-20 against C's
+  debug build: four handles sharing connections, the first and second with one function and
+  different data, the third with another function, the fourth with none, make one connection in
+  C and three here. Pinned by
+  `a_connection_serves_only_transfers_with_the_same_ssl_ctx_function`
+  (`crates/curl-sys-abi/src/tls_tests.rs`), `a_context_handler_s_setup_tells_identities_apart`
+  (`crates/curl-core/src/tls/tests.rs`),
+  `a_session_made_under_a_context_handler_is_keyed_by_it_and_local`
+  (`crates/curl-core/src/tls/cache/tests.rs`), and the store tests of `curl-openssl`
+  (`cache.rs`) and `curl-wolfssl` (`trust.rs`).
 - **Whether the PROXY line goes is decided as the transfer is routed.** C reads
   `CURLOPT_HAPROXYPROTOCOL` as the setup reaches that stage, so an application that turns it on
   from a callback during the proxy's handshake gets the line; here the route was decided before,

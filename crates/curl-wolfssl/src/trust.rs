@@ -18,10 +18,13 @@ type Kept<S> = StoreCache<S>;
 
 /// A session's store may be taken from the multi, and kept there
 /// (`cache_criteria_met`): the certificates to trust come from a file
-/// alone, or from the library's default.
+/// alone, or from the library's default. A session whose context the
+/// transfer's handler sets up keeps its store to itself: the handler may
+/// have changed it (C shares it).
 pub(crate) fn cacheable(identity: &TlsIdentity) -> bool {
     let o = &identity.options;
     o.ca_cache != CaCache::Off
+        && !identity.configured_by_handler()
         && identity.verify_peer
         && identity.ca_path().is_none()
         && identity.ca_blob().is_none()
@@ -172,4 +175,31 @@ fn populate<C: Ctx>(
     io.info(format_args!(" CAfile: {file}"));
     io.info(format_args!(" CApath: {path}"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use curl_core::options::{CaSetting, TlsOptions};
+
+    use super::*;
+
+    /// A store from a CA file alone is kept for the multi, but not one
+    /// whose context the transfer's handler sets up: the store is its own.
+    #[test]
+    fn a_store_a_context_handler_may_change_is_not_kept() {
+        let plain = || {
+            let mut i = TlsIdentity::for_tests(
+                true,
+                true,
+                TlsOptions::default(),
+                curl_core::tls::CaDefaults::NONE,
+                curl_core::tls::TlsOrigin::First,
+            );
+            i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
+            i
+        };
+        assert!(cacheable(&plain()));
+        let key = curl_core::handler::SetupKey::new(1);
+        assert!(!cacheable(&plain().with_context_for_tests(key)));
+    }
 }

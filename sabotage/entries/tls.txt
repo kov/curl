@@ -5,10 +5,10 @@
 file: crates/curl-core/src/tls.rs
 witness: curl-core conn::tests::routes_compare_their_tls
 --- old
-        *verify_peer == other.verify_peer
+            && *verify_peer == other.verify_peer
             && *verify_host == other.verify_host
 --- new
-        *verify_host == other.verify_host
+            && *verify_host == other.verify_host
 
 === the bytes past a proxy's answer are not read first by the TLS session
 file: crates/curl-core/src/tls.rs
@@ -775,3 +775,29 @@ witness: curl-core proto::http::tests::tls::a_send_said_to_take_more_than_it_was
             (Ok(Sent::Bytes(n)), _) if n.get() > given.len() => Err(io::Error::other(
 --- new
             (Ok(Sent::Bytes(n)), _) if n.get() > given.len() + 1 => Err(io::Error::other(
+
+=== a connection made under one context handler serves a transfer with another
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::a_context_handler_s_setup_tells_identities_apart
+--- old
+        *context == other.context
+            && *verify_peer == other.verify_peer
+--- new
+        *verify_peer == other.verify_peer
+
+=== a session made under a context handler is kept for any transfer and exported
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_session_made_under_a_context_handler_is_keyed_by_it_and_local
+--- old
+            w(out, format_args!(":CTX-{:x}", key.get()));
+            local = true;
+--- new
+            let _ = key;
+
+=== a context handler with no key keeps sessions its address names
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_session_made_under_a_context_handler_with_no_key_is_not_kept
+--- old
+            && !matches!(self.identity.context_setup(), Some(SetupRef::Own(_)))
+--- new
+            && true

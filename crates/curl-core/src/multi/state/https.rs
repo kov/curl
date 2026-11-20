@@ -351,6 +351,17 @@ fn asked_for(route: &NetRoute) -> bool {
     address(route.target().name()).is_none()
 }
 
+/// Whether the origin's name is resolved here: not where a proxy resolves
+/// it, through an HTTP proxy's tunnel or a SOCKS proxy sent the name,
+/// which the application asked be looked up there and not here.
+fn resolved_here(route: &NetRoute) -> bool {
+    !route.proxy.as_ref().is_some_and(|p| {
+        p.tunnels()
+            || p.socks(route.target())
+                .is_some_and(|leg| !leg.version.resolves_locally())
+    })
+}
+
 /// Where the origin's HTTPS record is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Record {
@@ -696,8 +707,9 @@ fn look_up<H: Host>(
     super::names::record_started(cx, route);
     // Over a Unix socket the filter resolves the socket in place of the
     // record (`cf_dns_start` asks for its address alone), which is then
-    // known to be none.
-    if peer.is_unix() {
+    // known to be none. Where a proxy resolves the name, the filter asks
+    // nothing either, and knows none: C asks for the record here.
+    if peer.is_unix() || !resolved_here(route) {
         return Ok((Record::Known, None, None));
     }
     // The C debug build's line.
@@ -1348,6 +1360,45 @@ mod tests {
             may_h3,
             asked_h3: std::cell::Cell::new(false),
             record: None,
+        }
+    }
+
+    /// The origin's name is resolved here, and its record looked up here,
+    /// unless a proxy resolves it.
+    #[test]
+    fn a_record_is_looked_up_here_only_where_the_name_is_resolved_here() {
+        use crate::conn::{Peer, ProxyRoute, Scheme};
+        use crate::options::ProxyType;
+        let peer = |scheme: &str, host: &[u8], port| {
+            curl_alloc::TryArc::try_new(Peer::new(Scheme::of(scheme), host.to_vec(), port, None))
+                .unwrap()
+        };
+        let route = |proxy: Option<(ProxyType, &str)>| NetRoute {
+            origin: peer("https", b"o.example", 443),
+            via: None,
+            proxy: proxy.map(|(kind, scheme)| {
+                ProxyRoute::new(
+                    kind,
+                    peer(scheme, b"proxy.example", 1080),
+                    None,
+                    false,
+                    false,
+                )
+            }),
+            tls: None,
+            cold: None,
+        };
+        let cases = [
+            (None, true),
+            (Some((ProxyType::Socks5, "socks5")), true),
+            (Some((ProxyType::Socks4, "socks4")), true),
+            (Some((ProxyType::Socks5Hostname, "socks5h")), false),
+            (Some((ProxyType::Socks4a, "socks4a")), false),
+            (Some((ProxyType::Http, "http")), false),
+            (Some((ProxyType::Https, "https")), false),
+        ];
+        for (proxy, here) in cases {
+            assert_eq!(resolved_here(&route(proxy)), here, "{proxy:?}");
         }
     }
 

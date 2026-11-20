@@ -1265,12 +1265,14 @@ fn a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket() {
             "[HTTPS-CONNECT] connect -> 0, done=1",
         ],
     );
+    // The proxy resolves the origin's name, so its record is not asked
+    // for here: C's c-ares answers that it found none
+    // (`ares_take_result, result=6`) where this build asks nothing.
     let want = expect(&format!(
         "[DNS] [A+AAAA] cf_dns_start unix-domain-socket {path}:1080
         [DNS] resolved unix://{path}
         [HTTPS-CONNECT] connect, init
         [HTTPS-CONNECT] HTTPS-RR not available
-        [DNS] [HTTPS] ares_take_result, result=6, ares_result=0, ares_status=1, dns=not found
         [HTTPS-CONNECT] HTTPS-RR not available
         [HTTPS-CONNECT] connect -> 0, done=1"
     ));

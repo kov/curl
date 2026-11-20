@@ -955,6 +955,24 @@ so: weaknesses kept because C has them.
   `a_handle_being_cleaned_up_is_not_added_from_its_callback`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## Names a proxy resolves
+
+- **The origin's HTTPS record is not looked up here when a proxy resolves its name.** Through an
+  HTTP proxy's tunnel, or a SOCKS proxy that is sent the name (`socks4a`, `socks5h`), the origin's
+  addresses are not looked up here, and neither is its HTTPS record: no query of type 65 goes to
+  the resolver or the DoH server. ALPN is then chosen without the record, and ECH that takes its
+  configuration from the record has none, so `hard` fails as with no record ("ECH: requested but
+  no ECHConfig available") unless the configuration is given (`ecl:`). C asks for the record in
+  both: measured 2026-11-20 against C's debug build with c-ares, `-x socks5h://...
+  https://o.example/` sends one type-65 query for `o.example` to `--dns-servers` and no address
+  query; this build sends none. The record's filter is still in the chain, as C's is, and knows
+  at once there is none, so the HTTPS connect filter chooses its second attempt before the first
+  starts, as over C's threaded resolver. Pinned by
+  `a_record_is_looked_up_here_only_where_the_name_is_resolved_here`
+  (`crates/curl-core/src/multi/state/https.rs`) and
+  `a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket`
+  (`crates/curl-core/src/proto/http/tests/https_trace.rs`).
+
 ## Calls C lets in from callbacks
 
 - **A call from a callback lent nothing of the transfer is refused.** `curl_easy_upkeep` holds

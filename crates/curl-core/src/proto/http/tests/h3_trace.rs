@@ -4229,22 +4229,16 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
             "[TCP] cf_socket_close",
         ],
     );
-    // The second attempt is chosen as soon as the record is known: over a
-    // resolver library, at the connect after the first attempt starts; over
-    // the threaded resolver, which says at once there is none, before it
-    // starts (`cf_hc_set_baller2` in `cf_hc_connect`'s init).
-    let start = "[SETUP] happy eyeballing to proxy 127.0.0.1:3128";
-    let second = "[HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions";
-    let (a, b) = if cfg!(feature = "threaded-resolver") {
-        (second, start)
-    } else {
-        (start, second)
-    };
-    let want = expect(&format!(
+    // The second attempt is chosen as soon as the record is known, before
+    // the first starts (`cf_hc_set_baller2` in `cf_hc_connect`'s init):
+    // through the proxy's tunnel the record is not looked up here, and is
+    // known at once to be none. C's resolver library asks for it here, and
+    // chooses at the connect after the first attempt starts.
+    let want = expect(
         "
         [HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
-        {a}
-        {b}
+        [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
+        [SETUP] happy eyeballing to proxy 127.0.0.1:3128
         CONNECT-UDP tunnel failed, response 403
         [HTTPS-CONNECT] h3 baller failed, starting h1
         [SETUP] happy eyeballing to proxy 127.0.0.1:3128
@@ -4262,7 +4256,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
         [HAPPY-EYEBALLS] destroy
         [MULTI] [CONNECTING] reduced to [0][SSL][H1-PROXY][TCP]
         ",
-    ));
+    );
     assert_eq!(got, want, "{got:#?}");
 }
 

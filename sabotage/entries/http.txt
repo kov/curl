@@ -1661,3 +1661,21 @@ witness: curl-core auth::sasl::tests::hex_and_quoting_are_c_s
         if out.len() - start + escaped.len() > MAX_QUOTED {
 --- new
         if out.len() - start + escaped.len() > MAX_QUOTED + 1 {
+
+=== the origin's HTTPS record is looked up here though a proxy resolves its name
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::a_get_through_a_socks_proxy_over_a_unix_socket_races_the_socket
+features: test-util debug-hooks
+--- old
+    if peer.is_unix() || !resolved_here(route) {
+--- new
+    if peer.is_unix() {
+
+=== an HTTP proxy's tunnel is taken for a name resolved here
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core multi::state::https::tests::a_record_is_looked_up_here_only_where_the_name_is_resolved_here
+--- old
+        p.tunnels()
+            || p.socks(route.target())
+--- new
+        p.socks(route.target())

@@ -424,13 +424,9 @@ witness: curl-tool an_https_setup_whose_attempt_fails_waits_for_the_record
 file: crates/curl-core/src/multi/state/https.rs
 witness: curl-core proto::http::tests::https_trace::over_a_unix_socket_no_record_is_asked_for
 --- old
-    if peer.is_unix() {
-        return Ok((Record::Known, None, None));
-    }
+    if peer.is_unix() || !resolved_here(route) {
 --- new
-    if peer.is_unix() && false {
-        return Ok((Record::Known, None, None));
-    }
+    if !resolved_here(route) {
 
 === a race over a Unix socket wants addresses its first never had
 file: crates/curl-core/src/multi/state/connecting.rs

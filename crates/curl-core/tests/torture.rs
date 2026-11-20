@@ -946,7 +946,7 @@ fn a_get_takes_no_refusal_for_success() {
 /// attempts, the socket, the request head, the
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
-const GET_BUDGET: u64 = 40;
+const GET_BUDGET: u64 = 39;
 
 /// The fake TLS library and the libraries naming it, made once and
 /// untracked: the test's, not the library's to account for.

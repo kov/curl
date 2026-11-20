@@ -687,14 +687,9 @@ pub(super) fn start_leg<H: Host>(
         }
         Err(e) => return TransferState::Init.fail(e),
     };
-    let target = proto.network(
-        &url,
-        cx.easy().options().address_scope,
-        cx.easy().libraries().idn,
-    );
-    let target = match target {
-        Ok(Some(target)) => target,
-        Ok(None) => {
+    let origin = match proto.network() {
+        Some(origin) => origin,
+        None => {
             let lease = match acquire(cx, &proto, Route::Local, Dial::Stream) {
                 Ok(Acquired::New(lease)) => lease,
                 Ok(Acquired::Reused(_)) => {
@@ -715,16 +710,6 @@ pub(super) fn start_leg<H: Host>(
                 origin: None,
             });
         }
-        Err(e) => return TransferState::Init.fail(e),
-    };
-    // The request's own peer where the leg goes there, shared with it and
-    // with the first origin rather than copied.
-    let origin = match proto.shared_peer() {
-        Some(peer) if **peer == target => peer.clone(),
-        _ => match TryArc::try_new(target) {
-            Ok(origin) => origin,
-            Err(_) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
-        },
     };
     // A Unix socket is connected to in place of the origin's host, and
     // of any connect-to entry, and no proxy is gone through

@@ -81,16 +81,6 @@ impl PeerRefused {
             PeerRefused::Name(name) => name.fail(cx),
         }
     }
-
-    /// The transfer's error, for a peer whose name was said when the
-    /// request was made, as the same name is refused the same way.
-    pub(super) fn kind(self) -> ErrorKind {
-        match self {
-            PeerRefused::Kind(kind) => kind,
-            PeerRefused::Name(NameRefused::Convert(e)) => e.kind(),
-            PeerRefused::Name(NameRefused::Illegal(_)) => ErrorKind::UrlMalformat,
-        }
-    }
 }
 
 /// The peer `url` names, at `host` and `port`: in the IPv6 scope
@@ -115,6 +105,23 @@ pub(super) fn url_peer(
         }
     };
     peer.idn(idn).map_err(PeerRefused::Name)
+}
+
+/// The peer of the tests' `tcp:` URL, which names its host and port.
+#[cfg(any(test, feature = "test-util"))]
+fn tcp_peer(
+    url: &Url,
+    scope: Option<NonZeroU32>,
+    idn: Option<&dyn Idn>,
+) -> Result<Peer, PeerRefused> {
+    let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
+    let port = url.get(Part::Port, GetOptions::NONE).map_err(url_error)?;
+    let port = std::str::from_utf8(&port)
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .ok_or(ErrorKind::UrlMalformat)?;
+    let scheme = Scheme::own(&crate::conn::TCP_SCHEME);
+    url_peer((scheme, host, port), url, scope, idn)
 }
 
 /// [`url_peer`] in the scope and with the IDN library of the transfer
@@ -205,7 +212,7 @@ pub(crate) enum ProtoState {
     #[cfg(any(test, feature = "test-util"))]
     Script(Box<script::Player>),
     #[cfg(any(test, feature = "test-util"))]
-    Tcp,
+    Tcp(crate::multi::state::Origin),
 }
 
 /// HTTP's request in its box. The box is out of it only while the request
@@ -691,7 +698,7 @@ impl SetupLend for ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(p) => p.pipeline_mut(),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => {
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp(_) => {
                 unreachable!("no test protocol is set up through a tunnel")
             }
         }
@@ -714,7 +721,9 @@ impl SetupLend for ProtoState {
             | ProtoState::Telnet(_)
             | ProtoState::Tftp(_) => None,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
+                None
+            }
         }
     }
 
@@ -735,7 +744,9 @@ impl SetupLend for ProtoState {
             | ProtoState::Telnet(_)
             | ProtoState::Tftp(_) => None,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
+                None
+            }
         }
     }
 }
@@ -977,7 +988,10 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             b"tcp" => {
                 netrc_unkept(url, first, cx)?;
-                ProtoState::Tcp
+                let scope = cx.easy().options().address_scope;
+                let peer = tcp_peer(url, scope, cx.easy().libraries().idn);
+                let peer = peer.map_err(|e| e.fail(cx))?;
+                ProtoState::Tcp(TryArc::try_new(peer).map_err(|_| ErrorKind::OutOfMemory)?)
             }
             _ => return Ok(None),
         }))
@@ -1004,44 +1018,23 @@ impl ProtoState {
             | ProtoState::Telnet(_)
             | ProtoState::Tftp(_) => {}
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {}
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {}
         }
     }
 
     /// The peer the request connects to, or none for a protocol that
-    /// does its own I/O (C's `PROTOPT_NONETWORK`).
-    /// The peer the request is addressed to, shared, for a protocol that
-    /// keeps one.
-    pub(crate) fn shared_peer(&self) -> Option<&crate::multi::state::Origin> {
-        self.base().map(base::RequestBase::shared_peer)
-    }
-
-    pub(crate) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Option<Peer>, ErrorKind> {
+    /// does its own I/O (C's `PROTOPT_NONETWORK`): the request's own,
+    /// shared, for a protocol that keeps one.
+    pub(crate) fn network(&self) -> Option<crate::multi::state::Origin> {
         if let Some(base) = self.base() {
-            return base.network(url, scope, idn).map(Some);
+            return Some(base.shared_peer().clone());
         }
-        match *self {
-            ProtoState::File(_) => Ok(None),
+        match self {
+            ProtoState::File(_) => None,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => None,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Tcp => {
-                let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
-                let port = url.get(Part::Port, GetOptions::NONE).map_err(url_error)?;
-                let port = std::str::from_utf8(&port)
-                    .ok()
-                    .and_then(|p| p.parse().ok())
-                    .ok_or(ErrorKind::UrlMalformat)?;
-                let scheme = Scheme::own(&crate::conn::TCP_SCHEME);
-                Ok(Some(
-                    url_peer((scheme, host, port), url, scope, idn).map_err(PeerRefused::kind)?,
-                ))
-            }
+            ProtoState::Tcp(peer) => Some(peer.clone()),
             _ => unreachable!("every other protocol has a base"),
         }
     }
@@ -1111,7 +1104,9 @@ impl ProtoState {
             | ProtoState::Gopher(_)
             | ProtoState::Tftp(_) => None,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
+                None
+            }
         })
     }
 
@@ -1207,7 +1202,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall => Ok(Connect::Done),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Tcp => tcp_connect(cx, lease),
+            ProtoState::Tcp(_) => tcp_connect(cx, lease),
         }
     }
 
@@ -1241,7 +1236,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall => Ok(DoStep::Did),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Tcp => Ok(tcp_make(cx)),
+            ProtoState::Tcp(_) => Ok(tcp_make(cx)),
         }
     }
 
@@ -1269,7 +1264,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.waits(phase, line),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => phase.c_default(),
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp(_) => phase.c_default(),
         }
     }
 
@@ -1308,7 +1303,9 @@ impl ProtoState {
             // All of it is in DOING, as C sets nothing up to exchange.
             ProtoState::Mqtt(_) | ProtoState::Telnet(_) | ProtoState::Tftp(_) => false,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
+                true
+            }
         }
     }
 
@@ -1340,7 +1337,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(_) => script::wants_send(options),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => false,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp(_) => false,
         }
     }
 
@@ -1371,7 +1368,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.sending(options),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => false,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp(_) => false,
         };
         Directions {
             recv: self.exchanges(),
@@ -1495,7 +1492,7 @@ impl ProtoState {
             | ProtoState::Telnet(_)
             | ProtoState::Tftp(_) => Ok(()),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
                 Ok(())
             }
         }
@@ -1521,7 +1518,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(p) => Some(p.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => None,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp(_) => None,
             base => base.base_mut().map(|b| &mut b.pipeline),
         }
     }
@@ -1587,7 +1584,7 @@ impl ProtoState {
             ProtoState::Telnet(ref mut r) => Ok(r.step()),
             ProtoState::Tftp(ref mut r) => Ok(r.step()),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Tcp => Ok(ProtoStep::Done),
+            ProtoState::Null | ProtoState::Tcp(_) => Ok(ProtoStep::Done),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Stall => Ok(ProtoStep::Blocked),
             #[cfg(any(test, feature = "test-util"))]
@@ -1650,7 +1647,7 @@ impl ProtoState {
             | ProtoState::Telnet(_)
             | ProtoState::Tftp(_) => Events::NONE,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
                 Events::NONE
             }
         }
@@ -1723,7 +1720,9 @@ impl ProtoState {
             | ProtoState::Telnet(_)
             | ProtoState::Tftp(_) => false,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
+                false
+            }
         }
     }
 
@@ -1856,7 +1855,7 @@ impl ProtoState {
             // before (`tftp_done`).
             ProtoState::Tftp(ref r) => Finish::Done(result.and(r.failed())),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp(_) => {
                 Finish::Done(result)
             }
         }
@@ -1896,7 +1895,7 @@ mod tests {
                 ..ParseOptions::NONE
             };
             let url = Url::parse(url, opts).unwrap();
-            let peer = ProtoState::Tcp.network(&url, None, None).unwrap().unwrap();
+            let peer = tcp_peer(&url, None, None).unwrap();
             peer.zone().map(<[u8]>::to_vec)
         };
         assert_eq!(

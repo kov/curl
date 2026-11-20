@@ -1,17 +1,11 @@
 //! What every network protocol's request holds: where it goes, the body
 //! on its way to the application, and who it goes as.
 
-use std::num::NonZeroU32;
-
-use curl_alloc::TryVec as _;
-
-use super::url_peer;
 use crate::auth::creds::Credentials;
 use crate::auth::gate::{CredentialGate, Origins};
 use crate::conn::{Peer, Scheme};
 use crate::deliver::Pipeline;
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
-use crate::idn::Idn;
 use crate::multi::Host;
 use crate::multi::state::Origin;
 use crate::multi::state::StepCx;
@@ -106,25 +100,6 @@ impl RequestBase {
     /// The pipeline and the credentials, each to change, beside the peer.
     pub(super) fn parts_mut(&mut self) -> (&mut Pipeline, &mut Option<Credentials>, &Peer) {
         (&mut self.pipeline, &mut self.credentials, &self.peer)
-    }
-
-    /// The peer the request connects to, named again for `url`.
-    pub(super) fn network(
-        &self,
-        url: &Url,
-        scope: Option<NonZeroU32>,
-        idn: Option<&dyn Idn>,
-    ) -> Result<Peer, ErrorKind> {
-        let mut host = Vec::new();
-        host.try_extend_from_slice(self.peer.shown())
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        url_peer(
-            (self.peer.scheme(), host, self.peer.port()),
-            url,
-            scope,
-            idn,
-        )
-        .map_err(super::PeerRefused::kind)
     }
 
     pub(super) fn scheme(&self) -> Scheme {

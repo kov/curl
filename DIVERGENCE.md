@@ -955,6 +955,18 @@ so: weaknesses kept because C has them.
   `a_handle_being_cleaned_up_is_not_added_from_its_callback`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## A form set again during its upload
+
+- **A form chain set again from a callback while its upload is under way goes on to its end.**
+  The handle makes a tree of the chain it posts (`CURLOPT_HTTPPOST`), and setting the option
+  again lets that tree go. A request reading a part through the application's read function
+  holds its own copy of the function and its argument, taken as the request is made, so the
+  upload goes on with them to the part's end: `hello` arrives whole when the read function sets
+  the option to NULL after giving `he`. C's does not go on with them: measured 2026-11-20
+  against C's debug build, the transfer returns 0 with only `he` of the 5-byte part sent before
+  the closing boundary. Pinned by
+  `a_form_set_again_from_its_read_function_finishes_its_upload` (`crates/curl-sys-abi/src/mime.rs`).
+
 ## Names a proxy resolves
 
 - **The origin's HTTPS record is not looked up here when a proxy resolves its name.** Through an

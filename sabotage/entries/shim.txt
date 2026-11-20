@@ -674,3 +674,17 @@ witness: curl-sys-abi handle_tests::a_reset_s_debug_function_asking_another_hand
 --- new
                 let report = unsafe { frame.info(id) };
                 Ok(f(report.expect("an added handle is in its multi")))
+
+=== a callback part's adapter needs the tree the form set again let go of
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::a_form_set_again_from_its_read_function_finishes_its_upload
+--- old
+        let cb = self.cb;
+        let len = buf.len();
+--- new
+        if unsafe { self.easy.as_ref() }.posted().is_none_or(|p| p.form.get().is_none()) {
+            return Read::Fail;
+        }
+        let cb = self.cb;
+        let len = buf.len();
+

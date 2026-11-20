@@ -844,10 +844,10 @@ impl MimeSource for MimeTree {
             return Ok(None);
         };
         let easy = self.0;
-        let mut handlers = |part: NonNull<ShimPart>, cb: &Callback| -> Result<Content, MimeError> {
+        let mut handlers = |cb: &Callback| -> Result<Content, MimeError> {
             Ok(Content::Read {
-                handler: Handler::read(PartAdapter { part, easy })?,
-                rewind: Some(Handler::rewind(PartAdapter { part, easy })?),
+                handler: Handler::read(PartAdapter { cb: *cb, easy })?,
+                rewind: Some(Handler::rewind(PartAdapter { cb: *cb, easy })?),
                 size: cb.size,
             })
         };
@@ -901,7 +901,7 @@ pub(crate) fn forget_post_state(shim: &ShimEasy) {
 /// call it in later. Failing, the code to return.
 pub(crate) fn whole(tree: &ShimMime) -> Result<TryArc<Mime>, CURLcode> {
     let mut failed = CURLE_OK;
-    let mut read_now = |_: NonNull<ShimPart>, cb: &Callback| -> Result<Content, MimeError> {
+    let mut read_now = |cb: &Callback| -> Result<Content, MimeError> {
         let mut bytes = Vec::new();
         let mut buf = [0u8; 8192];
         loop {
@@ -941,8 +941,7 @@ pub(crate) fn whole(tree: &ShimMime) -> Result<TryArc<Mime>, CURLcode> {
 }
 
 /// What a part a function reads holds in the core's tree.
-type CallbackContent<'a> =
-    dyn FnMut(NonNull<ShimPart>, &Callback) -> Result<Content, MimeError> + 'a;
+type CallbackContent<'a> = dyn FnMut(&Callback) -> Result<Content, MimeError> + 'a;
 
 /// Whether a tree `depth` levels down is deeper than the core sends: it
 /// refuses a part more than `MAX_LEVELS` below the handle's, which a tree
@@ -970,7 +969,7 @@ fn build(
             PartContent::None => Content::None,
             PartContent::Data(d) => Content::Bytes(d.clone()),
             PartContent::File(f) => Content::File(f.try_clone()?),
-            PartContent::Callback(cb) => callback(p, cb)?,
+            PartContent::Callback(cb) => callback(cb)?,
             PartContent::Subparts(sub) => {
                 // SAFETY: a part's subparts live as long as it does.
                 Content::Parts(build(unsafe { sub.as_ref() }, callback, depth + 1)?)
@@ -1001,9 +1000,13 @@ fn build(
     Ok(mime)
 }
 
-/// A callback part's functions, called for the handle's transfer.
+/// A callback part's functions, called for the handle's transfer: a
+/// copy, taken as the request is made, so that the tree they came from
+/// may go meanwhile (the form set again from a callback frees the tree
+/// made of its chain) while the functions and their argument, the
+/// application's, are still called.
 struct PartAdapter {
-    part: NonNull<ShimPart>,
+    cb: Callback,
     easy: NonNull<ShimEasy>,
 }
 
@@ -1012,24 +1015,9 @@ unsafe impl Send for PartAdapter {}
 // SAFETY: as for `MimeTree`.
 unsafe impl Sync for PartAdapter {}
 
-impl PartAdapter {
-    /// The part's functions, if it still has them.
-    fn callback(&self) -> Option<Callback> {
-        // SAFETY: the tree outlives the request that reads it, as C
-        // requires of a tree a handle posts.
-        let p = unsafe { self.part.as_ref() };
-        match &p.content {
-            PartContent::Callback(cb) => Some(*cb),
-            _ => None,
-        }
-    }
-}
-
 impl ReadHandler for PartAdapter {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
-        let Some(cb) = self.callback() else {
-            return Read::Fail;
-        };
+        let cb = self.cb;
         let len = buf.len();
         let got = Adapter(self.easy).call(cx, || {
             // SAFETY: `buf` has room for `len` bytes; the function takes
@@ -1052,10 +1040,7 @@ impl ReadHandler for PartAdapter {
 
 impl Rewind for PartAdapter {
     fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
-        let Some(cb) = self.callback() else {
-            return Err(RewindFailed);
-        };
-        let ok = Adapter(self.easy).call(cx, || seek(&cb));
+        let ok = Adapter(self.easy).call(cx, || seek(&self.cb));
         if ok { Ok(()) } else { Err(RewindFailed) }
     }
 }
@@ -1085,6 +1070,84 @@ mod tests {
         CURLE_SEND_FAIL_REWIND, curl_mime,
     };
     use crate::setopt::curl_easy_setopt;
+
+    /// A form set again from its own stream's read function, mid-upload,
+    /// lets go of the tree the handle made of its chain; the upload goes on
+    /// with the functions and argument it started with, to the end of the
+    /// part. C reads the part it freed.
+    #[test]
+    fn a_form_set_again_from_its_read_function_finishes_its_upload() {
+        use crate::easy::curl_easy_perform;
+        use crate::ffi::curl_httppost;
+        use crate::formdata::{curl_formadd, curl_formfree};
+        use curl_core::options::script::{Piece, Script};
+        thread_local! {
+            static HANDLE: Cell<usize> = const { Cell::new(0) };
+            static READS: Cell<u32> = const { Cell::new(0) };
+        }
+        unsafe extern "C" fn read(
+            buf: *mut c_char,
+            size: usize,
+            n: usize,
+            arg: *mut c_void,
+        ) -> usize {
+            assert_eq!(arg.cast_const(), c"stream".as_ptr().cast::<c_void>());
+            READS.with(|r| r.set(r.get() + 1));
+            // Part of the body, the form set again; the rest at the next
+            // read, which the part's size makes the last.
+            let piece: &[u8] = if READS.with(Cell::get) == 1 {
+                let c = HANDLE.with(Cell::get) as *mut CURL;
+                // SAFETY: the live handle whose transfer calls this.
+                let set = unsafe {
+                    curl_easy_setopt(c, ffi::CURLOPT_HTTPPOST, ptr::null_mut::<c_void>())
+                };
+                assert_eq!(set, CURLE_OK);
+                b"he"
+            } else {
+                b"llo"
+            };
+            assert!(size * n >= piece.len());
+            // SAFETY: the buffer has room for `size * n` bytes.
+            unsafe { ptr::copy_nonoverlapping(piece.as_ptr(), buf.cast::<u8>(), piece.len()) };
+            piece.len()
+        }
+        let (mut first, mut last): (*mut curl_httppost, *mut curl_httppost) =
+            (ptr::null_mut(), ptr::null_mut());
+        let c = curl_easy_init();
+        HANDLE.with(|h| h.set(c as usize));
+        // SAFETY: options and values as `curl_formadd` and
+        // `curl_easy_setopt` document them, the stream a static string the
+        // read function is given; a live handle, then the chain it no
+        // longer posts.
+        unsafe {
+            let added = curl_formadd(
+                &mut first,
+                &mut last,
+                ffi::CURLFORM_COPYNAME.0,
+                c"f".as_ptr(),
+                ffi::CURLFORM_STREAM.0,
+                c"stream".as_ptr(),
+                ffi::CURLFORM_CONTENTLEN.0,
+                5 as ffi::curl_off_t,
+                ffi::CURLFORM_END.0,
+            );
+            assert_eq!(added, ffi::CURL_FORMADD_OK);
+            let url = c"script://a".as_ptr();
+            assert_eq!(curl_easy_setopt(c, ffi::CURLOPT_URL, url), CURLE_OK);
+            let f = read as unsafe extern "C" fn(*mut c_char, usize, usize, *mut c_void) -> usize;
+            assert_eq!(curl_easy_setopt(c, ffi::CURLOPT_READFUNCTION, f), CURLE_OK);
+            assert_eq!(curl_easy_setopt(c, ffi::CURLOPT_HTTPPOST, first), CURLE_OK);
+            let easy = easy::handle(c).expect("a live handle");
+            easy.with_options(|o| {
+                o.script = Some(Script::new(vec![Piece::SendAll]).unwrap());
+            })
+            .expect("reachable");
+            assert_eq!(curl_easy_perform(c), CURLE_OK);
+            curl_easy_cleanup(c);
+            curl_formfree(first);
+        }
+        assert_eq!(READS.with(Cell::get), 2, "read to its end");
+    }
 
     /// POSIX's `basename`, as glibc's libgen gives it to C.
     #[cfg(unix)]

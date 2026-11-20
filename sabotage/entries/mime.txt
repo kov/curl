@@ -114,21 +114,13 @@ witness: curl-core mime::tests::a_part_reached_before_starts_over_as_c_s
         }
 --- new
 
-=== a regular file whose read fails fails the part
+=== a file whose size is known ends where its read fails
 file: crates/curl-core/src/mime/read.rs
-witness: curl-core mime::tests::a_file_that_fails_to_read_ends_or_fails
+witness: curl-core mime::tests::a_file_that_fails_to_read_fails_the_read
 --- old
-                    (n, true) if f.size().is_some() => {
+                    (_, true) => Got::Error,
 --- new
-                    (n, true) if false => {
-
-=== a file that is not regular ends where its read fails
-file: crates/curl-core/src/mime/read.rs
-witness: curl-core mime::tests::a_file_that_fails_to_read_ends_or_fails
---- old
-                    (0, true) => Got::Error,
---- new
-                    (0, true) => Got::Bytes(0),
+                    (n, true) if f.size().is_some() => Got::Bytes(n), (_, true) => Got::Error,
 
 === a probe sends no head lines
 file: crates/curl-core/src/proto/http.rs

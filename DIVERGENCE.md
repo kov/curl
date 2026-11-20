@@ -37,15 +37,6 @@ so: weaknesses kept because C has them.
   (`crates/curl-tool/tests/transfers.rs`) and `a_header_file_that_cannot_be_read_is_refused`
   (`crates/curl-tool/src/form.rs`).
 
-- **A form part whose file cannot be read fails the transfer, unless its size is known.** A
-  part sending a file that is not a regular file, such as `-F a=@dir` or
-  `curl_mime_filedata` naming a directory, ends the transfer with 26 (`CURLE_READ_ERROR`) when
-  its read fails. C's `mime_file_read` (`lib/mime.c`) passes on `fread`'s short count, which
-  reads as the part's end: it sends the part empty, the rest of the form after it, and exits 0.
-  Measured against the C build with `-F a=@dir -F b=c`. A regular file, whose size the body's
-  length was counted with, ends there as in C, and the body's size check fails it. Pinned by
-  `a_file_that_fails_to_read_ends_or_fails` (`crates/curl-core/src/mime/tests.rs`).
-
 - **A `file://` directory listing whose read fails partway is a read error.** A `readdir()`
   failing partway through a listing ends the transfer with 26 (`CURLE_READ_ERROR`). C's
   `file_do` (`lib/file.c`) takes it for the listing's end and succeeds with the listing

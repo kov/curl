@@ -940,13 +940,12 @@ fn a_part_reached_before_starts_over_as_c_s() {
     );
 }
 
-/// A file that fails to read ends there if it is regular, as C's `fread`
-/// ends it, for the body's size to tell; one that is not fails the read,
-/// where C sends what came as all of it (DIVERGENCE.md). A directory is
-/// what fails, which opens on Unix alone.
+/// A file that fails to read fails the part's read, whether or not its
+/// size is known, as C's `mime_file_read` does since upstream e54fc88a66.
+/// A directory is what fails, which opens on Unix alone.
 #[cfg(unix)]
 #[test]
-fn a_file_that_fails_to_read_ends_or_fails() {
+fn a_file_that_fails_to_read_fails_the_read() {
     let dir = std::env::temp_dir();
     let dir = dir.as_os_str().as_encoded_bytes();
     let no_size = FileData::new(dir).unwrap();
@@ -960,10 +959,8 @@ fn a_file_that_fails_to_read_ends_or_fails() {
         ..FileData::new(dir).unwrap()
     };
     let mut r = reader(tree([named("d", Content::File(sized))]));
-    let (p, end) = pieces(&mut r, &mut Script::default(), 1024);
-    assert_eq!(end, None, "the part ends");
-    let sent: usize = p.iter().map(Vec::len).sum();
-    assert_eq!(r.size(), Some(sent as u64 + 5), "five bytes short");
+    let (_, end) = pieces(&mut r, &mut Script::default(), 1024);
+    assert_eq!(end, Some(Got::Error));
 }
 
 /// A number at the largest multiple of 62 is drawn again, the one below

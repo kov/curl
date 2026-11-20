@@ -48,6 +48,12 @@ variant of its own, and the type has no state for "not decided yet":
 - an SSH host-key requirement that asks nothing is compared as such (`HostAsk::serves`), not
   read from four `Option`s at each use.
 
+A sentinel that means "not known" is the same hazard in the other direction: a datagram size of
+0 sent a run as datagrams of no bytes, and a width of -1 beside a flag let digits after `*`
+replace the width while the flag still said it came from an argument. "Not known" is `None` of
+a `NonZero` type, or a variant of an enum whose every state is a real case (a width that is
+fixed, from an argument, or absent), so a later write cannot leave the two halves out of step.
+
 ### Origin-bound values only through the gate
 
 What the application said for the first origin (credentials, an FTP account) must not reach
@@ -57,6 +63,11 @@ in C. C reads `data->set` at the point of use, so each use is a place to forget 
 engine takes the gate's token (`get(&self, _: OriginTrusted)`), so a read without the decision
 does not compile. A secret is never compared with `==`: equality on `ForOrigin` exists in test
 builds only, and library code compares secrets with `same_secret`.
+
+Where a value came from is part of the value, and survives every copy, default and conversion:
+a copy of a handle copies a server-given value as server-given, with its origin, never as one
+the application set; "absent" and "empty" stay two states where one is a wildcard. A copy that
+rebuilds the value through the constructor meant for another source relabels it.
 
 ### A connection describes itself completely
 
@@ -103,6 +114,24 @@ give the same bytes again. A shorter retry made rustls count bytes the caller no
 and Schannel abort. A call that blocks either takes nothing or reports what it took; where a
 library keeps the duty, it refuses a retry that breaks it, and the core refuses a count larger
 than the bytes it handed down (`TlsLayer::send`).
+
+### A failure is not a count
+
+A read that returns how much it got, with failure as a flag beside it or a state to ask for
+afterwards (`ferror`, a failed close), lets the caller take a short count for the end: an upload
+read from a stream that failed was sent short and reported complete, and a form file's failed
+read ended its part where the body's size could not catch it. The read returns
+`Result<usize, _>`, so "failed, but here are bytes" cannot be represented, and a close or flush
+whose failure loses data returns its error to the save that depends on it. Where C reports
+through a count and a flag, the binding turns the pair into the `Result` at once.
+
+### One question, one answer
+
+Two methods that answer halves of one question drift apart as layers override one and not the
+other: an HTTP/2 proxy tunnel holding the origin's bytes said no input was pending, because its
+liveness check chose the answer per branch while the fact sat in the tunnel's buffer, which
+`data_pending` already reported. A question is answered in one place, from the state that holds
+the fact, and every layer contributes to that place rather than overriding a second method.
 
 ### Foreign errors are typed, not defaulted
 
@@ -190,7 +219,12 @@ is a test against the real library.
 
 Sweep the tree for the patterns above, without waiting for a report:
 
-- `Option` fields and parameters whose `None` is a policy, sentinels compared with `0` or `-1`;
+- `Option` fields and parameters whose `None` is a policy, sentinels compared with `0` or `-1`,
+  and a number beside a flag that says what the number means;
+- reads that return a count with the failure kept elsewhere (`(usize, bool)`, `ferror`), and
+  closes or flushes whose error is dropped where data depends on it;
+- one question answered by two methods (`is_alive` beside `data_pending`), or by each branch;
+- copies, defaults and conversions of a value whose source matters (`duphandle`, `Clone`);
 - `bool` parameters and fields at decision points;
 - options read from `Options` during connection set-up or in a protocol's connection state;
 - options read by index, or read again, after a step that runs a callback;

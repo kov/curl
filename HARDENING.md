@@ -50,9 +50,10 @@ variant of its own, and the type has no state for "not decided yet":
 
 ### Origin-bound values only through the gate
 
-What the application said for the first origin (credentials, an FTP account, an RTSP session)
-must not reach another. C reads `data->set` at the point of use, so each use is a place to
-forget the check. Here the value is wrapped (`ForOrigin<T>`), and its only reader inside the
+What the application said for the first origin (credentials, an FTP account) must not reach
+another, and what a server gave goes back to that server alone (an RTSP session id it set). An
+RTSP session id the application sets is not of the first origin: it goes with every request, as
+in C. C reads `data->set` at the point of use, so each use is a place to forget the check. Here the value is wrapped (`ForOrigin<T>`), and its only reader inside the
 engine takes the gate's token (`get(&self, _: OriginTrusted)`), so a read without the decision
 does not compile. A secret is never compared with `==`: equality on `ForOrigin` exists in test
 builds only, and library code compares secrets with `same_secret`.

@@ -41,12 +41,15 @@ Before merging, establish what moved, with `date` run first:
    ../build/c`) and fix what it reports.
 4. Rebuild the C reference (`build/c`), then regenerate the inventory (`inventory/gen/all.py`,
    then `--check`) in a commit separate from any C-tree change: its stamp is the last commit
-   that touched the C tree. Then remeasure the baseline (`inventory/measure/baseline.py --run`).
+   that touched the C tree. Regenerate the Rust files generated from C sources (`gen/all.py`)
+   in a commit of their own too; `generated_is_fresh` fails until then. Then remeasure the
+   baseline (`inventory/measure/baseline.py --run`).
 
 ## 3. Score
 
-Score the Rust leg against the new baseline (`inventory/measure/score.py`). Every failure is
-one of: a port this catch-up owes, a test of this tree's that C now fails (its expectation moves
+Score the Rust leg against the new baseline (`inventory/measure/score.py`). A failure is rerun
+alone before it is triaged: a pytest case can fail under the full run's load only. Every
+failure is one of: a port this catch-up owes, a test of this tree's that C now fails (its expectation moves
 with the port), or a regression. A test this tree added that the new C fails names a port: C's
 new trace, message or order is the target. Highest-yield ports first: one shared behaviour (an
 FTP `QUIT`, a feature name in `curl -V`) can recover hundreds of tests and clears the noise the
@@ -101,7 +104,10 @@ security, then behaviour.
   test), armed by planting the fault, and a sabotage entry where it guards an invariant.
 - A test whose expectation upstream changed is updated with the port, after running the new C
   on it.
-- A `DIVERGENCE.md` entry that C now matches is deleted.
+- A `DIVERGENCE.md` entry that C now matches is deleted. For every in-range fix, search
+  `DIVERGENCE.md` for the C function or option it touches, and rerun the entry's own case on
+  the merged C: an upstream fix of C's side falsifies the entry silently, and neither the score
+  nor the exposure reader reliably finds it.
 - Audit the port list once the ports run out: a reader per area of the merged range, read-only,
   listing each upstream commit under `lib/` and `src/` that is not ported, with the Rust
   `file:line` it would change. The audit finds what triage missed.
@@ -161,5 +167,12 @@ the owner approves: patterns `HARDENING.md` lacks are added to it.
   against `build/rust/lib` or check `ldd` before believing a result.
 - The command-line tool is no oracle for state a multi keeps between transfers (a CA store, a
   connection pool): it makes a handle per URL. Write the libcurl program.
+- A sabotage entry whose plant sits on one of several paths to the code it guards survives the
+  sweep: plant where every path passes (the shared helper, not one caller).
+- An agent told to clean up after itself clears the session's scratchpad, other runs' logs
+  with it. Give each agent its own directory under `build/vuln-<sha10>/` and name what it may
+  delete.
+- A reviewer working while ports land reviews a moving tree: tell it the commit to start from
+  and that later commits are expected, so it reports verdicts per commit.
 - Upstream's style checks run over this tree's markdown too (test 1275).
 - A trace a test captured from C is re-captured from the new C, not edited by hand.

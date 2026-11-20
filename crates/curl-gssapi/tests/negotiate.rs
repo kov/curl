@@ -327,7 +327,8 @@ fn round_trip_in_a_child() {
 /// Test 2097, C's capture: the stub fails a `C` (continue) challenge to
 /// a Kerberos context, said as the line is handled; the 401 stays the
 /// response. A `D` (done) one completes it with no token, which fails
-/// it unsaid.
+/// it unsaid. Either way a token went, so the connection closes
+/// (`http_auth_nego_fail`).
 #[test]
 fn a_challenge_the_stub_refuses() {
     in_child("refused_in_a_child", "KRB5_Alice");
@@ -360,10 +361,11 @@ fn refused_in_a_child() {
             want.push(STUB_REFUSED.to_owned());
         }
         want.extend([
+            "* Negotiate failed after a token was sent, closing connection".to_owned(),
             format!("<= WWW-Authenticate: Negotiate {challenge}"),
             "<= Content-Length: 4".to_owned(),
             "<=".to_owned(),
-            "* Connection #0 to host 127.0.0.1:8990 left intact".to_owned(),
+            "* shutting down connection #0".to_owned(),
         ]);
         assert_eq!(seen.lines(), want, "{challenge}");
     }

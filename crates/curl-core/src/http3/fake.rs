@@ -182,6 +182,8 @@ pub struct FakeBody {
     pub reading: bool,
     /// At most this much of it is held, acknowledged bytes let go.
     pub held_max: Option<usize>,
+    /// What each write is refused with, if anything.
+    pub refused: Option<BodyRefused>,
 }
 
 impl FakeBody {
@@ -810,6 +812,9 @@ impl Connection for FakeConnection {
     fn write_body(&mut self, _stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused> {
         let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         let b = &mut s.body;
+        if let Some(refused) = b.refused {
+            return Err(refused);
+        }
         let room = b
             .held_max
             .map_or(usize::MAX, |max| max - (b.bytes.len() - b.acked));

@@ -6558,6 +6558,47 @@ fn a_body_over_quiche_is_said_as_quiche_takes_it() {
     }
 }
 
+/// A body quiche refuses fails the transfer, the refusal said as
+/// quiche's filter says it and failed as it fails it: a stream in no
+/// state to send with an HTTP/3 error, any other refusal as a send that
+/// failed (`cf_quiche_send_body`).
+#[test]
+fn a_body_quiche_refuses_is_said_and_failed_as_quiche_s_filter_does() {
+    use crate::http3::BodyRefused;
+    let cases = [
+        (
+            BodyRefused::StreamState,
+            "[HTTP/3] [0] send_body(len=5) -> invalid stream state",
+            ErrorKind::Http3,
+        ),
+        (
+            BodyRefused::FinalSize,
+            "[HTTP/3] [0] send_body(len=5) -> exceeds size",
+            ErrorKind::SendError,
+        ),
+        (
+            BodyRefused::Other(-17),
+            "[HTTP/3] [0] send_body(len=5) -> quiche err -17",
+            ErrorKind::SendError,
+        ),
+    ];
+    for (refused, line, kind) in cases {
+        let script = post_script(b"5\n", 4);
+        {
+            let mut s = script.lock().unwrap();
+            s.flavour = crate::http3::Flavour::Quiche;
+            s.body.refused = Some(refused);
+        }
+        let ran = h3_with(&script, 4, |o| {
+            o.method = Method::Post;
+            o.upload = bytes(b"hello");
+        });
+        assert_eq!(ran.result, Err(kind), "{refused:?} {:#?}", ran.seen.text());
+        let said = lines(&ran, &["[HTTP/3] [0] send"]);
+        assert_eq!(said, [line], "{refused:?}");
+    }
+}
+
 /// A read that fails as the server closes the connection fails a connect
 /// over ngtcp2 as a connection that could not be made, why said; over
 /// quiche, with the read's own failure, as quiche's filter has no such

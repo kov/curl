@@ -27,19 +27,24 @@ Before merging, establish what moved, with `date` run first:
 - upstream decisions in `docs/DEPRECATE.md` and the changelog that change `SCOPE.md`'s claims (a
   feature removed or scheduled for removal);
 - the previous catch-up's notes: its unported commits and open items start this one's port
-  list;
+  list, and so do the survivors of its cargo-mutants run;
 - every revert in the range, with its public reason (the PR, the issue): a revert can undo a
   fix this tree ported, or point to the change upstream made instead.
 
 ## 2. Merge
 
-1. Renumber the tests this tree added that collide with upstream's new numbers, in a commit of
+1. Score the Rust leg on the unmerged tree (`inventory/measure/score.py`) and keep the result
+   (`build/rust/score/` copied to `build/vuln-<sha10>/score-before/`): without it a failure
+   after the merge cannot be told from one that was already there.
+2. Renumber the tests this tree added that collide with upstream's new numbers, in a commit of
    its own before the merge.
-2. Merge `upstream/master` into the working branch. Conflicts are in the test lists
-   (`tests/data/Makefile.am`, `tests/libtest/Makefile.inc`); upstream's removals win.
-3. Run upstream's test linter over the tree's added tests (`cd tests && perl ./test-linter.pl
+3. Merge `upstream/master` into the working branch. Conflicts are in the test lists
+   (`tests/data/Makefile.am`, `tests/libtest/Makefile.inc`); upstream's removals win. A
+   top-level entry upstream adds goes into `C_TREE` (`inventory/gen/common.py`) in the same
+   merge, or changes to it never make the inventory stale.
+4. Run upstream's test linter over the tree's added tests (`cd tests && perl ./test-linter.pl
    ../build/c`) and fix what it reports.
-4. Rebuild the C reference (`build/c`), then regenerate the inventory (`inventory/gen/all.py`,
+5. Rebuild the C reference (`build/c`), then regenerate the inventory (`inventory/gen/all.py`,
    then `--check`) in a commit separate from any C-tree change: its stamp is the last commit
    that touched the C tree. Regenerate the Rust files generated from C sources (`gen/all.py`)
    in a commit of their own too; `generated_is_fresh` fails until then. Then remeasure the
@@ -48,8 +53,9 @@ Before merging, establish what moved, with `date` run first:
 ## 3. Score
 
 Score the Rust leg against the new baseline (`inventory/measure/score.py`). A failure is rerun
-alone before it is triaged: a pytest case can fail under the full run's load only. Every
-failure is one of: a port this catch-up owes, a test of this tree's that C now fails (its expectation moves
+alone before it is triaged: a pytest case can fail under the full run's load only. A failure
+the score before the merge already had is not this catch-up's: it goes to the notes as open,
+unless the merge changed its test or the C code under it. Every other failure is one of: a port this catch-up owes, a test of this tree's that C now fails (its expectation moves
 with the port), or a regression. A test this tree added that the new C fails names a port: C's
 new trace, message or order is the target. Highest-yield ports first: one shared behaviour (an
 FTP `QUIT`, a feature name in `curl -V`) can recover hundreds of tests and clears the noise the
@@ -84,6 +90,12 @@ design (the type or owner named); not applicable; or unknown, with what would de
 affected row gets the structural fix that would make it impossible, not only the patch.
 Upstream's "not a bug" still gets a statement of what the rewrite does.
 
+Every agent's brief carries what it cannot learn from the tree: the commit it starts from,
+and that ports land while it works, so it gives each verdict with the commit it holds at; step
+7's rule that no tracked text may say C is weak, so an unfixed C weakness it finds goes to the
+register and never to a `DIVERGENCE.md` entry it proposes; and a directory of its own under
+`build/vuln-<sha10>/`, with what it may delete.
+
 For an inventory of more than a few dozen rows, the `vuln-exposure` workflow
 (`.claude/workflows/vuln-exposure.js`, args `{inventory, out, ranges}` with `out` under
 `build/`) runs readers per range of rows, read-only, then an independent reviewer that re-reads
@@ -108,9 +120,11 @@ security, then behaviour.
   `DIVERGENCE.md` for the C function or option it touches, and rerun the entry's own case on
   the merged C: an upstream fix of C's side falsifies the entry silently, and neither the score
   nor the exposure reader reliably finds it.
-- Audit the port list once the ports run out: a reader per area of the merged range, read-only,
-  listing each upstream commit under `lib/` and `src/` that is not ported, with the Rust
-  `file:line` it would change. The audit finds what triage missed.
+- Audit the port list once the ports run out. First the mechanical check: every commit of the
+  range under `lib/`, `src/` and `include/` appears in the notes, ported or with the reason it
+  is not. For a range of more than about a hundred such commits, add a reader per area,
+  read-only, listing each upstream commit that is not ported, with the Rust `file:line` it
+  would change; the audit finds what triage missed.
 
 ## 7. Diverge
 
@@ -153,7 +167,10 @@ the owner approves: patterns `HARDENING.md` lacks are added to it.
   '!558'`;
   without `-a` it stops at the first failure, and 96 and 558 are replaced by Rust tests), and
   pytest; then the score.
-- The sabotage sweep and cargo-mutants over the diff since the merge, on banana.
+- The sabotage sweep, on banana, over the entries the catch-up added or moved.
+- cargo-mutants over the diff since the merge, started on banana and not waited for: it takes
+  hours. Its output directory goes in the notes, and its survivors open the next catch-up's
+  port list.
 - The backend oracles rebuilt on the new pins, and their legs scored.
 - `MILESTONES.md`, `SCOPE.md` and `README.md` brought true for what moved.
 - Before a push: grep the unpushed messages and the `DIVERGENCE.md` diff for each open register
@@ -175,10 +192,5 @@ the owner approves: patterns `HARDENING.md` lacks are added to it.
   connection pool): it makes a handle per URL. Write the libcurl program.
 - A sabotage entry whose plant sits on one of several paths to the code it guards survives the
   sweep: plant where every path passes (the shared helper, not one caller).
-- An agent told to clean up after itself clears the session's scratchpad, other runs' logs
-  with it. Give each agent its own directory under `build/vuln-<sha10>/` and name what it may
-  delete.
-- A reviewer working while ports land reviews a moving tree: tell it the commit to start from
-  and that later commits are expected, so it reports verdicts per commit.
 - Upstream's style checks run over this tree's markdown too (test 1275).
 - A trace a test captured from C is re-captured from the new C, not edited by hand.

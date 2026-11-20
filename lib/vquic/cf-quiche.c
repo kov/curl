@@ -315,7 +315,6 @@ static void h3_data_done(struct Curl_cfilter *cf, struct Curl_easy *data)
   struct cf_quiche_ctx *ctx = cf->ctx;
   struct h3_stream_ctx *stream = H3_STREAM_CTX(ctx, data);
 
-  (void)cf;
   if(stream) {
     CURL_TRC_CF(data, cf, "[%" PRIu64 "] easy handle is done", stream->id);
     cf_quiche_stream_close(cf, data, stream);
@@ -897,7 +896,7 @@ static CURLcode recv_closed_stream(struct Curl_cfilter *cf,
       infof(data, "HTTP/3 stream %" PRIu64 " refused by server, try again "
             "on a new connection", stream->id);
       connclose(CF_CONN(cf)); /* do not use this anymore */
-      data->state.refused_stream = TRUE;
+      data->req.refused_stream = TRUE;
       return CURLE_RECV_ERROR; /* trigger Curl_retry_request() later */
     }
     else if(stream->resp_hds_complete && data->req.no_body) {

@@ -116,7 +116,6 @@ static void h3_tunnel_go_state(struct Curl_cfilter *cf,
                                struct Curl_easy *data)
 {
   VERBOSE(int64_t stream_id = ts->stream ? ts->stream->id : -1);
-  (void)cf;
 
   if(ts->state == new_state)
     return;
@@ -661,7 +660,6 @@ static ssize_t cf_h3_proxy_recv_closed_stream(struct Curl_cfilter *cf,
       infof(data, "HTTP/3 stream %" PRId64 " refused by server, try again "
             "on a new connection", stream->id);
       connclose(CF_CONN(cf));
-      data->state.refused_stream = TRUE;
       *err = CURLE_RECV_ERROR;
       goto out;
     }

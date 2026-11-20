@@ -127,7 +127,6 @@ static void h2_tunnel_go_state(struct Curl_cfilter *cf,
                                struct Curl_easy *data,
                                bool udp_tunnel)
 {
-  (void)cf;
   (void)udp_tunnel;
 
   if(ts->state == new_state)
@@ -224,7 +223,6 @@ static void drain_tunnel(struct Curl_cfilter *cf,
                          struct tunnel_stream *tunnel)
 {
   struct cf_h2_proxy_ctx *ctx = cf->ctx;
-  (void)cf;
   if(!tunnel->closed && !tunnel->reset &&
      (!Curl_bufq_is_empty(&ctx->tunnel.sendbuf) ||
       !Curl_bufq_is_empty(&ctx->tunnel.recvbuf)))
@@ -1376,13 +1374,10 @@ static bool proxy_h2_connisalive(struct Curl_cfilter *cf,
     return FALSE;
 
   if(*input_pending) {
-    /* This happens before we have sent off a request and the connection is
-       not in use by any other transfer, there should not be any data here,
-       only "protocol frames" */
     CURLcode result;
     size_t nread;
-
-    *input_pending = FALSE;
+    /* Try to consume the pending input to see if there is any real
+     * tunnel data or just HTTP/2 meta frames */
     result = Curl_cf_recv_bufq(cf->next, data, &ctx->inbufq, 0, &nread);
     if(!result) {
       if(proxy_h2_process_pending_input(cf, data))
@@ -1393,11 +1388,10 @@ static bool proxy_h2_connisalive(struct Curl_cfilter *cf,
       }
     }
     else if(result != CURLE_AGAIN) {
-      /* the read failed so let's say this is dead anyway */
-      alive = FALSE;
+      alive = FALSE; /* real error */
     }
   }
-
+  *input_pending = !Curl_bufq_is_empty(&ctx->tunnel.recvbuf);
   return alive;
 }
 

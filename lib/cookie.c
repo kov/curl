@@ -1501,7 +1501,7 @@ CURLcode Curl_cookie_getlist(struct Curl_easy *data,
     }
   }
 
-  if(matches) {
+  if(matches > 1) {
 #define NUM_ON_STACK 16
 
     /*
@@ -1726,9 +1726,19 @@ static CURLcode cookie_output(struct Curl_easy *data,
     curlx_free(array);
   }
 
+  /* Catch buffered and earlier write errors before publishing the jar. */
+  if(fflush(out) || ferror(out)) {
+    result = CURLE_WRITE_ERROR;
+    goto error;
+  }
+
   if(!use_stdout) {
-    curlx_fclose(out);
+    int close_result = curlx_fclose(out);
     out = NULL;
+    if(close_result) {
+      result = CURLE_WRITE_ERROR;
+      goto error;
+    }
     if(tempstore && curlx_rename(tempstore, filename)) {
       result = CURLE_WRITE_ERROR;
       goto error;

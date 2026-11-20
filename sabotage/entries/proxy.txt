@@ -1099,3 +1099,11 @@ features: test-util
                 kind == other_kind && peer == other_peer && same_creds(*creds, *other_creds)
 --- new
                 kind == other_kind && peer == other_peer
+
+=== an idle tunnel holding the origin's data has no input pending
+file: crates/curl-core/src/conn/h2proxy.rs
+witness: curl-core conn::h2proxy::tests::a_tunnel_holding_the_origin_s_data_has_input_pending
+--- old
+                input_pending: !self.tunnel.held().is_empty(),
+--- new
+                input_pending: false && !self.tunnel.held().is_empty(),

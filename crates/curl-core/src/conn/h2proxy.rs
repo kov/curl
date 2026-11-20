@@ -894,13 +894,14 @@ impl Part<Below<'_>> for H2Proxy {
     }
 
     /// Alive while the layers below are and the session is not over: what
-    /// an idle connection was sent, the proxy's frames, is read
+    /// an idle connection was sent, the proxy's frames, is read; input is
+    /// pending where the tunnel holds data the origin sent
     /// (`proxy_h2_connisalive`).
     fn is_alive(&mut self, cx: &mut dyn LayerCx, mut below: Below<'_>) -> Alive {
         if self.session.ended().is_some() {
             return Alive::Dead;
         }
-        match below.reborrow().alive(cx) {
+        let alive = match below.reborrow().alive(cx) {
             Alive::Dead => Alive::Dead,
             Alive::Alive {
                 input_pending: false,
@@ -933,6 +934,12 @@ impl Part<Below<'_>> for H2Proxy {
                     Alive::Dead
                 }
             }
+        };
+        match alive {
+            Alive::Alive { .. } => Alive::Alive {
+                input_pending: !self.tunnel.held().is_empty(),
+            },
+            other => other,
         }
     }
 

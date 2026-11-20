@@ -177,6 +177,38 @@ fn a_proxy_s_flood_of_frames_gives_the_others_their_turn() {
     }
 }
 
+/// An idle tunnel holding data the origin sent has input pending, which
+/// a connection about to be reused must not have, whether or not the
+/// layers below have any (`proxy_h2_connisalive`, upstream daeacceb47).
+#[test]
+fn a_tunnel_holding_the_origin_s_data_has_input_pending() {
+    use crate::conn::quic::tests::Scripted;
+    use crate::tls::Notes;
+    for held in [false, true] {
+        let mut p = H2Proxy::open(&crate::http2::fake::FakeH2, 100).unwrap();
+        p.tunnel.state = TunnelState::Established;
+        p.tunnel.stream = Some(StreamId(1));
+        if held {
+            let data = Event::Data {
+                stream: StreamId(1),
+                bytes: b"HTTP/1.1 200 OK\r\n\r\n",
+            };
+            assert_eq!(p.tunnel.heard(&data), Ok(Heard::Fine));
+        }
+        let socket = Scripted::default();
+        let mut layers: [Box<dyn Layer>; 1] = [Box::new(Under)];
+        let mut notes = Notes::default();
+        let alive = p.is_alive(&mut notes, Below::new(&mut layers, &socket));
+        assert_eq!(
+            alive,
+            Alive::Alive {
+                input_pending: held
+            },
+            "held {held}"
+        );
+    }
+}
+
 /// A tunnel whose session a fatal failure ended is dead, whatever is
 /// below, and shuts down at once, saying no goodbye it could not send
 /// (`Curl_ngh2_valid` in `cf_h2_proxy_is_alive` and

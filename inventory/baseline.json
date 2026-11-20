@@ -1,5 +1,5 @@
 {
- "c-commit": "d6bfa228a762110345cb7d2776440c6ffdf8229b",
+ "c-commit": "2e0ca8e120af6c977c27a6ba74b902bc395d2e51",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -28,10 +28,10 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2180,
-   "failed": 2,
-   "ok": 2133,
-   "ran": 2135,
+   "considered": 2181,
+   "failed": 1,
+   "ok": 2135,
+   "ran": 2136,
    "skipped": 45
   },
   "curl-version": [
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-17T13:16:43Z",
-   "started": "2026-11-17T13:14:14Z"
+   "finished": "2026-11-20T13:38:02Z",
+   "started": "2026-11-20T13:35:04Z"
   },
   "protocols": [
    "dict",
@@ -8503,7 +8503,7 @@
    },
    "3283": {
     "failed-parts": [
-     "output (log/8/stderr3283)"
+     "output (log/2/stderr3283)"
     ],
     "result": "failed"
    },
@@ -8791,10 +8791,7 @@
     "result": "ok"
    },
    "3700": {
-    "failed-parts": [
-     "protocol"
-    ],
-    "result": "failed"
+    "result": "ok"
    },
    "3701": {
     "result": "ok"
@@ -9173,6 +9170,9 @@
     "result": "skipped"
    },
    "4657": {
+    "result": "ok"
+   },
+   "4658": {
     "result": "ok"
    },
    "467": {

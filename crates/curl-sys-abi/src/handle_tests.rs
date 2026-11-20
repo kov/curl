@@ -689,11 +689,8 @@ fn a_range_is_kept() {
 }
 
 /// The speed limits refuse a negative rate, take 0 for none, and are
-/// copied with the handle. C's `curl_easy_duphandle` copies the rates
-/// but not the limiter they were set into, so its copy is not limited
-/// (it reads only `set.max_send_speed`, to cut a send): a 60000-byte
-/// download at 20000 a second takes 3 s on the handle and none on its
-/// copy.
+/// copied with the handle, whose transfers they limit, as C's
+/// `curl_easy_duphandle` copies them since upstream 73835a3ec3.
 #[test]
 fn speed_limits_are_kept_and_copied() {
     let c = curl_easy_init();

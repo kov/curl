@@ -245,13 +245,6 @@ so: weaknesses kept because C has them.
 
 ## Options C loses
 
-- **A duplicated handle keeps its speed limits.** `curl_easy_duphandle` copies
-  `CURLOPT_MAX_RECV_SPEED_LARGE` and `CURLOPT_MAX_SEND_SPEED_LARGE`, and its transfers are
-  limited by them. C copies the rates but not the limiters they were set into, so its copy's
-  transfers run unlimited but for the cut of each send to the send rate: a 60000-byte
-  download at 20000 bytes a second takes 3 s on a handle and none on its copy. Pinned by
-  `speed_limits_are_kept_and_copied` (`crates/curl-sys-abi/src/handle_tests.rs`).
-
 - **`--silent` keeps an upload of standard input without blocking quiet.** `curl -s -T . URL`
   draws no progress meter. To let the paused upload go on, C's tool sets `CURLOPT_NOPROGRESS`
   to 0 with a progress callback (`tool_readbusy_cb`, `src/tool_cb_rea.c`) that has the library

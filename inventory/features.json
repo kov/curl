@@ -1,5 +1,5 @@
 {
- "c-commit": "d6bfa228a762110345cb7d2776440c6ffdf8229b",
+ "c-commit": "2e0ca8e120af6c977c27a6ba74b902bc395d2e51",
  "data": {
   "backends": {
    "all": [
@@ -1479,7 +1479,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(USE_GNUTLS) || defined(USE_OPENSSL) || defined(USE_MBEDTLS) || defined(USE_WOLFSSL) || defined(USE_SCHANNEL) || defined(USE_RUSTLS)"
        ],
-       "line": 676
+       "line": 680
       }
      ],
      "macro": "USE_SSL"
@@ -1491,7 +1491,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(USE_LIBSSH2) || defined(USE_LIBSSH)"
        ],
-       "line": 703
+       "line": 707
       }
      ],
      "macro": "USE_SSH"
@@ -1503,7 +1503,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "!defined(CURL_DISABLE_NEGOTIATE_AUTH) && (defined(HAVE_GSSAPI) || defined(USE_WINDOWS_SSPI))"
        ],
-       "line": 693
+       "line": 697
       }
      ],
      "macro": "USE_SPNEGO"
@@ -1515,7 +1515,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "!defined(CURL_DISABLE_KERBEROS_AUTH) && (defined(HAVE_GSSAPI) || defined(USE_WINDOWS_SSPI))"
        ],
-       "line": 699
+       "line": 703
       }
      ],
      "macro": "USE_KERBEROS5"
@@ -1527,7 +1527,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(USE_NGHTTP2)"
        ],
-       "line": 1550
+       "line": 1554
       }
      ],
      "macro": "USE_HTTP2"
@@ -1539,7 +1539,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "(defined(USE_NGTCP2) && defined(USE_NGHTTP3)) || defined(USE_QUICHE)"
        ],
-       "line": 1558
+       "line": 1562
       }
      ],
      "macro": "USE_HTTP3"
@@ -1551,7 +1551,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(USE_RESOLV_THREADED)"
        ],
-       "line": 631
+       "line": 635
       }
      ],
      "macro": "USE_THREADS"
@@ -1563,7 +1563,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(HAVE_THREADS_POSIX) || defined(_WIN32)"
        ],
-       "line": 626
+       "line": 630
       }
      ],
      "macro": "USE_MUTEX"
@@ -1575,7 +1575,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(HAVE_LIBIDN2) && defined(HAVE_IDN2_H) && !defined(USE_WIN32_IDN) && !defined(USE_APPLE_IDN)"
        ],
-       "line": 666
+       "line": 670
       }
      ],
      "macro": "USE_LIBIDN2"
@@ -1587,7 +1587,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(USE_IPV6) && defined(HAVE_GETADDRINFO)"
        ],
-       "line": 643
+       "line": 647
       }
      ],
      "macro": "CURLRES_IPV6"
@@ -1599,7 +1599,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "!(defined(USE_IPV6) && defined(HAVE_GETADDRINFO)) && !(defined(USE_IPV6) && (defined(_WIN32) || defined(__CYGWIN__)))"
        ],
-       "line": 648
+       "line": 652
       }
      ],
      "macro": "CURLRES_IPV4"
@@ -1611,14 +1611,14 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "defined(USE_RESOLV_THREADED)"
        ],
-       "line": 652
+       "line": 656
       },
       {
        "conditions": [
         "!defined(HEADER_CURL_SETUP_H)",
         "!(defined(USE_RESOLV_THREADED)) && (defined(USE_RESOLV_ARES))"
        ],
-       "line": 654
+       "line": 658
       }
      ],
      "macro": "CURLRES_ASYNCH"
@@ -1630,7 +1630,7 @@
         "!defined(HEADER_CURL_SETUP_H)",
         "!(defined(USE_RESOLV_THREADED)) && !(defined(USE_RESOLV_ARES))"
        ],
-       "line": 659
+       "line": 663
       }
      ],
      "macro": "CURLRES_SYNCH"
@@ -1736,7 +1736,7 @@
       "enum": "GNUTLS",
       "file": "lib/vtls/gtls.c",
       "id": 2,
-      "line": 2256,
+      "line": 2255,
       "name": "gnutls",
       "symbol": "gnutls"
      },
@@ -1864,7 +1864,7 @@
       "enum": "OPENSSL",
       "file": "lib/vtls/openssl.c",
       "id": 1,
-      "line": 5620,
+      "line": 5619,
       "name": "openssl",
       "symbol": "openssl"
      },
@@ -1936,7 +1936,7 @@
       "enum": "SCHANNEL",
       "file": "lib/vtls/schannel.c",
       "id": 8,
-      "line": 2819,
+      "line": 2833,
       "name": "schannel",
       "symbol": "schannel"
      },
@@ -2002,32 +2002,32 @@
     "cmake-ssl-backend-list": [
      {
       "condition": "_ssl_enabled AND USE_SCHANNEL",
-      "line": 2113,
+      "line": 2106,
       "name": "Schannel"
      },
      {
       "condition": "_ssl_enabled AND USE_OPENSSL",
-      "line": 2114,
+      "line": 2107,
       "name": "${_openssl}"
      },
      {
       "condition": "_ssl_enabled AND USE_MBEDTLS",
-      "line": 2115,
+      "line": 2108,
       "name": "mbedTLS"
      },
      {
       "condition": "_ssl_enabled AND USE_WOLFSSL",
-      "line": 2116,
+      "line": 2109,
       "name": "wolfSSL"
      },
      {
       "condition": "_ssl_enabled AND USE_GNUTLS",
-      "line": 2117,
+      "line": 2110,
       "name": "GnuTLS"
      },
      {
       "condition": "_ssl_enabled AND USE_RUSTLS",
-      "line": 2118,
+      "line": 2111,
       "name": "Rustls"
      }
     ],
@@ -2198,7 +2198,7 @@
      "enclosing-conditions": [],
      "file": "CMakeLists.txt",
      "kind": "option",
-     "line": 2005,
+     "line": 1998,
      "name": "BUILD_EXAMPLES"
     },
     {
@@ -2258,7 +2258,7 @@
      "enclosing-conditions": [],
      "file": "CMakeLists.txt",
      "kind": "option",
-     "line": 1984,
+     "line": 1977,
      "name": "BUILD_TESTING"
     },
     {
@@ -3538,7 +3538,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4909,
+     "line": 4905,
      "name": "alt-svc",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3571,7 +3571,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 2844,
+     "line": 2840,
      "name": "apple-fast-udp",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3590,7 +3590,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2934,
+     "line": 2930,
      "name": "apple-idn",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3642,7 +3642,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4564,
+     "line": 4560,
      "name": "aws",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3661,7 +3661,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 1221,
+     "line": 1219,
      "name": "backtrace",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3675,7 +3675,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4467,
+     "line": 4463,
      "name": "basic-auth",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3694,7 +3694,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4486,
+     "line": 4482,
      "name": "bearer-auth",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3713,7 +3713,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4748,
+     "line": 4744,
      "name": "bindlocal",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3732,7 +3732,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 1559,
+     "line": 1557,
      "name": "brotli",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3808,7 +3808,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 2183,
+     "line": 2179,
      "name": "ca-native",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3846,7 +3846,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 2218,
+     "line": 2214,
      "name": "ca-search",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3865,7 +3865,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 2256,
+     "line": 2252,
      "name": "ca-search-safe",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3898,7 +3898,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4653,
+     "line": 4649,
      "name": "cookies",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3925,7 +3925,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4795,
+     "line": 4791,
      "name": "dateparse",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3963,7 +3963,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2099,
+     "line": 2097,
      "name": "default-ssl-backend",
      "rejected-at-configure-time": false,
      "switches": [
@@ -3982,7 +3982,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 972,
+     "line": 970,
      "name": "dict",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4001,7 +4001,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4505,
+     "line": 4501,
      "name": "digest-auth",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4020,7 +4020,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4871,
+     "line": 4867,
      "name": "dnsshuffle",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4039,7 +4039,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1157,
+     "line": 1155,
      "name": "docs",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4058,7 +4058,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4710,
+     "line": 4706,
      "name": "doh",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4096,7 +4096,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 832,
+     "line": 830,
      "name": "file",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4115,7 +4115,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 3976,
+     "line": 3972,
      "name": "fish-functions-dir",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4134,7 +4134,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4767,
+     "line": 4763,
      "name": "form-api",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4153,7 +4153,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 816,
+     "line": 814,
      "name": "ftp",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4172,7 +4172,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4890,
+     "line": 4886,
      "name": "get-easy-options",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4205,7 +4205,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1079,
+     "line": 1077,
      "name": "gopher",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4224,7 +4224,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 1886,
+     "line": 1884,
      "name": "gssapi",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4238,7 +4238,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1902,
+     "line": 1900,
      "name": "gssapi-apple",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4257,7 +4257,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 1872,
+     "line": 1870,
      "name": "gssapi-includes",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4271,7 +4271,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 1879,
+     "line": 1877,
      "name": "gssapi-libs",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4285,7 +4285,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4930,
+     "line": 4926,
      "name": "headers-api",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4304,7 +4304,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4952,
+     "line": 4948,
      "name": "hsts",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4323,7 +4323,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 786,
+     "line": 784,
      "name": "http",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4342,7 +4342,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4691,
+     "line": 4687,
      "name": "http-auth",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4361,7 +4361,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4583,
+     "line": 4579,
      "name": "httpsig",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4399,7 +4399,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1045,
+     "line": 1043,
      "name": "imap",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4418,7 +4418,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1113,
+     "line": 1111,
      "name": "init-mem-debug",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4437,7 +4437,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 848,
+     "line": 846,
      "name": "ipfs",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4456,7 +4456,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1747,
+     "line": 1745,
      "name": "ipv6",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4475,7 +4475,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4524,
+     "line": 4520,
      "name": "kerberos-auth",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4494,7 +4494,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2607,
+     "line": 2603,
      "name": "lber-lib",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4508,7 +4508,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 874,
+     "line": 872,
      "name": "ldap",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4527,7 +4527,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2616,
+     "line": 2612,
      "name": "ldap",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4546,7 +4546,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2602,
+     "line": 2598,
      "name": "ldap-lib",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4560,7 +4560,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 894,
+     "line": 892,
      "name": "ldaps",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4579,7 +4579,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1185,
+     "line": 1183,
      "name": "libcurl_option",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4598,7 +4598,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1206,
+     "line": 1204,
      "name": "libgcc",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4612,7 +4612,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2351,
+     "line": 2347,
      "name": "libgsasl",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4631,7 +4631,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2966,
+     "line": 2962,
      "name": "libidn2",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4650,7 +4650,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2416,
+     "line": 2412,
      "name": "libmetalink",
      "rejected-at-configure-time": true,
      "switches": []
@@ -4658,7 +4658,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2278,
+     "line": 2274,
      "name": "libpsl",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4677,7 +4677,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2432,
+     "line": 2428,
      "name": "libssh",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4696,7 +4696,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2425,
+     "line": 2421,
      "name": "libssh2",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4715,7 +4715,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 3858,
+     "line": 3854,
      "name": "libuv",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4734,7 +4734,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1134,
+     "line": 1132,
      "name": "manual",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4767,7 +4767,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4729,
+     "line": 4725,
      "name": "mime",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4786,7 +4786,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1096,
+     "line": 1094,
      "name": "mqtt",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4805,7 +4805,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4544,
+     "line": 4540,
      "name": "negotiate-auth",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4824,7 +4824,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4814,
+     "line": 4810,
      "name": "netrc",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4843,7 +4843,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 3108,
+     "line": 3104,
      "name": "nghttp2",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4862,7 +4862,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 3655,
+     "line": 3651,
      "name": "nghttp3",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4881,7 +4881,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 3206,
+     "line": 3202,
      "name": "ngtcp2",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4952,7 +4952,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1028,
+     "line": 1026,
      "name": "pop3",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4971,7 +4971,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4833,
+     "line": 4829,
      "name": "progress-meter",
      "rejected-at-configure-time": false,
      "switches": [
@@ -4990,7 +4990,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 954,
+     "line": 952,
      "name": "proxy",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5028,7 +5028,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 3760,
+     "line": 3756,
      "name": "quiche",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5061,7 +5061,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 927,
+     "line": 925,
      "name": "rtsp",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5108,7 +5108,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4852,
+     "line": 4848,
      "name": "sha512-256",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5127,7 +5127,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1062,
+     "line": 1060,
      "name": "smtp",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5146,7 +5146,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4672,
+     "line": 4668,
      "name": "socketpair",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5203,7 +5203,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4426,
+     "line": 4422,
      "name": "sspi",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5241,7 +5241,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 989,
+     "line": 987,
      "name": "telnet",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5358,7 +5358,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 1011,
+     "line": 1009,
      "name": "tftp",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5396,7 +5396,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4384,
+     "line": 4380,
      "name": "typecheck",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5415,7 +5415,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 762,
+     "line": 760,
      "name": "unity",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5434,7 +5434,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4612,
+     "line": 4608,
      "name": "unix-sockets",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5453,7 +5453,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 4405,
+     "line": 4401,
      "name": "verbose",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5472,7 +5472,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 2790,
+     "line": 2786,
      "name": "versioned-symbols",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5510,7 +5510,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 5052,
+     "line": 5048,
      "name": "websockets",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5548,7 +5548,7 @@
     {
      "file": "configure.ac",
      "kind": "enable",
-     "line": 2870,
+     "line": 2866,
      "name": "windows-unicode",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5567,7 +5567,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 2901,
+     "line": 2897,
      "name": "winidn",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5600,7 +5600,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 1437,
+     "line": 1435,
      "name": "zlib",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5619,7 +5619,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 3946,
+     "line": 3942,
      "name": "zsh-functions-dir",
      "rejected-at-configure-time": false,
      "switches": [
@@ -5638,7 +5638,7 @@
     {
      "file": "configure.ac",
      "kind": "with",
-     "line": 1657,
+     "line": 1655,
      "name": "zstd",
      "rejected-at-configure-time": false,
      "switches": [
@@ -6475,7 +6475,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/http.c:3083",
+      "lib/http.c:3055",
       "lib/url.c:1733"
      ],
      "scope": "lib",
@@ -6748,7 +6748,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/http_aws_sigv4.c:931",
+      "lib/http_aws_sigv4.c:938",
       "lib/http_httpsig.c:476"
      ],
      "scope": "lib",
@@ -6799,7 +6799,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/http.c:3444"
+      "lib/http.c:3416"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6819,7 +6819,7 @@
      "all-sites-in-DEBUGBUILD-conditional": false,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/openldap.c:712"
+      "lib/openldap.c:715"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 0,
@@ -6852,7 +6852,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/request.c:199"
+      "lib/request.c:201"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -7004,7 +7004,7 @@
      "all-sites-in-DEBUGBUILD-conditional": false,
      "documented-in": "none",
      "read-sites": [
-      "lib/vquic/vquic.c:1078"
+      "lib/vquic/vquic.c:1079"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 0,
@@ -7099,167 +7099,167 @@
    "cmake-feature-list": [
     {
      "condition": "NOT CURL_DISABLE_ALTSVC",
-     "line": 2080,
+     "line": 2073,
      "name": "alt-svc"
     },
     {
      "condition": "USE_APPLE_SECTRUST AND _ssl_enabled AND (USE_OPENSSL OR USE_GNUTLS)",
-     "line": 2102,
+     "line": 2095,
      "name": "AppleSecTrust"
     },
     {
      "condition": "USE_ARES AND USE_RESOLV_THREADED AND USE_HTTPSRR",
-     "line": 2073,
+     "line": 2066,
      "name": "asyn-rr"
     },
     {
      "condition": "USE_RESOLV_ARES OR USE_RESOLV_THREADED",
-     "line": 2072,
+     "line": 2065,
      "name": "AsynchDNS"
     },
     {
      "condition": "HAVE_BROTLI",
-     "line": 2069,
+     "line": 2062,
      "name": "brotli"
     },
     {
      "condition": "CURL_CA_EMBED_SET",
-     "line": 2100,
+     "line": 2093,
      "name": "CAcert"
     },
     {
      "condition": "ENABLE_DEBUG",
-     "line": 2096,
+     "line": 2089,
      "name": "Debug"
     },
     {
      "condition": "_ssl_enabled AND HAVE_ECH",
-     "line": 2097,
+     "line": 2090,
      "name": "ECH"
     },
     {
      "condition": "USE_GSASL",
-     "line": 2070,
+     "line": 2063,
      "name": "gsasl"
     },
     {
      "condition": "HAVE_GSSAPI",
-     "line": 2079,
+     "line": 2072,
      "name": "GSS-API"
     },
     {
      "condition": "NOT CURL_DISABLE_HSTS",
-     "line": 2081,
+     "line": 2074,
      "name": "HSTS"
     },
     {
      "condition": "USE_NGHTTP2",
-     "line": 2087,
+     "line": 2080,
      "name": "HTTP2"
     },
     {
      "condition": "USE_NGTCP2 OR USE_QUICHE",
-     "line": 2088,
+     "line": 2081,
      "name": "HTTP3"
     },
     {
      "condition": "NOT CURL_DISABLE_PROXY AND _ssl_enabled AND (USE_OPENSSL OR USE_GNUTLS OR USE_SCHANNEL OR USE_RUSTLS OR USE_MBEDTLS OR (USE_WOLFSSL AND HAVE_WOLFSSL_BIO_NEW))",
-     "line": 2091,
+     "line": 2084,
      "name": "HTTPS-proxy"
     },
     {
      "condition": "NOT CURL_DISABLE_HTTPSIG",
-     "line": 2082,
+     "line": 2075,
      "name": "HTTPSIG"
     },
     {
      "condition": "_ssl_enabled AND USE_HTTPSRR",
-     "line": 2098,
+     "line": 2091,
      "name": "HTTPSRR"
     },
     {
      "condition": "(HAVE_LIBIDN2 AND HAVE_IDN2_H) OR USE_WIN32_IDN OR USE_APPLE_IDN",
-     "line": 2074,
+     "line": 2067,
      "name": "IDN"
     },
     {
      "condition": "USE_IPV6",
-     "line": 2066,
+     "line": 2059,
      "name": "IPv6"
     },
     {
      "condition": "NOT CURL_DISABLE_KERBEROS_AUTH AND (HAVE_GSSAPI OR USE_WINDOWS_SSPI)",
-     "line": 2085,
+     "line": 2078,
      "name": "Kerberos"
     },
     {
      "condition": "(SIZEOF_CURL_OFF_T GREATER 4) AND ((SIZEOF_OFF_T GREATER 4) OR WIN32)",
-     "line": 2077,
+     "line": 2070,
      "name": "Largefile"
     },
     {
      "condition": "HAVE_LIBZ",
-     "line": 2068,
+     "line": 2061,
      "name": "libz"
     },
     {
      "condition": "CURL_WITH_MULTI_SSL",
-     "line": 2090,
+     "line": 2083,
      "name": "MultiSSL"
     },
     {
      "condition": "NOT USE_APPLE_SECTRUST AND _ssl_enabled AND CURL_CA_NATIVE",
-     "line": 2103,
+     "line": 2096,
      "name": "NativeCA"
     },
     {
      "condition": "USE_PROXY_HTTP3",
-     "line": 2089,
+     "line": 2082,
      "name": "proxy-HTTP3"
     },
     {
      "condition": "USE_LIBPSL",
-     "line": 2099,
+     "line": 2092,
      "name": "PSL"
     },
     {
      "condition": "NOT CURL_DISABLE_NEGOTIATE_AUTH AND (HAVE_GSSAPI OR USE_WINDOWS_SSPI)",
-     "line": 2083,
+     "line": 2076,
      "name": "SPNEGO"
     },
     {
      "condition": "_ssl_enabled",
-     "line": 2065,
+     "line": 2058,
      "name": "SSL"
     },
     {
      "condition": "_ssl_enabled AND USE_SSLS_EXPORT",
-     "line": 2101,
+     "line": 2094,
      "name": "SSLS-EXPORT"
     },
     {
      "condition": "USE_WINDOWS_SSPI",
-     "line": 2078,
+     "line": 2071,
      "name": "SSPI"
     },
     {
      "condition": "HAVE_ATOMIC OR HAVE_THREADS_POSIX OR WIN32",
-     "line": 2095,
+     "line": 2088,
      "name": "threadsafe"
     },
     {
      "condition": "ENABLE_UNICODE",
-     "line": 2094,
+     "line": 2087,
      "name": "Unicode"
     },
     {
      "condition": "USE_UNIX_SOCKETS",
-     "line": 2067,
+     "line": 2060,
      "name": "UnixSockets"
     },
     {
      "condition": "HAVE_ZSTD",
-     "line": 2071,
+     "line": 2064,
      "name": "zstd"
     }
    ],
@@ -8450,7 +8450,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 3
+     "tests": 4
     },
     {
      "name": "gopher",
@@ -10050,137 +10050,137 @@
    "cmake-protocol-list": [
     {
      "condition": "NOT CURL_DISABLE_HTTP",
-     "line": 2025,
+     "line": 2018,
      "name": "HTTP"
     },
     {
      "condition": "NOT CURL_DISABLE_HTTP AND _ssl_enabled",
-     "line": 2026,
+     "line": 2019,
      "name": "HTTPS"
     },
     {
      "condition": "NOT CURL_DISABLE_FTP",
-     "line": 2027,
+     "line": 2020,
      "name": "FTP"
     },
     {
      "condition": "NOT CURL_DISABLE_FTP AND _ssl_enabled",
-     "line": 2028,
+     "line": 2021,
      "name": "FTPS"
     },
     {
      "condition": "NOT CURL_DISABLE_FILE",
-     "line": 2029,
+     "line": 2022,
      "name": "FILE"
     },
     {
      "condition": "NOT CURL_DISABLE_TELNET",
-     "line": 2030,
+     "line": 2023,
      "name": "TELNET"
     },
     {
      "condition": "NOT CURL_DISABLE_LDAP",
-     "line": 2031,
+     "line": 2024,
      "name": "LDAP"
     },
     {
      "condition": "NOT CURL_DISABLE_LDAPS AND ((USE_OPENLDAP AND _ssl_enabled) OR (NOT USE_OPENLDAP AND HAVE_LDAP_SSL))",
-     "line": 2033,
+     "line": 2026,
      "name": "LDAPS"
     },
     {
      "condition": "NOT CURL_DISABLE_DICT",
-     "line": 2036,
+     "line": 2029,
      "name": "DICT"
     },
     {
      "condition": "NOT CURL_DISABLE_TFTP",
-     "line": 2037,
+     "line": 2030,
      "name": "TFTP"
     },
     {
      "condition": "NOT CURL_DISABLE_GOPHER",
-     "line": 2038,
+     "line": 2031,
      "name": "GOPHER"
     },
     {
      "condition": "NOT CURL_DISABLE_GOPHER AND _ssl_enabled",
-     "line": 2039,
+     "line": 2032,
      "name": "GOPHERS"
     },
     {
      "condition": "NOT CURL_DISABLE_POP3",
-     "line": 2040,
+     "line": 2033,
      "name": "POP3"
     },
     {
      "condition": "NOT CURL_DISABLE_POP3 AND _ssl_enabled",
-     "line": 2041,
+     "line": 2034,
      "name": "POP3S"
     },
     {
      "condition": "NOT CURL_DISABLE_IMAP",
-     "line": 2042,
+     "line": 2035,
      "name": "IMAP"
     },
     {
      "condition": "NOT CURL_DISABLE_IMAP AND _ssl_enabled",
-     "line": 2043,
+     "line": 2036,
      "name": "IMAPS"
     },
     {
      "condition": "NOT CURL_DISABLE_SMTP",
-     "line": 2044,
+     "line": 2037,
      "name": "SMTP"
     },
     {
      "condition": "NOT CURL_DISABLE_SMTP AND _ssl_enabled",
-     "line": 2045,
+     "line": 2038,
      "name": "SMTPS"
     },
     {
      "condition": "USE_LIBSSH2 OR USE_LIBSSH",
-     "line": 2046,
+     "line": 2039,
      "name": "SCP"
     },
     {
      "condition": "USE_LIBSSH2 OR USE_LIBSSH",
-     "line": 2047,
+     "line": 2040,
      "name": "SFTP"
     },
     {
      "condition": "NOT CURL_DISABLE_IPFS",
-     "line": 2048,
+     "line": 2041,
      "name": "IPFS"
     },
     {
      "condition": "NOT CURL_DISABLE_IPFS",
-     "line": 2049,
+     "line": 2042,
      "name": "IPNS"
     },
     {
      "condition": "NOT CURL_DISABLE_RTSP",
-     "line": 2050,
+     "line": 2043,
      "name": "RTSP"
     },
     {
      "condition": "NOT CURL_DISABLE_MQTT",
-     "line": 2051,
+     "line": 2044,
      "name": "MQTT"
     },
     {
      "condition": "NOT CURL_DISABLE_MQTT AND _ssl_enabled",
-     "line": 2052,
+     "line": 2045,
      "name": "MQTTS"
     },
     {
      "condition": "NOT CURL_DISABLE_WEBSOCKETS",
-     "line": 2053,
+     "line": 2046,
      "name": "WS"
     },
     {
      "condition": "NOT CURL_DISABLE_WEBSOCKETS AND _ssl_enabled",
-     "line": 2054,
+     "line": 2047,
      "name": "WSS"
     }
    ],
@@ -10277,7 +10277,7 @@
     "http": [
      {
       "file": "lib/http.c",
-      "line": 4974
+      "line": 4946
      }
     ],
     "imap": [
@@ -10293,7 +10293,7 @@
      },
      {
       "file": "lib/openldap.c",
-      "line": 1383
+      "line": 1386
      }
     ],
     "mqtt": [

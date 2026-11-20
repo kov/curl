@@ -1,19 +1,19 @@
 {
- "c-commit": "d6bfa228a762110345cb7d2776440c6ffdf8229b",
+ "c-commit": "2e0ca8e120af6c977c27a6ba74b902bc395d2e51",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
-   "crlf=headers": 1094,
+   "crlf=headers": 1095,
    "crlf=yes": 613,
    "delay=1": 3,
    "mode=text": 218,
    "mode=warn": 2,
    "nocheck=yes": 551,
-   "nonewline=yes": 170,
+   "nonewline=yes": 171,
    "option=binary-trace": 30,
    "option=force-output": 1,
    "option=no-include": 49,
-   "option=no-memdebug": 1,
+   "option=no-memdebug": 2,
    "option=no-output": 48,
    "option=no-output no-include": 6,
    "option=no-output,no-include": 97,
@@ -27,7 +27,7 @@
    "binary-trace": 30,
    "force-output": 1,
    "no-include": 49,
-   "no-memdebug": 1,
+   "no-memdebug": 2,
    "no-output": 48,
    "no-output no-include": 6,
    "no-output,no-include": 97,
@@ -40,7 +40,7 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2166,
+   "default_run_candidates": 2167,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
@@ -48,7 +48,7 @@
    "perf_programs": 14,
    "pytest_functions": 368,
    "server_keywords_mapped": 36,
-   "test_files": 2180,
+   "test_files": 2181,
    "tunit_programs": 6,
    "unit_programs": 83
   },
@@ -475,7 +475,7 @@
    "file": 19,
    "form-api": 10,
    "ftp": 23,
-   "getrlimit": 3,
+   "getrlimit": 4,
    "gopher": 1,
    "h2c": 7,
    "headers-api": 15,
@@ -714,6 +714,7 @@
    "--create-file-mode": 1,
    "--crlf": 4,
    "--data-binary": 5,
+   "--data-raw": 1,
    "--data-urlencode": 2,
    "--disable-eprt": 1,
    "--disable-epsv": 2,
@@ -924,7 +925,7 @@
    "HELP": 1,
    "HMAC": 1,
    "HSTS": 23,
-   "HTTP": 1103,
+   "HTTP": 1104,
    "HTTP 1xx response code": 1,
    "HTTP Basic": 3,
    "HTTP Basic auth": 36,
@@ -938,7 +939,7 @@
    "HTTP MIME POST": 7,
    "HTTP Negotiate auth (stub krb5)": 7,
    "HTTP Negotiate auth (stub ntlm)": 1,
-   "HTTP POST": 93,
+   "HTTP POST": 94,
    "HTTP PUT": 57,
    "HTTP added headers": 4,
    "HTTP auth in URL": 1,
@@ -1368,33 +1369,33 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2180
+   "testcases_listed": 2181
   },
   "part_counts": {
-   "client/command": 2070,
+   "client/command": 2074,
    "client/connectport": 1,
    "client/disable": 11,
    "client/features": 1037,
-   "client/file": 387,
+   "client/file": 388,
    "client/file1": 14,
    "client/file2": 17,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 14,
-   "client/name": 2180,
+   "client/name": 2181,
    "client/precheck": 27,
-   "client/server": 1925,
+   "client/server": 1926,
    "client/setenv": 207,
    "client/stdin": 88,
    "client/stdout": 5,
    "client/tool": 108,
    "client/verify": 1,
-   "info/keywords": 2180,
+   "info/keywords": 2181,
    "reply/connect": 78,
    "reply/connect1": 2,
    "reply/connect1000": 3,
    "reply/connect2": 1,
-   "reply/data": 1531,
+   "reply/data": 1532,
    "reply/data1": 132,
    "reply/data100": 5,
    "reply/data1000": 51,
@@ -1431,7 +1432,7 @@
    "verify/limits": 32,
    "verify/notexists": 47,
    "verify/postcheck": 28,
-   "verify/protocol": 1622,
+   "verify/protocol": 1623,
    "verify/proxy": 43,
    "verify/socks": 5,
    "verify/stderr": 67,
@@ -6338,13 +6339,14 @@
     ]
    },
    "lib1905": {
-    "bytes": 2626,
+    "bytes": 3981,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
      "curl_easy_setopt",
      "curl_global_cleanup",
      "curl_global_init",
+     "curl_mfprintf",
      "curl_multi_add_handle",
      "curl_multi_cleanup",
      "curl_multi_fdset",
@@ -6373,7 +6375,9 @@
     "file": "tests/libtest/lib1905.c",
     "generated": false,
     "includes": [
-     "first.h"
+     "first.h",
+     "signal.h",
+     "sys/resource.h"
     ],
     "kind": "libtest",
     "tests": [
@@ -11507,7 +11511,7 @@
     ]
    },
    "lib557": {
-    "bytes": 59376,
+    "bytes": 60151,
     "curl_api_calls": [
      "curl_free",
      "curl_mfprintf",
@@ -14392,7 +14396,7 @@
     ]
    },
    "unit1601": {
-    "bytes": 6824,
+    "bytes": 8993,
     "curl_api_calls": [
      "curl_global_cleanup"
     ],
@@ -14836,7 +14840,7 @@
     ]
    },
    "unit1620": {
-    "bytes": 5222,
+    "bytes": 6010,
     "curl_api_calls": [
      "curl_easy_duphandle",
      "curl_easy_setopt",
@@ -14846,6 +14850,8 @@
      "CURLEASY_MAGIC_NUMBER",
      "CURLE_OK",
      "CURLE_URL_MALFORMAT",
+     "CURLOPT_MAX_RECV_SPEED_LARGE",
+     "CURLOPT_MAX_SEND_SPEED_LARGE",
      "CURLOPT_NOBODY",
      "CURL_EASY_STR",
      "CURL_GLOBAL_ALL"
@@ -14998,7 +15004,7 @@
     ]
    },
    "unit1627": {
-    "bytes": 7570,
+    "bytes": 7598,
     "curl_api_calls": [
      "curl_mprintf",
      "curl_strequal"
@@ -16614,15 +16620,21 @@
     ]
    },
    "unit1699": {
-    "bytes": 2285,
+    "bytes": 3446,
     "curl_api_calls": [
+     "curl_easy_cleanup",
+     "curl_easy_init",
+     "curl_global_cleanup",
+     "curl_global_init",
      "curl_mfprintf"
     ],
     "curl_symbols": [
+     "CURLE_OK",
      "CURL_ARRAYSIZE",
      "CURL_DISABLE_ALTSVC",
      "CURL_DISABLE_COOKIES",
-     "CURL_DISABLE_HSTS"
+     "CURL_DISABLE_HSTS",
+     "CURL_GLOBAL_ALL"
     ],
     "entry": [
      "test_unit1699",
@@ -16638,6 +16650,12 @@
      "unitcheck.h"
     ],
     "internal_functions": {
+     "Curl_fopen": {
+      "files": [
+       "lib/curl_fopen.c"
+      ],
+      "unittest_exposed": false
+     },
      "dirslash": {
       "files": [
        "lib/curl_fopen.c"
@@ -16700,7 +16718,7 @@
     ]
    },
    "unit1979": {
-    "bytes": 4108,
+    "bytes": 4338,
     "curl_api_calls": [
      "curl_msnprintf"
     ],
@@ -17680,7 +17698,7 @@
     ]
    },
    "unit2641": {
-    "bytes": 10525,
+    "bytes": 7688,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
@@ -18399,13 +18417,14 @@
     ]
    },
    "unit3227": {
-    "bytes": 4600,
+    "bytes": 5088,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
      "curl_global_cleanup",
      "curl_mime_addpart",
      "curl_mime_data",
+     "curl_mime_filedata",
      "curl_mime_filename",
      "curl_mime_free",
      "curl_mime_init",
@@ -19017,13 +19036,20 @@
     ]
    },
    "unit3307": {
-    "bytes": 3284,
+    "bytes": 4177,
     "curl_api_calls": [
-     "curl_dbg_memlimit"
+     "curl_dbg_memlimit",
+     "curl_easy_cleanup",
+     "curl_easy_init",
+     "curl_global_cleanup",
+     "curl_global_init"
     ],
     "curl_symbols": [
+     "CURLE_FAILED_INIT",
      "CURLE_OUT_OF_MEMORY",
+     "CURLE_READ_ERROR",
      "CURL_CR_CLIENT",
+     "CURL_GLOBAL_ALL",
      "CURL_MEMDEBUG"
     ],
     "entry": [
@@ -19053,7 +19079,19 @@
       ],
       "unittest_exposed": false
      },
+     "Curl_creader_read": {
+      "files": [
+       "lib/sendf.c"
+      ],
+      "unittest_exposed": false
+     },
      "Curl_creader_set": {
+      "files": [
+       "lib/sendf.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_creader_set_fread": {
       "files": [
        "lib/sendf.c"
       ],
@@ -23940,7 +23978,7 @@
           "tls_max",
           "httpd"
          ],
-         "line": 82,
+         "line": 89,
          "name": "test_17_02_sslinfo_reconnect"
         },
         {
@@ -23959,7 +23997,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 120,
+         "line": 127,
          "name": "test_17_03_trailing_dot"
         },
         {
@@ -23978,7 +24016,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 133,
+         "line": 140,
          "name": "test_17_04_double_dot"
         },
         {
@@ -23997,7 +24035,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 151,
+         "line": 158,
          "name": "test_17_05_good_ip_addr"
         },
         {
@@ -24018,7 +24056,7 @@
           "nghttpx",
           "configures_nghttpx"
          ],
-         "line": 166,
+         "line": 173,
          "name": "test_17_05_bad_ip_addr"
         },
         {
@@ -24039,7 +24077,7 @@
           "nghttpx",
           "configures_nghttpx"
          ],
-         "line": 181,
+         "line": 188,
          "name": "test_17_05_very_bad_ip_addr"
         },
         {
@@ -24058,7 +24096,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 201,
+         "line": 208,
          "name": "test_17_06_localhost"
         },
         {
@@ -24081,7 +24119,7 @@
           "succeed13",
           "succeed12"
          ],
-         "line": 242,
+         "line": 249,
          "name": "test_17_07_ssl_ciphers"
         },
         {
@@ -24100,7 +24138,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 292,
+         "line": 299,
          "name": "test_17_08_cert_status"
         },
         {
@@ -24121,7 +24159,7 @@
           "min_arg",
           "max_arg"
          ],
-         "line": 314,
+         "line": 321,
          "name": "test_17_09_ssl_min_max"
         },
         {
@@ -24146,7 +24184,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 378,
+         "line": 385,
          "name": "test_17_10_h3_session_reuse"
         },
         {
@@ -24165,7 +24203,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 409,
+         "line": 416,
          "name": "test_17_11_wrong_host"
         },
         {
@@ -24184,7 +24222,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 418,
+         "line": 425,
          "name": "test_17_12_insecure"
         },
         {
@@ -24202,7 +24240,7 @@
           "proto",
           "httpd"
          ],
-         "line": 430,
+         "line": 437,
          "name": "test_17_14_expired_cert"
         },
         {
@@ -24219,7 +24257,7 @@
           "env",
           "httpd"
          ],
-         "line": 452,
+         "line": 459,
          "name": "test_17_15_session_export"
         },
         {
@@ -24229,7 +24267,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 486,
+         "line": 493,
          "name": "test_17_16_h3_ignore_ciphers12"
         },
         {
@@ -24238,7 +24276,7 @@
           "env",
           "httpd"
          ],
-         "line": 499,
+         "line": 506,
          "name": "test_17_17_h1_ignore_ciphers13"
         },
         {
@@ -24260,7 +24298,7 @@
           "ciphers",
           "success"
          ],
-         "line": 527,
+         "line": 534,
          "name": "test_17_18_gnutls_priority"
         },
         {
@@ -24279,7 +24317,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 556,
+         "line": 563,
          "name": "test_17_19_wrong_pin"
         },
         {
@@ -24298,7 +24336,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 568,
+         "line": 575,
          "name": "test_17_20_correct_pin"
         },
         {
@@ -24315,7 +24353,7 @@
           "env",
           "httpd"
          ],
-         "line": 580,
+         "line": 587,
          "name": "test_17_21_capath_valid"
         },
         {
@@ -24332,7 +24370,7 @@
           "env",
           "httpd"
          ],
-         "line": 593,
+         "line": 600,
          "name": "test_17_22_capath_invalid"
         },
         {
@@ -24351,7 +24389,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 606,
+         "line": 613,
          "name": "test_17_23_embedded_zero"
         },
         {
@@ -24370,7 +24408,7 @@
           "httpd",
           "nghttpx"
          ],
-         "line": 619,
+         "line": 626,
          "name": "test_17_24_embedded_zero_wildcard"
         }
        ]
@@ -27585,7 +27623,7 @@
    }
   },
   "runner_counts": {
-   "curl": 1672,
+   "curl": 1673,
    "libtest": 390,
    "perl-script": 28,
    "tunit": 6,
@@ -27611,7 +27649,7 @@
    "gopher": 5,
    "gopher-ipv6": 1,
    "gophers": 1,
-   "http": 1198,
+   "http": 1199,
    "http-ipv6": 15,
    "http-proxy": 51,
    "http-unix": 2,
@@ -57692,8 +57730,8 @@
     "attr_values": [
      "option=no-include"
     ],
-    "bytes": 597,
-    "command": "file://localhost%FILE_PWD/%LOGDIR/result%TESTNUMBER.txt -T %LOGDIR/upload%TESTNUMBER.txt",
+    "bytes": 631,
+    "command": "file://localhost%FILE_PWD/%LOGDIR/result%TESTNUMBER.txt -T %LOGDIR/upload%TESTNUMBER.txt --limit-rate 1",
     "command_option": "no-include",
     "command_type": null,
     "disable": [],
@@ -57707,7 +57745,7 @@
     ],
     "killserver": [],
     "macros": [],
-    "name": "\"upload\" with file:// overwriting existing",
+    "name": "file:// upload overwrites existing file despite a speed limit",
     "non_ascii": false,
     "nul": false,
     "number": 1490,
@@ -69471,8 +69509,8 @@
    },
    {
     "attr_values": [],
-    "bytes": 210,
-    "command": "",
+    "bytes": 261,
+    "command": "%LOGDIR/unit%TESTNUMBER-state",
     "command_option": null,
     "command_type": null,
     "disable": [],
@@ -69481,7 +69519,7 @@
     "features": [
      "unittest"
     ],
-    "has_command": false,
+    "has_command": true,
     "has_precheck": false,
     "keywords": [
      "curl_fopen",
@@ -69494,6 +69532,7 @@
     "nul": false,
     "number": 1699,
     "parts": [
+     "client/command",
      "client/features",
      "client/name",
      "info/keywords"
@@ -69506,7 +69545,10 @@
     "setenv": [],
     "tool": null,
     "tool_name": "unit1699",
-    "variables": []
+    "variables": [
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
    },
    {
     "attr_values": [
@@ -73575,17 +73617,19 @@
     "attr_values": [
      "crlf=headers",
      "mode=text",
-     "nocheck=yes"
+     "nocheck=yes",
+     "option=no-memdebug"
     ],
-    "bytes": 1025,
-    "command": "http://%HOSTIP:%HTTPPORT/we/want/%TESTNUMBER %LOGDIR/cookies%TESTNUMBER",
-    "command_option": null,
+    "bytes": 1079,
+    "command": "http://%HOSTIP:%HTTPPORT/we/want/%TESTNUMBER %LOGDIR/cookies%TESTNUMBER %LOGDIR/cookies%TESTNUMBER-failed",
+    "command_option": "no-memdebug",
     "command_type": null,
     "disable": [],
     "eol": "lf",
     "errorcode": null,
     "features": [
-     "cookies"
+     "cookies",
+     "getrlimit"
     ],
     "has_command": true,
     "has_precheck": false,
@@ -73597,7 +73641,7 @@
     ],
     "killserver": [],
     "macros": [],
-    "name": "CURLOPT_COOKIELIST set to \"FLUSH\" of a shared cookie object",
+    "name": "Shared cookie FLUSH and cookie jar write failure",
     "non_ascii": false,
     "nul": false,
     "number": 1905,
@@ -101816,8 +101860,8 @@
    },
    {
     "attr_values": [],
-    "bytes": 242,
-    "command": "",
+    "bytes": 325,
+    "command": "%LOGDIR/mime%TESTNUMBER",
     "command_option": null,
     "command_type": null,
     "disable": [],
@@ -101826,7 +101870,7 @@
     "features": [
      "unittest"
     ],
-    "has_command": false,
+    "has_command": true,
     "has_precheck": false,
     "keywords": [
      "SMTP",
@@ -101835,12 +101879,14 @@
     ],
     "killserver": [],
     "macros": [],
-    "name": "reject CR and LF in mail mime part name and filename",
+    "name": "MIME headers and file read errors",
     "non_ascii": false,
     "nul": false,
     "number": 3227,
     "parts": [
+     "client/command",
      "client/features",
+     "client/file",
      "client/name",
      "info/keywords"
     ],
@@ -101852,7 +101898,10 @@
     "setenv": [],
     "tool": null,
     "tool_name": "unit3227",
-    "variables": []
+    "variables": [
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
    },
    {
     "attr_values": [
@@ -104564,8 +104613,8 @@
    },
    {
     "attr_values": [],
-    "bytes": 274,
-    "command": "",
+    "bytes": 313,
+    "command": "%LOGDIR/read%TESTNUMBER",
     "command_option": null,
     "command_type": null,
     "disable": [],
@@ -104576,7 +104625,7 @@
      "TrackMemory",
      "unittest"
     ],
-    "has_command": false,
+    "has_command": true,
     "has_precheck": false,
     "keywords": [
      "CRLF",
@@ -104585,11 +104634,12 @@
     ],
     "killserver": [],
     "macros": [],
-    "name": "Reader stack cleanup after line-conversion allocation failure",
+    "name": "Reader file errors and cleanup after allocation failure",
     "non_ascii": false,
     "nul": false,
     "number": 3307,
     "parts": [
+     "client/command",
      "client/features",
      "client/name",
      "info/keywords"
@@ -104602,7 +104652,10 @@
     "setenv": [],
     "tool": null,
     "tool_name": "unit3307",
-    "variables": []
+    "variables": [
+     "LOGDIR",
+     "TESTNUMBER"
+    ]
    },
    {
     "attr_values": [
@@ -115421,6 +115474,59 @@
      "TESTNUMBER0002",
      "TESTNUMBER0003",
      "TESTNUMBER0004",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nonewline=yes"
+    ],
+    "bytes": 754,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER --data-raw \"@at@at@\" --data-raw \"x=@y\"",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--data-raw",
+     "HTTP",
+     "HTTP POST"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--data-raw does not treat @ as a file reference",
+    "non_ascii": false,
+    "nul": false,
+    "number": 4658,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
      "VERSION"
     ]
    },
@@ -148982,12 +149088,12 @@
    "GTT": 1,
    "H2CVER": 2,
    "HOST6IP": 22,
-   "HOSTIP": 1866,
+   "HOSTIP": 1867,
    "HTTP2PORT": 5,
    "HTTP2TLSPORT": 6,
    "HTTP3PORT": 4,
    "HTTP6PORT": 14,
-   "HTTPPORT": 1178,
+   "HTTPPORT": 1179,
    "HTTPS": 3,
    "HTTPSPORT": 72,
    "HTTPSPROXYPORT": 7,
@@ -148995,7 +149101,7 @@
    "IMAPPORT": 68,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 681,
+   "LOGDIR": 684,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -149033,7 +149139,7 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1841,
+   "TESTNUMBER": 1845,
    "TESTNUMBER000": 1,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
@@ -149057,7 +149163,7 @@
    "TFTPPORT": 18,
    "USER": 63,
    "VALUE2": 2,
-   "VERSION": 896
+   "VERSION": 897
   }
  },
  "generated-by": "inventory/gen/tests.py",
@@ -150642,6 +150748,7 @@
   "tests/data/test465",
   "tests/data/test4656",
   "tests/data/test4657",
+  "tests/data/test4658",
   "tests/data/test467",
   "tests/data/test468",
   "tests/data/test469",

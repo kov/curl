@@ -1,5 +1,5 @@
 {
- "c-commit": "d6bfa228a762110345cb7d2776440c6ffdf8229b",
+ "c-commit": "2e0ca8e120af6c977c27a6ba74b902bc395d2e51",
  "data": {
   "discrepancies": [
    {
@@ -13930,7 +13930,7 @@
      "name": "QLOGDIR",
      "read_in_tool": [],
      "string_literal_in_lib": [
-      "lib/vquic/vquic.c:1078"
+      "lib/vquic/vquic.c:1079"
      ],
      "where": "lib"
     },

@@ -1,5 +1,5 @@
 {
- "c-commit": "d6bfa228a762110345cb7d2776440c6ffdf8229b",
+ "c-commit": "2e0ca8e120af6c977c27a6ba74b902bc395d2e51",
  "data": {
   "c-tree-version": "8.23.1-DEV",
   "counts": {
@@ -1088,15 +1088,15 @@
     "title": "HTTP/2 prior knowledge over proxy"
    },
    {
-    "first-paragraph": "If the server sends HTTP/2 frames (like for example an HTTP/2 PING frame) to\ncurl while the connection is held in curl's connection pool, the socket is\nfound readable when considered for reuse and that makes curl think it is dead\nand then it is closed and a new connection gets created instead.",
-    "heading": "HTTP/2 frames while in the connection pool kill reuse",
+    "first-paragraph": "If the server sends HTTP/2 frames (like for example an HTTP/2 PING frame) to\ncurl while the connection is held in curl's connection pool, these frames\nare not received nor answered. This may cause the server to consider the\nconnection dead.",
+    "heading": "HTTP/2 frames while in the connection pool are not answered",
     "kind": "entry",
     "line": 445,
     "ordinal": "13.2",
     "path": "docs/KNOWN_BUGS.md",
     "section": "HTTP/2",
     "status": "hypothesis",
-    "title": "HTTP/2 frames while in the connection pool kill reuse"
+    "title": "HTTP/2 frames while in the connection pool are not answered"
    },
    {
     "first-paragraph": "Infinite retries with 2 parallel requests on one connection receiving `GOAWAY`\nwith `ENHANCE_YOUR_CALM` error code.",
@@ -1110,21 +1110,10 @@
     "title": "`ENHANCE_YOUR_CALM` causes infinite retries"
    },
    {
-    "first-paragraph": "It has been observed that by making the speed limit less accurate we could\nimprove this performance. (by reverting\n[db5c9f4f9e0779](https://github.com/curl/curl/commit/db5c9f4f9e0779b49624752b135281a0717b277b))\nCan we find a golden middle ground?",
-    "heading": "HTTP/2 + TLS spends a lot of time in recv",
-    "kind": "entry",
-    "line": 462,
-    "ordinal": "13.4",
-    "path": "docs/KNOWN_BUGS.md",
-    "section": "HTTP/2",
-    "status": "hypothesis",
-    "title": "HTTP/2 + TLS spends a lot of time in recv"
-   },
-   {
     "first-paragraph": "[curl issue 7695](https://github.com/curl/curl/issues/7695)",
     "heading": "connection migration does not work",
     "kind": "entry",
-    "line": 474,
+    "line": 464,
     "ordinal": "14.1",
     "path": "docs/KNOWN_BUGS.md",
     "section": "HTTP/3",
@@ -1135,12 +1124,23 @@
     "first-paragraph": "The transfer ends with error \"QUIC connection is draining\".",
     "heading": "quiche: QUIC connection is draining",
     "kind": "entry",
-    "line": 478,
+    "line": 468,
     "ordinal": "14.2",
     "path": "docs/KNOWN_BUGS.md",
     "section": "HTTP/3",
     "status": "hypothesis",
     "title": "quiche: QUIC connection is draining"
+   },
+   {
+    "first-paragraph": "When a QUIC connection's last transfer is done/removed, any pending ACK\nof server packets may not be sent. The reason is, similar to the HTTP/2\nbug listed above, there is no active maintenance of idle connections in\nthe pool. QUIC implementations like `ngtcp2` use delays to combine\noutstanding ACK replies for better performance and that delay no longer\ntriggers for idle connections in the pool.",
+    "heading": "no ACK while in connection pool",
+    "kind": "entry",
+    "line": 474,
+    "ordinal": "14.3",
+    "path": "docs/KNOWN_BUGS.md",
+    "section": "HTTP/3",
+    "status": "hypothesis",
+    "title": "no ACK while in connection pool"
    },
    {
     "first-paragraph": "This is an incomplete list of known risks when running and using curl and\nlibcurl.",

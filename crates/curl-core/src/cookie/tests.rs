@@ -156,6 +156,49 @@ fn read_as_comment(line: &[u8]) -> bool {
     line.first() == Some(&b'#') && line.contains(&b'\t')
 }
 
+/// A cookie line as reading it back keeps it: a domain that still starts
+/// with a dot, kept from a line whose domain had two, with no tail match,
+/// is written with its dot and read back without it, one dot being all
+/// the reader skips (`parse_netscape`). C's build does the same: `..x`
+/// loaded is written `.x`, which loaded is written `x`.
+fn as_read_back(line: &[u8]) -> Vec<u8> {
+    let (http_only, rest) = match line.strip_prefix(b"#HttpOnly_") {
+        Some(rest) => (&b"#HttpOnly_"[..], rest),
+        None => (&b""[..], line),
+    };
+    let Some(tab) = rest.iter().position(|&b| b == b'\t') else {
+        return line.to_vec();
+    };
+    let (domain, after) = rest.split_at(tab);
+    let tail_match = after[1..].split(|&b| b == b'\t').next();
+    let domain = match domain.strip_prefix(b".") {
+        Some(rest) if tail_match == Some(b"FALSE") => rest,
+        _ => domain,
+    };
+    [http_only, domain, after].concat()
+}
+
+/// A domain given with two dots and no tail match keeps one, is written
+/// with it, and loses it when read back, as C's build does (measured
+/// 2026-11-20 with `-b` and `-c`).
+#[test]
+fn a_domain_with_two_dots_loses_one_each_load() {
+    let written = |file: &[u8]| {
+        let mut jar = Jar::default();
+        jar.load(file, false, true, None, NOW, &mut 0, |_| {})
+            .unwrap();
+        let mut out = Vec::new();
+        jar.file(NOW, &mut out).unwrap();
+        out
+    };
+    let once = written(b"..cTRUE\t/\tFALSE\t0\ta\t1\n");
+    let line = b".cTRUE\tFALSE\t/\tFALSE\t0\ta\t1";
+    assert!(sorted_lines(&once).contains(&&line[..]));
+    let twice = written(&once);
+    assert!(sorted_lines(&twice).contains(&&line[1..]));
+    assert_eq!(as_read_back(line), line[1..].to_vec());
+}
+
 /// A cookie whose domain starts with `#` is written as C writes it, and
 /// read back as C reads it: as a comment, that cookie alone lost.
 #[test]
@@ -1359,8 +1402,14 @@ proptest! {
             back.load(&out, false, true, suffixes, now, &mut 0, |s| drop(said_text(s))).unwrap();
             let mut again = Vec::new();
             back.file(now, &mut again).unwrap();
-            let kept: Vec<&[u8]> = sorted_lines(&out).into_iter().filter(|l| !read_as_comment(l)).collect();
-            prop_assert_eq!(sorted_lines(&again), kept);
+            let mut kept: Vec<Vec<u8>> = sorted_lines(&out)
+                .into_iter()
+                .filter(|l| !read_as_comment(l))
+                .map(as_read_back)
+                .collect();
+            kept.sort_unstable();
+            let again: Vec<Vec<u8>> = sorted_lines(&again).into_iter().map(<[u8]>::to_vec).collect();
+            prop_assert_eq!(again, kept);
         }
     }
 }

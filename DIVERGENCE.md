@@ -965,6 +965,12 @@ so: weaknesses kept because C has them.
   answers both. Measured 2026-11-19 against C's release build: both return 0 there. Pinned by
   `a_lock_function_s_call_during_upkeep_is_refused`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
+- **A reset handle's debug function reaches that handle alone.** `curl_easy_reset` of a handle
+  in a multi traces the resolves it still keeps as it lets them go, and lends its debug
+  function that handle only. A `curl_easy_getinfo` of another handle of the same multi from
+  there gets `CURLE_RECURSIVE_API_CALL`; C answers it. Measured 2026-11-20 against C's debug
+  build with c-ares: 0 there. Pinned by `a_reset_s_debug_function_asking_another_handle_is_refused`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
 
 ## Connections C reuses whatever they were set up with
 

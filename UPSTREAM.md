@@ -160,6 +160,12 @@ the owner approves: patterns `HARDENING.md` lacks are added to it.
   entry's identifiers, with a positive control; the reports sent.
 - What is left undone listed for the next catch-up; the rest of the `build/` notes deleted,
   their conclusions landed.
+- A new private page for the owner, published last: the CVE analysis as it stands after this
+  catch-up. It carries the previous page's open rows forward with what changed for each, adds
+  this catch-up's rows with their counts per verdict, the affected list with the fixes
+  proposed, the decisions waiting on the owner and the patterns, and links the previous page.
+  Each catch-up gets a page of its own, so the earlier ones stay as they were; its link goes in
+  the notes the next catch-up starts from.
 
 ## Pitfalls
 

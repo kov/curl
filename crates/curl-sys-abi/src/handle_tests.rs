@@ -3110,6 +3110,38 @@ fn a_rewind_asks_the_application() {
     );
 }
 
+/// A stream the default read function reads that fails is a read error,
+/// not the end of the upload, whatever it read first (upstream
+/// 012d38d519): a directory opened as a file fails every read.
+#[cfg(unix)]
+#[test]
+fn a_stream_the_default_reader_fails_on_fails_the_upload() {
+    let mut buf = [0 as c_char; 256];
+    // SAFETY: a C string; the stream is closed below.
+    let stream = unsafe { libc::fopen(c"/".as_ptr(), c"r".as_ptr()) };
+    assert!(!stream.is_null());
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_UPLOAD, 1);
+    long(c, ffi::CURLOPT_TIMEOUT, 5);
+    pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr());
+    pointer(c, ffi::CURLOPT_READDATA, stream);
+    options(c, |o| {
+        o.script = Some(Script::new(vec![Piece::SendAll]).unwrap());
+    });
+    // SAFETY: a live handle, then not used again.
+    let code = unsafe { curl_easy_perform(c) };
+    // SAFETY: as above.
+    unsafe { curl_easy_cleanup(c) };
+    close(stream);
+    // SAFETY: the shim ends what it writes with a zero byte.
+    let why = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_str().unwrap();
+    assert_eq!(
+        (code, why),
+        (ffi::CURLE_READ_ERROR, "Error reading upload data")
+    );
+}
+
 /// A stream the read and seek functions share: the seek's answer, the
 /// offsets it was asked for, and how many reads there were.
 struct Stream {

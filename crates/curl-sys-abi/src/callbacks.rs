@@ -833,6 +833,15 @@ impl ReadHandler for Adapter {
             // SAFETY: `buf` has room for `len` bytes.
             unsafe { f(buf.as_mut_ptr().cast(), 1, len, ccb.read_data) }
         });
+        // The default reads a `FILE *`, whose error is a read error,
+        // whatever it read before it (`use_fread`).
+        if ccb.read.is_none() && !ccb.read_data.is_null() {
+            // SAFETY: with no read function set, the application gave
+            // `read_data` as a `FILE *`, which `fread` just read.
+            if unsafe { libc::ferror(ccb.read_data.cast()) } != 0 {
+                return Read::Fail;
+            }
+        }
         if got == CURL_READFUNC_ABORT as usize {
             Read::Abort
         } else if got == CURL_READFUNC_PAUSE as usize {

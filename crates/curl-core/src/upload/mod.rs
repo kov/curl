@@ -368,7 +368,7 @@ impl Upload {
                 Err(self.fail(trace::fail(cx, ErrorKind::AbortedByCallback, why)))
             }
             Read::Fail => {
-                let why = format_args!("client read function failed");
+                let why = format_args!("Error reading upload data");
                 Err(self.fail(trace::fail(cx, ErrorKind::ReadError, why)))
             }
             Read::Pause if !pausable => {

@@ -696,3 +696,11 @@ witness: curl-sys-abi tls_tests::a_connection_serves_only_transfers_with_the_sam
         self.easy().tls().ctx.map(|f| SetupKey::new(f as usize))
 --- new
         self.easy().tls().ctx.map(|f| SetupKey::new(f as usize)).filter(|_| false)
+
+=== a stream the default reader fails on ends the upload
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::a_stream_the_default_reader_fails_on_fails_the_upload
+--- old
+            if unsafe { libc::ferror(ccb.read_data.cast()) } != 0 {
+--- new
+            if false && unsafe { libc::ferror(ccb.read_data.cast()) } != 0 {

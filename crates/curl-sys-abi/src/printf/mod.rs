@@ -706,18 +706,23 @@ mod tests {
         }};
     }
 
-    /// Precision zeros as many as C's buffer holds, and the conversions
-    /// around them, as C's `curl_msnprintf` writes them (each checked
-    /// against libcurl's output).
+    /// Precision zeros as many as the precision asks, past C's work
+    /// buffer too, the width counting them, and the conversions around
+    /// them, as C's `curl_msnprintf` writes them (each checked against
+    /// libcurl's output; test 557).
     #[test]
     fn numbers_are_written_as_c_writes_them() {
         let zeros = |n: usize| "0".repeat(n);
-        assert_eq!(snprintf!(c"%.330d", 7 as c_int), (325, zeros(324) + "7"));
-        assert_eq!(snprintf!(c"%.400u", 7 as c_uint), (325, zeros(324) + "7"));
-        assert_eq!(snprintf!(c"%#.400o", 8 as c_uint), (325, zeros(323) + "10"));
+        assert_eq!(snprintf!(c"%.330d", 7 as c_int), (330, zeros(329) + "7"));
+        assert_eq!(snprintf!(c"%.400u", 7 as c_uint), (400, zeros(399) + "7"));
+        assert_eq!(snprintf!(c"%#.400o", 8 as c_uint), (400, zeros(398) + "10"));
+        assert_eq!(
+            snprintf!(c"%410.400d", 7 as c_int),
+            (410, " ".repeat(10) + &zeros(399) + "7")
+        );
         assert_eq!(
             snprintf!(c"%#.330x|", 255 as c_uint),
-            (328, format!("0x{}ff|", zeros(323)))
+            (333, format!("0x{}ff|", zeros(328)))
         );
         assert_eq!(
             snprintf!(c"%-340.323d|", -12 as c_int),
@@ -798,26 +803,28 @@ mod tests {
 
     /// A precision near `INT_MAX` takes the width below what an `int`
     /// holds once the digits, sign and prefix are taken from it: the
-    /// width is spent, and the number written with the zeros the work buffer
-    /// holds, no padding.
+    /// width is spent, no padding is written, and the number's zeros run
+    /// to the end of the buffer. C's build agrees where its `int` width
+    /// does not wrap (the last three); for `%#.2147483647x` it wraps and
+    /// pads with spaces.
     #[test]
     fn a_precision_near_int_max_spends_the_width() {
-        let zeros = "0".repeat(324);
+        let zeros = |n: usize| "0".repeat(n);
         assert_eq!(
             snprintf!(c"%#.2147483647x", 1 as c_uint),
-            (327, format!("0x{zeros}1"))
+            (2047, format!("0x{}", zeros(2045)))
         );
         assert_eq!(
             snprintf!(c"%+.2147483647d", 7 as c_int),
-            (326, format!("+{zeros}7"))
+            (2047, format!("+{}", zeros(2046)))
         );
         assert_eq!(
             snprintf!(c"%-#.2147483647xEND", 1 as c_uint),
-            (330, format!("0x{zeros}1END"))
+            (2047, format!("0x{}", zeros(2045)))
         );
         assert_eq!(
             snprintf!(c"% #.2147483647o|", 8 as c_uint),
-            (327, format!(" {}10|", "0".repeat(323)))
+            (2047, format!(" {}", zeros(2046)))
         );
     }
 

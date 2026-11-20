@@ -641,10 +641,8 @@ fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> R
     }
 
     // Digits are written backwards from the end of `work`: at most 22, in
-    // octal, and the alternate form's `0`. C writes the precision's zeros
-    // before them in its buffer of `WORK` bytes, as many as fit; here they
-    // are counted and padded.
-    const WORK: usize = BUFFSIZE - 1;
+    // octal, and the alternate form's `0`. The precision's zeros are
+    // padded before them, as many as it asks (`stream_pad`).
     let mut work = [0u8; 23];
     let mut w = work.len();
     // Decimal apart: a constant divisor is a multiplication.
@@ -669,11 +667,8 @@ fn out_number<S: Sink>(o: &mut Out<'_, S>, p: &Props, unum: u64, snum: i64) -> R
         work[w] = b'0';
         width -= 1;
     }
-    let mut zeros = 0;
-    if prec > 0 {
-        width -= prec;
-        zeros = prec.min((WORK - (work.len() - w)) as i64);
-    }
+    let zeros = prec.max(0);
+    width -= zeros;
     if alt && base == 16 {
         width -= 2;
     }

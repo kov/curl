@@ -263,6 +263,10 @@ fn parse_flags(fmt: &[u8], pos: &mut usize, dollar: Dollar) -> Option<Spec> {
                 }
             }
             b'0'..=b'9' => {
+                // A width is `*` or a number, never both (`PFMT_WIDTH`).
+                if s.flags & WIDTHPARAM != 0 {
+                    return None;
+                }
                 if c == b'0' && s.flags & LEFT == 0 {
                     s.flags |= PAD_NIL;
                 }

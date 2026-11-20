@@ -81,3 +81,11 @@ witness: curl-sys-abi printf::tests::output_past_int_max_counts_minus_one
 --- new
                 self.done = self.done.wrapping_add(n as i32);
                 return Err(Stop);
+
+=== a width both star and digits takes the digits
+file: crates/curl-sys-abi/src/printf/format.rs
+witness: curl-sys-abi printf::tests::a_width_both_star_and_digits_is_refused
+--- old
+                if s.flags & WIDTHPARAM != 0 {
+--- new
+                if false && s.flags & WIDTHPARAM != 0 {

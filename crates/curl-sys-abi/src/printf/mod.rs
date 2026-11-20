@@ -801,6 +801,29 @@ mod tests {
         }
     }
 
+    /// A width given as `*` and then digits is refused, as test 557
+    /// expects of C since upstream fb7b4b8a5a: the digits once overwrote
+    /// the `*`, and were then taken for an argument's index.
+    #[test]
+    fn a_width_both_star_and_digits_is_refused() {
+        assert_eq!(
+            snprintf!(c"%*128d", 1 as c_int, 2 as c_int),
+            (0, String::new())
+        );
+        assert_eq!(
+            snprintf!(c"%*2147483647d", 1 as c_int, 2 as c_int),
+            (0, String::new())
+        );
+        assert_eq!(
+            snprintf!(c"%*1d|", 1 as c_int, 2 as c_int),
+            (0, String::new())
+        );
+        assert_eq!(
+            snprintf!(c"%*2d|", 3 as c_int, 2 as c_int),
+            (0, String::new())
+        );
+    }
+
     /// A precision near `INT_MAX` takes the width below what an `int`
     /// holds once the digits, sign and prefix are taken from it: the
     /// width is spent, no padding is written, and the number's zeros run

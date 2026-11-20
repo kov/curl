@@ -168,3 +168,11 @@ witness: curl-ldap openldap::tests::notices_sent_unasked_are_let_go
             unsafe { sys::ldap_msgdelete(ld, sys::LDAP_RES_UNSOLICITED) };
 --- new
             let _ = sys::LDAP_RES_UNSOLICITED;
+
+=== a connection only made over LDAP's TLS goes on
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::a_connection_only_made_over_tls_is_refused
+--- old
+        if done && cx.easy().options().connect_only != ConnectOnly::No {
+--- new
+        if false && done && cx.easy().options().connect_only != ConnectOnly::No {

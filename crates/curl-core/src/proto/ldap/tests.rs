@@ -1310,6 +1310,37 @@ fn a_session_not_made_fails_the_connect() {
     );
 }
 
+/// A connection only made, over TLS, is refused once its handshake is
+/// done, as C's `oldap_ssl_connect` refuses it since upstream e17e3aa616:
+/// such a connection is for HTTP and WebSocket alone.
+#[test]
+fn a_connection_only_made_over_tls_is_refused() {
+    use crate::tls::fake::FakeTls;
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().unwrap()));
+    let tls = crate::libraries::Library::Static(backend as &dyn crate::tls::TlsBackend);
+    let ran = run_over(
+        "ldaps://127.0.0.1:PORT/dc=x",
+        Some(tls),
+        welcome_then(2),
+        |_| {},
+        |o| o.connect_only = crate::options::ConnectOnly::Yes,
+    );
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::BadFunctionArgument),
+        "{}",
+        ran.said
+    );
+    assert_eq!(backend.log().handshakes, 1, "the connection's TLS");
+    assert!(
+        !ran.calls
+            .iter()
+            .any(|c| c.starts_with("search") || c.starts_with("bind")),
+        "{:?}",
+        ran.calls
+    );
+}
+
 /// `ldaps:` needs a TLS library as well as LDAP's: without one it is
 /// disabled; with one the session is made once TLS is on, for `ldaps`.
 #[test]

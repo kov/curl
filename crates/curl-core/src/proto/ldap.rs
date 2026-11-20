@@ -27,7 +27,7 @@ use crate::ldap::{
 };
 use crate::multi::Host;
 use crate::multi::state::StepCx;
-use crate::options::UseSsl;
+use crate::options::{ConnectOnly, UseSsl};
 use crate::trace;
 use crate::url::{GetOptions, Part, Url};
 
@@ -669,6 +669,11 @@ impl Request {
         };
         let (lc, _) = ldap_of(lease);
         Self::to(cx, lc, state);
+        // A connection only made is for HTTP and WebSocket alone; over
+        // TLS, C refuses it here (`oldap_ssl_connect`).
+        if done && cx.easy().options().connect_only != ConnectOnly::No {
+            return Err(ErrorKind::BadFunctionArgument);
+        }
         // C puts its layer on each time; once is the same to the library.
         if done && !lc.session.uses_wire() && lc.session.use_wire().is_err() {
             return Err(ErrorKind::FailedInit);

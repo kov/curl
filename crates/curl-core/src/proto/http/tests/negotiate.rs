@@ -1492,9 +1492,8 @@ fn a_tunnel_redialed_keeps_negotiating() {
 }
 
 /// The origin's Negotiate through a tunnel goes with the request the
-/// tunnel carries. C's `CONNECT` makes the origin's token too and sends
-/// it nowhere, leaving the origin unauthenticated: a difference recorded
-/// in DIVERGENCE.md.
+/// tunnel carries, and the `CONNECT` makes none of it, as C's has not
+/// since upstream 61e4aa432d.
 #[test]
 fn the_origin_s_token_goes_through_the_tunnel() {
     let (gss, libraries) = scripted();

@@ -220,4 +220,5 @@ test newly skipped:
   `build/target`. `DESIGN.md` describes its architecture.
 - `inventory/` is generated and committed.
 
-Paths that belong to the rewrite are listed in `NOT_C_TREE` in `inventory/gen/common.py`.
+The C tree is the top-level entries listed in `C_TREE` in `inventory/gen/common.py`; everything
+else belongs to the rewrite.

@@ -20,13 +20,22 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "inventory"
 
 
-# Paths that belong to the rewrite, not to the C reference tree. Commits
-# touching only these do not change what the inventory describes.
-NOT_C_TREE = ["inventory", "CLAUDE.md", "SCOPE.md", "DESIGN.md", "ENGINE.md", "DIVERGENCE.md",
-              "MILESTONES.md", "HARDENING.md", "UPSTREAM.md", ".claude", "Cargo.toml",
-              "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates",
-              "clippy.toml", "gen", "sabotage", "README", "README.md",
-              "README.upstream", "README.upstream.md"]
+# The C reference tree: upstream's top-level entries, but for its READMEs,
+# which the rewrite's replace (upstream's are kept as README.upstream*).
+# Everything else belongs to the rewrite, so a file it adds never reads as
+# a change to the C tree. An entry upstream adds at the top is added here
+# with the merge that brings it (UPSTREAM.md).
+C_TREE = [".clang-tidy.yml", ".dir-locals.el", ".editorconfig", ".git-blame-ignore-revs",
+          ".gitattributes", ".github", ".gitignore", ".mailmap", "CHANGES.md", "CMake",
+          "CMakeLists.txt", "COPYING", "Dockerfile", "GIT-INFO.md", "LICENSES", "Makefile.am",
+          "RELEASE-NOTES", "REUSE.toml", "SECURITY.md", "acinclude.m4", "appveyor.sh",
+          "appveyor.yml", "configure.ac", "curl-config.in", "docs", "include", "lib",
+          "libcurl.pc.in", "m4", "projects", "scripts", "src", "tests"]
+
+
+def rewrite_paths(*also_c):
+    """The git pathspec of everything outside the C tree and `also_c`."""
+    return [".", *(f":(exclude){p}" for p in [*C_TREE, *also_c])]
 
 
 def c_commit():
@@ -35,14 +44,11 @@ def c_commit():
 
     Suffixed with `-dirty` when tracked C tree files have local changes.
     """
-    excludes = [f":(exclude){p}" for p in NOT_C_TREE]
-
     def git(*args):
         return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
                               capture_output=True, text=True).stdout.strip()
-    sha = git("log", "-1", "--format=%H", "--", ".", *excludes)
-    dirty = git("status", "--porcelain", "--untracked-files=no", "--", ".",
-                *excludes)
+    sha = git("log", "-1", "--format=%H", "--", *C_TREE)
+    dirty = git("status", "--porcelain", "--untracked-files=no", "--", *C_TREE)
     return sha + ("-dirty" if dirty else "")
 
 

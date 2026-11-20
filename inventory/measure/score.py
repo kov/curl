@@ -543,7 +543,7 @@ def main():
         assemble(leg, args.lib, args.tool)
         check_loading(leg, args.tool)
         dirty = git("status", "--porcelain", "--untracked-files=no", "--",
-                    *(p for p in common.NOT_C_TREE if p != "inventory"))
+                    *common.rewrite_paths("inventory"))
         meta = suite.run(leg.build, leg.results, environment(leg))
         (leg.results / "run.json").write_text(json.dumps({
             "c-commit": commit,

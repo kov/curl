@@ -620,13 +620,9 @@ witness: curl-openssl a_read_meeting_a_ticket_returns_wanting_more
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_store_made_for_the_context_handler_is_its_own
 --- old
-    fn store_cache(&self) -> Option<&TlsShared> {
-        self.shared.for_store(&self.crypto)
-    }
+            self.0.as_ref().filter(|_| !crypto.has_libctx())
 --- new
-    fn store_cache(&self) -> Option<&TlsShared> {
-        None
-    }
+            self.0.as_ref().filter(|_| !crypto.has_libctx() && false)
 
 === a store a context handler may have changed is kept for the multi
 file: crates/curl-openssl/src/cache.rs

@@ -971,6 +971,79 @@ mod tests {
         );
     }
 
+    /// A name the server says does not exist ends the resolve with c-ares's
+    /// status for it and c-ares's words; one found has none.
+    #[test]
+    #[allow(clippy::disallowed_macros)]
+    fn a_failed_resolve_says_its_status_and_why() {
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let servers = format!("127.0.0.1:{}", server.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1500];
+            while let Ok((n, peer)) = server.recv_from(&mut buf) {
+                // The question's id, a response saying no such name.
+                let mut reply = vec![buf[0], buf[1], 0x81, 0x83, 0, 1, 0, 0, 0, 0, 0, 0];
+                reply.extend_from_slice(&buf[12..n]);
+                let _sent = server.send_to(&reply, peer);
+            }
+        });
+        let options = DnsOptions {
+            servers: Some(servers.into_bytes()),
+            ..DnsOptions::NONE_SET
+        };
+        let mut say = |_: &[&[u8]]| {};
+        let mut r = ARES
+            .resolve(ask(b"x.test", Some(Family::V4), &options), &mut say)
+            .unwrap();
+        for _ in 0..200 {
+            if r.ongoing().0 == 0 {
+                break;
+            }
+            r.perform().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(r.answer().expect("answered").is_err());
+        assert_eq!(r.status(), sys::ENOTFOUND);
+        assert_eq!(r.explain(), Some("Domain name not found"));
+        let options = DnsOptions::NONE_SET;
+        let mut r = ARES
+            .resolve(ask(b"localhost", Some(Family::V4), &options), &mut say)
+            .unwrap();
+        for _ in 0..100 {
+            if r.ongoing().0 == 0 {
+                break;
+            }
+            r.perform().unwrap();
+        }
+        assert!(r.answer().expect("answered").is_ok());
+        assert_eq!((r.status(), r.explain()), (sys::SUCCESS, None));
+    }
+
+    /// A resolve let go of while its query waits closes the channel, and
+    /// with it the socket the query waited on.
+    #[test]
+    #[allow(clippy::disallowed_macros)]
+    fn a_resolve_let_go_of_closes_its_socket() {
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let servers = format!("127.0.0.1:{}", silent.local_addr().unwrap().port());
+        let options = DnsOptions {
+            servers: Some(servers.into_bytes()),
+            ..DnsOptions::NONE_SET
+        };
+        let closed = SocketsClosed::new().unwrap();
+        let mut say = |_: &[&[u8]]| {};
+        let asked = DnsAsk {
+            closed: &closed,
+            ..ask(b"x.test", Some(Family::V4), &options)
+        };
+        let mut r = ARES.resolve(asked, &mut say).unwrap();
+        r.perform().unwrap();
+        assert_eq!(r.wants().len(), 1, "it waits on its server's socket");
+        assert!(closed.take().is_empty());
+        drop(r);
+        assert_eq!(closed.take().len(), 1, "the socket closed with the channel");
+    }
+
     /// Looked at again while its query waits, a resolve keeps the entry of
     /// the socket it waits on rather than making it anew: how often the
     /// transfer looks does not change what it allocates.

@@ -33,13 +33,6 @@ so: weaknesses kept because C has them.
   truncated. Pinned by `a_listing_failing_partway_fails`
   (`crates/curl-core/src/proto/file/tests.rs`).
 
-- **A send limit does not cut a `file://` upload short.** The whole body is written to the file
-  whatever `CURLOPT_MAX_SEND_SPEED_LARGE` or `--limit-rate` says. C's `file_upload`
-  (`lib/file.c`) reads through the limit, takes the read it refuses once a second's worth is
-  spent for the end of the body, and succeeds with the file truncated: `curl --limit-rate 1000
-  -T` a 5000-byte file to `file://` writes 1000 bytes and exits 0. Pinned by
-  `a_send_limit_does_not_cut_an_upload_short` (`crates/curl-core/src/proto/file/tests.rs`).
-
 - **An environment variable whose copy cannot be allocated is out of memory.** The proxy
   variables (`http_proxy`, `NO_PROXY` and the rest), `NETRC` and `HOME` for the `.netrc` file,
   and the tool's `CURL_HOME`, `XDG_CONFIG_HOME` and `IPFS_PATH` are copied as they are read; a

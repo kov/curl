@@ -915,10 +915,7 @@ fn an_upload_is_timed_piece_by_piece() {
 }
 
 /// A send limit does not cut an upload to a file short: the file gets the
-/// whole body. C's `file_upload` reads through the limit, takes the read
-/// it refuses once the limit is spent for the end, and succeeds with the
-/// file truncated to a step's worth (`curl --limit-rate 1000 -T 5k
-/// file://` writes 1000 bytes and exits 0).
+/// whole body, as C's `file_upload` writes it since upstream d999cc6c6b.
 #[test]
 fn a_send_limit_does_not_cut_an_upload_short() {
     let s = Scratch::new("uplimit");

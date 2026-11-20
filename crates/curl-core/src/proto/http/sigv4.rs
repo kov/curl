@@ -580,19 +580,24 @@ fn percent(b: u8, out: &mut Vec<u8>) -> Result<(), OutOfMemory> {
 }
 
 /// The path as signed (`canon_path`): encoded, but for its slashes and
-/// unreserved bytes, unless `encode` is off; `/` if empty.
+/// unreserved bytes; with `encode` off, an escape already in it is kept
+/// rather than encoded again (`%2F` stays, a lone `%` is `%25`); `/` if
+/// empty.
 pub(super) fn canon_path(path: &[u8], encode: bool, out: &mut Vec<u8>) -> Result<(), OutOfMemory> {
     let start = out.len();
-    if encode {
-        for &b in path {
-            if unreserved(b) || b == b'/' {
-                out.try_push(b)?;
-            } else {
-                percent(b, out)?;
+    let mut rest = path;
+    while let Some(&b) = rest.first() {
+        match rest {
+            // Not encoded twice: an escape is kept as it is.
+            [b'%', h, l, ..] if !encode && h.is_ascii_hexdigit() && l.is_ascii_hexdigit() => {
+                out.try_extend_from_slice(&rest[..3])?;
+                rest = &rest[3..];
+                continue;
             }
+            _ if unreserved(b) || b == b'/' => out.try_push(b)?,
+            _ => percent(b, out)?,
         }
-    } else {
-        out.try_extend_from_slice(path)?;
+        rest = &rest[1..];
     }
     if out.len() == start {
         out.try_push(b'/')?;

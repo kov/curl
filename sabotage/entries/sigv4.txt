@@ -130,3 +130,11 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
     if rest == 0 {
 --- new
     if rest & !ffi::CURLAUTH_AWS_SIGV4 == 0 {
+
+=== an escape in a path not encoded twice is encoded again
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::unit1979_canonical_paths
+--- old
+            [b'%', h, l, ..] if !encode && h.is_ascii_hexdigit() && l.is_ascii_hexdigit() => {
+--- new
+            [b'%', h, l, ..] if false && !encode && h.is_ascii_hexdigit() && l.is_ascii_hexdigit() => {

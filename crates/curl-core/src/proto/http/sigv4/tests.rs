@@ -15,7 +15,7 @@ fn path(p: &str, encode: bool) -> String {
 #[test]
 fn unit1979_canonical_paths() {
     let rows = crate::c_source::table("tests/unit/unit1979.c", "testcases[] =", |c| panic!("{c}"));
-    assert_eq!(rows.len(), 11);
+    assert_eq!(rows.len(), 13);
     for row in &rows {
         let [name, encode, given, want] = row.group() else {
             panic!("{row:?}")

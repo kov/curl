@@ -29,7 +29,7 @@ witness: curl-core proto::http::tests::hsts::the_application_reads_and_writes_th
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::hsts::an_http_url_to_a_host_kept_goes_over_https
 --- old
-            result = crate::save::replace(&file, &text);
+            result = crate::save::replace(&file, &text, crate::save::OnClose::Ignored);
 --- new
             let _ = (file, text);
 

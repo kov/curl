@@ -1181,7 +1181,7 @@ impl Easy {
         let (to_file, every) = taken?;
         let mut result = Ok(());
         if let Some((file, text)) = to_file {
-            result = crate::save::replace(&file, &text);
+            result = crate::save::replace(&file, &text, crate::save::OnClose::Ignored);
         }
         if let (Some(writer), Some(every)) = (&options.write, every) {
             // The writer's verdict is the save's, as C's is.
@@ -1241,7 +1241,7 @@ impl Easy {
         let file = file.or(alt_svc.file());
         match file {
             Some(file) if alt_svc.ctrl().file == CacheFile::ReadWrite && !file.is_empty() => {
-                crate::save::replace(file, &alt_svc.text()?)
+                crate::save::replace(file, &alt_svc.text()?, crate::save::OnClose::Ignored)
             }
             _ => Ok(()),
         }
@@ -1583,7 +1583,7 @@ fn write_jar(jar: &mut Jar, to: &[u8]) -> Result<(), SaveError> {
         out.flush()?;
         return Ok(());
     }
-    save::replace(to, &text)
+    save::replace(to, &text, save::OnClose::Fails)
 }
 
 fn oom(_: OutOfMemory) -> ErrorKind {

@@ -41,3 +41,11 @@ witness: curl-core save::tests::the_first_file_is_written_beside_its_target
         return None;
     }
     Some(&path[..n])
+
+=== a save that cannot make its file empties the target first
+file: crates/curl-core/src/save.rs
+witness: curl-core save::tests::a_save_that_cannot_make_its_file_leaves_the_target_as_it_was
+--- old
+        let file = fs::open_write(&target, Keep::Everything, 0o666)?;
+--- new
+        let file = fs::open_write(&target, Keep::Nothing, 0o666)?;

@@ -4958,7 +4958,9 @@ then `Cookies::send` if the gate trusts the origin and the application sends no 
 its own, under C's 8190-byte cap. A `Set-Cookie:` line is stored before it is traced, 50 a
 request at most. `Easy::save_cookies` writes the jar to `save_to` (`Curl_flush_cookies`):
 the shim at `curl_easy_cleanup` and FLUSH, the tool as each transfer's handle is done with.
-Files are written whole and renamed into place (`save::replace`, C's `Curl_fopen`). Domains
+Files are written whole and renamed into place (`save::replace`, C's `Curl_fopen`), the target
+kept as it was until then; a failed close fails the jar's save (`OnClose::Fails`) and not the
+HSTS or alt-svc cache's, as in C. Domains
 are checked against public suffixes through `cookie::PublicSuffixes`, a list `curl-psl` makes
 over libpsl, reached through `Libraries::psl` (`psl::SuffixLibrary`). The list is the multi's
 (`Caches::psl`), or the share's where it keeps `Kind::Psl` (`psl::PslCache`, C's `data->psl`):

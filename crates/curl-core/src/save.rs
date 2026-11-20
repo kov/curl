@@ -43,30 +43,54 @@ pub enum CacheFile {
     ReadOnly,
 }
 
+/// What a file's failed close does to its save: a write the kernel held
+/// may fail only then.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OnClose {
+    /// The save fails, and the target keeps what it held (the cookie jar,
+    /// `cookie_output`).
+    Fails,
+    /// The save goes on as if it had closed (HSTS and alt-svc, whose
+    /// `fclose` C does not check).
+    Ignored,
+}
+
+impl OnClose {
+    fn close(self, file: std::fs::File) -> Result<(), SaveError> {
+        match (self, fs::close(file)) {
+            (OnClose::Fails, Err(_)) => Err(SaveError::Write),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// How many random letters and digits name the file written first.
 const TEMP_NAME: usize = 40;
 
 /// Write `text` to the file at `path`, in place of what it held. On
 /// Windows C looks at no file there first: it always writes a new one
 /// and renames it over, in text mode.
-pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
+pub(crate) fn replace(path: &[u8], text: &[u8], on_close: OnClose) -> Result<(), SaveError> {
     let target = c_path(path)?;
-    // Opened as C's `fopen(.., "w")` opens it: emptied, made if missing.
+    // Opened as C's `fopen(.., "a")` opens it: made if missing, what it
+    // holds kept until the new file replaces it; a file that is not a
+    // regular one is written after what it holds.
     #[cfg(unix)]
     let was = {
-        let file = fs::open_write(&target, Keep::Nothing, 0o666)?;
+        let file = fs::open_write(&target, Keep::Everything, 0o666)?;
         let was = file.metadata()?;
         if !was.is_file() {
-            Writer::new(file, Mode::TEXT).write_all(text)?;
-            return Ok(());
+            let mut out = Writer::new(file, Mode::TEXT);
+            out.write_all(text)?;
+            return on_close.close(out.into_inner());
         }
         was
     };
     let temp = temp_beside(path)?;
     #[cfg(unix)]
-    let written = write_temp(&temp, &was, text);
+    let written = write_temp(&temp, &was, text, on_close);
     #[cfg(windows)]
-    let written = write_temp(&temp, text);
+    let written = write_temp(&temp, text, on_close);
     let renamed = written.and_then(|()| Ok(fs::rename(&temp, &target)?));
     if renamed.is_err() {
         let _ = fs::remove(&temp);
@@ -96,7 +120,12 @@ fn temp_beside(path: &[u8]) -> Result<std::ffi::CString, SaveError> {
 /// Write `text` to a new file at `temp`, with the mode of the file it is
 /// to replace if the same user and group own them.
 #[cfg(unix)]
-fn write_temp(temp: &CStr, was: &std::fs::Metadata, text: &[u8]) -> Result<(), SaveError> {
+fn write_temp(
+    temp: &CStr,
+    was: &std::fs::Metadata,
+    text: &[u8],
+    on_close: OnClose,
+) -> Result<(), SaveError> {
     let file = fs::open_write(temp, Keep::Absent, 0o600)?;
     let new = file.metadata()?;
     if new.uid() == was.uid() && new.gid() == was.gid() {
@@ -106,18 +135,20 @@ fn write_temp(temp: &CStr, was: &std::fs::Metadata, text: &[u8]) -> Result<(), S
             .ok();
     }
     // As text (`FOPEN_WRITETEXT`), which is binary here.
-    Writer::new(file, Mode::TEXT).write_all(text)?;
-    Ok(())
+    let mut out = Writer::new(file, Mode::TEXT);
+    out.write_all(text)?;
+    on_close.close(out.into_inner())
 }
 
 /// Write `text` to a new file at `temp`, readable and writable, in text
 /// mode as C's `fdopen(.., "wt")` writes it: each line feed after a
 /// carriage return. Windows has no mode to copy (`HAVE_FCHMOD`).
 #[cfg(windows)]
-fn write_temp(temp: &CStr, text: &[u8]) -> Result<(), SaveError> {
+fn write_temp(temp: &CStr, text: &[u8], on_close: OnClose) -> Result<(), SaveError> {
     let file = fs::open_write(temp, Keep::Absent, 0o600)?;
-    Writer::new(file, Mode::TEXT).write_all(text)?;
-    Ok(())
+    let mut out = Writer::new(file, Mode::TEXT);
+    out.write_all(text)?;
+    on_close.close(out.into_inner())
 }
 
 /// What C puts after the directory a temporary file is made in
@@ -222,12 +253,17 @@ mod tests {
         let dir = scratch("text");
         let path = dir.join("jar");
         std::fs::write(&path, b"old and longer").unwrap();
-        replace(path.as_os_str().as_encoded_bytes(), b"a\nb\n\nc").unwrap();
+        replace(
+            path.as_os_str().as_encoded_bytes(),
+            b"a\nb\n\nc",
+            OnClose::Fails,
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"a\r\nb\r\n\r\nc");
         // Nothing is left beside it.
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(replace(b"", b"new"), Err(SaveError::Write));
+        assert_eq!(replace(b"", b"new", OnClose::Fails), Err(SaveError::Write));
     }
 
     #[cfg(unix)]
@@ -239,7 +275,7 @@ mod tests {
         std::fs::write(&path, b"old and longer").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
         let bytes = path.as_os_str().as_encoded_bytes();
-        replace(bytes, b"new").unwrap();
+        replace(bytes, b"new", OnClose::Fails).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         let mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
         assert_eq!(mode, 0o640);
@@ -262,12 +298,12 @@ mod tests {
         let path = dir.join("jar");
         std::fs::write(&path, b"old").unwrap();
         let before = std::fs::metadata(&path).unwrap().ino();
-        replace(path.as_os_str().as_encoded_bytes(), b"new").unwrap();
+        replace(path.as_os_str().as_encoded_bytes(), b"new", OnClose::Fails).unwrap();
         assert_ne!(std::fs::metadata(&path).unwrap().ino(), before);
         std::fs::remove_dir_all(&dir).unwrap();
         // No file could be made beside `/dev/null`.
-        assert_eq!(replace(b"/dev/null", b"new"), Ok(()));
-        assert_eq!(replace(b"", b"new"), Err(SaveError::Write));
+        assert_eq!(replace(b"/dev/null", b"new", OnClose::Fails), Ok(()));
+        assert_eq!(replace(b"", b"new", OnClose::Fails), Err(SaveError::Write));
     }
 
     // The user's groups from `/proc`, which only Linux has.
@@ -295,7 +331,7 @@ mod tests {
         std::fs::write(&path, b"old").unwrap();
         std::os::unix::fs::chown(&path, None, Some(other)).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
-        replace(path.as_os_str().as_encoded_bytes(), b"new").unwrap();
+        replace(path.as_os_str().as_encoded_bytes(), b"new", OnClose::Fails).unwrap();
         let meta = std::fs::metadata(&path).unwrap();
         assert_eq!((meta.gid(), meta.mode() & 0o777), (egid, 0o600));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -311,24 +347,24 @@ mod tests {
         let dir = scratch("long");
         let path = dir.join("j".repeat(255));
         std::fs::write(&path, b"old").unwrap();
-        replace(path.as_os_str().as_encoded_bytes(), b"new").unwrap();
+        replace(path.as_os_str().as_encoded_bytes(), b"new", OnClose::Fails).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A save that cannot make its file beside the target fails with the
-    /// target emptied, as C's `Curl_fopen` leaves it: it opens the target
-    /// for writing, which empties it, before it makes the new file. A
-    /// residual shared with C (`DIVERGENCE.md`).
+    /// target as it was, as C's `Curl_fopen` leaves it: it opens the
+    /// target to append, which keeps what it holds, before it makes the
+    /// new file (upstream 3ffedaa792).
     #[cfg(unix)]
     #[test]
-    fn a_save_that_cannot_make_its_file_leaves_the_target_emptied_as_c() {
+    fn a_save_that_cannot_make_its_file_leaves_the_target_as_it_was() {
         let dir = scratch("readonly");
         let path = dir.join("jar");
         std::fs::write(&path, b"old").unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let saved = replace(path.as_os_str().as_encoded_bytes(), b"new");
+        let saved = replace(path.as_os_str().as_encoded_bytes(), b"new", OnClose::Fails);
         let left = std::fs::read(&path).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
@@ -339,7 +375,7 @@ mod tests {
             return;
         }
         assert_eq!(saved, Err(SaveError::Write));
-        assert_eq!(left, b"");
+        assert_eq!(left, b"old");
     }
 
     #[test]

@@ -16,6 +16,7 @@ use crate::error::ErrorKind;
 use crate::gss::Style;
 use crate::libraries::Security;
 use crate::multi::Host;
+use crate::options::Socks5Auth;
 use crate::trace;
 
 /// The most one read takes.
@@ -105,7 +106,7 @@ fn start<H: Host>(
     cx: &mut StepCx<'_, H>,
     version: Version,
 ) -> Result<Box<Handshake>, ErrorKind> {
-    let ip = cx.easy().options().ip_version;
+    let ip = lent.route.ip();
     let found = s.machine.dialed().target().clone();
     let leg = lent.route.socks().expect("through a SOCKS proxy");
     let target = leg.to;
@@ -131,12 +132,23 @@ fn start<H: Host>(
         port: target.port(),
         resolved,
     };
-    let options = cx.easy().options();
-    let auth = options.proxy.socks5_auth;
+    // How the proxy may log the user in is the connection's, as its first
+    // transfer allowed; whether it must is this transfer's.
+    let setup = lent.route.socks_setup();
+    let only = lent.route.proxy.as_ref().is_some_and(|p| p.auth_only);
+    let auth = match setup {
+        Some(setup) => Socks5Auth {
+            basic: setup.basic,
+            gssapi: setup.gssapi,
+            only,
+        },
+        // SOCKS4's handshake logs no one in.
+        None => Socks5Auth::DEFAULT,
+    };
     let gss = cx.easy().libraries().security.map(|library| GssMethod {
         library,
-        nec: options.proxy.socks5_gssapi_nec,
-        delegation: options.proxy.delegation,
+        nec: setup.is_some_and(|s| s.nec),
+        delegation: lent.route.proxy_delegation(),
     });
     let exchange = Exchange::new(version, dest, creds, auth, gss).map_err(|e| refused(cx, &e))?;
     try_box(Handshake::Socks(Socks(exchange))).map_err(|_| ErrorKind::OutOfMemory)

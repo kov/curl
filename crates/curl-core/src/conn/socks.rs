@@ -93,6 +93,11 @@ impl Version {
         matches!(self, Version::V4 | Version::V5)
     }
 
+    /// It is SOCKS5, which logs the user in.
+    pub(crate) fn is_v5(self) -> bool {
+        matches!(self, Version::V5 | Version::V5Hostname)
+    }
+
     /// The families the destination's name is resolved in: SOCKS4 has
     /// IPv4 alone.
     pub(crate) fn ip(self, ip: IpVersion) -> IpVersion {

@@ -6972,6 +6972,53 @@ fn a_share_s_dead_connection_is_not_reused() {
     assert_eq!(second.received(), request_of("/"));
 }
 
+/// A connection through a SOCKS5 proxy serves only a transfer that allows
+/// the same ways to log in, NEC's protection level among them: one
+/// allowing others gets a connection of its own, which logs in only as it
+/// allows. C reuses the connection whatever either allowed.
+#[test]
+fn a_socks5_connection_is_reused_only_with_the_same_ways_to_log_in() {
+    let ways = |basic: bool, gssapi: bool, nec: bool| {
+        move |o: &mut Options| {
+            through_socks(o, "socks5h", b"http://origin.example/a");
+            let p = o.proxy.make_mut().unwrap();
+            p.socks5_auth.basic = basic;
+            p.socks5_auth.gssapi = gssapi;
+            p.socks5_gssapi_nec = nec;
+        }
+    };
+    let cases = [
+        ((true, true, false), (true, true, false), 0),
+        ((true, false, false), (true, false, false), 0),
+        ((true, false, false), (false, true, false), 1),
+        ((true, true, false), (true, false, false), 1),
+        ((true, true, false), (true, true, true), 1),
+    ];
+    for (first, second, connects) in cases {
+        let talk = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK, OK], false).per_send();
+        let other = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
+        let mut m = serving(Peer::Accepts, &[&talk, &other]);
+        let ran = get(&mut m, "/", talk.clone(), ways(first.0, first.1, first.2));
+        assert_eq!(ran.result, Ok(()));
+        let ran = get_with(
+            &mut m,
+            ran.easy,
+            "/",
+            talk.clone(),
+            ways(second.0, second.1, second.2),
+        );
+        assert_eq!(ran.result, Ok(()), "{first:?} then {second:?}");
+        assert_eq!(
+            ran.easy.report().connects(),
+            connects,
+            "{first:?} then {second:?}"
+        );
+        if connects == 1 {
+            assert!(other.received().starts_with(b"\x05"), "a SOCKS5 greeting");
+        }
+    }
+}
+
 /// A connection whose SOCKS5 proxy did not authenticate the user serves
 /// a transfer that does not insist it must (`url_match_proxy_use`).
 #[test]

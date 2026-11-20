@@ -999,6 +999,16 @@ so: weaknesses kept because C has them.
   connection of its own, which sends its own line. C does not compare them and reuses the
   connection. Pinned by `a_connection_is_reused_only_by_a_transfer_asking_its_proxy_line`
   (`crates/curl-core/src/proto/http/tests.rs`).
+- **A connection through a SOCKS5 proxy serves only a transfer that allows the same ways to log
+  in.** The route keeps the ways its first transfer allowed the proxy to log the user in
+  (`CURLOPT_SOCKS5_AUTH`'s user and password and GSS-API) and whether GSS-API's protection level
+  goes unwrapped (`CURLOPT_SOCKS5_GSSAPI_NEC`); a transfer allowing otherwise gets a connection of
+  its own, which logs in only as it allows. The handshake reads them, with the IP version and the
+  proxy's delegation, from the route. C compares none of them and reuses the connection:
+  measured 2026-11-20 against C's debug build, `--socks5-basic` then `--socks5-gssapi` with
+  `--next` through one SOCKS5 proxy make one connection there. Pinned by
+  `a_socks5_connection_is_reused_only_with_the_same_ways_to_log_in`
+  (`crates/curl-core/src/proto/http/tests.rs`).
 - **Whether the PROXY line goes is decided as the transfer is routed.** C reads
   `CURLOPT_HAPROXYPROTOCOL` as the setup reaches that stage, so an application that turns it on
   from a callback during the proxy's handshake gets the line; here the route was decided before,

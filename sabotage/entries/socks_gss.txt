@@ -148,10 +148,10 @@ features: debug-hooks
                 .try_extend_from_slice(&[AUTHENTICATION + 1, VERSION, hi, lo])?;
 
 === the origin's delegation reaches the SOCKS5 proxy
-file: crates/curl-core/src/multi/state/socks.rs
+file: crates/curl-core/src/multi/state/leg.rs
 witness: curl-core proto::http::tests::socks_gss::delegation_to_the_origin_does_not_reach_the_socks_proxy
 features: test-util,debug-hooks
 --- old
-        delegation: options.proxy.delegation,
+        proxy_delegation: options.proxy.delegation,
 --- new
-        delegation: options.login.delegation,
+        proxy_delegation: options.login.delegation,

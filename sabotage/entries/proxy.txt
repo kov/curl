@@ -1073,6 +1073,24 @@ witness: curl-core proto::http::tests::a_connection_is_reused_only_by_a_transfer
 --- new
             && true
 
+=== a SOCKS5 connection serves a transfer allowing other ways to log in
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::a_socks5_connection_is_reused_only_with_the_same_ways_to_log_in
+--- old
+            && socks == want_socks
+--- new
+            && true
+
+=== a SOCKS5 route records the ways to log in as allowing both
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::a_socks5_connection_is_reused_only_with_the_same_ways_to_log_in
+--- old
+                basic: auth.basic,
+                gssapi: auth.gssapi,
+--- new
+                basic: true,
+                gssapi: true,
+
 === a connection behind a SOCKS proxy serves a transfer with other SOCKS credentials
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::proxied_routes_match_as_c

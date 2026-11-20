@@ -352,6 +352,24 @@ pub(crate) struct RouteCold {
     /// The PROXY protocol's line the connection sends its first hop, if
     /// it sends one; a transfer reusing it must ask for the same line.
     pub(crate) haproxy: Option<Haproxy>,
+    /// How its SOCKS5 proxy may log the user in, if it goes through one;
+    /// a transfer reusing it must allow the same.
+    pub(crate) socks: Option<SocksSetup>,
+}
+
+/// How a SOCKS5 proxy may log the user in, as a connection's first
+/// transfer allowed (`CURLOPT_SOCKS5_AUTH`, `CURLOPT_SOCKS5_GSSAPI_NEC`).
+/// Whether it must is the transfer's to ask of a connection
+/// (`ProxyRoute::auth_only`), not part of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SocksSetup {
+    /// By user and password (RFC 1929).
+    pub(crate) basic: bool,
+    /// By GSS-API (RFC 1961).
+    pub(crate) gssapi: bool,
+    /// GSS-API's protection level sent unwrapped, as NEC's reference
+    /// implementation has it.
+    pub(crate) nec: bool,
 }
 
 /// The PROXY protocol's line a connection sends to its first hop
@@ -446,6 +464,7 @@ impl RouteCold {
         ftp: None,
         ssh: None,
         haproxy: None,
+        socks: None,
     };
 
     /// Whether it holds nothing a route without it does not. Every field
@@ -461,6 +480,7 @@ impl RouteCold {
             ftp,
             ssh,
             haproxy,
+            socks,
         } = self;
         *ip == IpVersion::Any
             && *delegation == crate::options::Delegation::default()
@@ -471,6 +491,7 @@ impl RouteCold {
             && ftp.is_none()
             && ssh.is_none()
             && haproxy.is_none()
+            && socks.is_none()
     }
 
     /// Whether a connection of a route with `self` and the origin's TLS
@@ -496,6 +517,7 @@ impl RouteCold {
             ftp,
             ssh,
             haproxy,
+            socks,
         } = self;
         let RouteCold {
             ip: _,
@@ -507,6 +529,7 @@ impl RouteCold {
             ftp: want_ftp,
             ssh: want_ssh,
             haproxy: want_haproxy,
+            socks: want_socks,
         } = want;
         let (upgrade, want_upgrade) = (tls.upgrade, want_tls.upgrade);
         let (tls, want_tls) = (tls.start, want_tls.start);
@@ -557,6 +580,9 @@ impl RouteCold {
             // from: only a transfer asking for the same line takes it. C
             // compares neither the line nor whether one went.
             && haproxy == want_haproxy
+            // A SOCKS5 proxy logged in one way serves only a transfer that
+            // allows the same ways. C compares neither the ways nor NEC's.
+            && socks == want_socks
     }
 
     /// The rare part of a route that takes only addresses of `ip`, none
@@ -584,6 +610,7 @@ impl RouteCold {
             ftp,
             ssh,
             haproxy,
+            socks,
         } = self;
         Ok(RouteCold {
             ip: *ip,
@@ -607,6 +634,7 @@ impl RouteCold {
                     Ok::<_, OutOfMemory>(Haproxy { client })
                 })
                 .transpose()?,
+            socks: *socks,
         })
     }
 }
@@ -794,6 +822,21 @@ impl NetRoute {
     /// Which addresses of the name it may use.
     pub(crate) fn ip(&self) -> IpVersion {
         self.cold.as_deref().map_or(IpVersion::Any, |c| c.ip)
+    }
+
+    /// How its SOCKS5 proxy may log the user in, if it goes through one.
+    pub(crate) fn socks_setup(&self) -> Option<SocksSetup> {
+        self.cold.as_deref().and_then(|c| c.socks)
+    }
+
+    /// How far GSS-API contexts with its proxy delegate the user's
+    /// credentials.
+    pub(crate) fn proxy_delegation(&self) -> crate::options::Delegation {
+        self.cold
+            .as_deref()
+            .map_or(crate::options::Delegation::default(), |c| {
+                c.proxy_delegation
+            })
     }
 
     /// Which addresses of the name it may use made `ip`, as a waiting
@@ -2939,6 +2982,7 @@ mod tests {
                         ftp,
                         ssh: None,
                         haproxy: None,
+                        socks: None,
                     })
                     .unwrap(),
                 ),
@@ -3273,6 +3317,7 @@ mod tests {
                         ftp: None,
                         ssh: None,
                         haproxy: None,
+                        socks: None,
                     })
                     .unwrap()
                 }),

@@ -835,7 +835,11 @@ pub(super) fn start_leg<H: Host>(
     // connection must share to serve it (`conn->interface_opts`,
     // `localport`, `localportrange`); the credentials a scheme that logs
     // in once per connection logs in with; and how far TLS is asked for.
-    let cold = match route_cold(cx, &mut proto) {
+    let socks5 = proxy
+        .as_ref()
+        .and_then(|p| p.socks(&origin))
+        .is_some_and(|leg| leg.version.is_v5());
+    let cold = match route_cold(cx, &mut proto, socks5) {
         Ok(cold) => cold,
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
@@ -884,6 +888,7 @@ pub(super) fn start_leg<H: Host>(
 fn route_cold<H: Host>(
     cx: &mut StepCx<'_, H>,
     proto: &mut ProtoState,
+    socks5: bool,
 ) -> Result<Option<TryArc<crate::conn::RouteCold>>, OutOfMemory> {
     let options = cx.easy().options();
     let local = options.sockets.local.try_clone()?;
@@ -946,6 +951,14 @@ fn route_cold<H: Host>(
         ftp,
         ssh: proto.take_ssh_setup(),
         haproxy: haproxy(options)?,
+        socks: socks5.then(|| {
+            let auth = options.proxy.socks5_auth;
+            crate::conn::SocksSetup {
+                basic: auth.basic,
+                gssapi: auth.gssapi,
+                nec: options.proxy.socks5_gssapi_nec,
+            }
+        }),
     };
     if cold.is_empty() {
         return Ok(None);

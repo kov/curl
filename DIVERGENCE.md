@@ -973,11 +973,11 @@ so: weaknesses kept because C has them.
   HTTP proxy's tunnel, or a SOCKS proxy that is sent the name (`socks4a`, `socks5h`), the origin's
   addresses are not looked up here, and neither is its HTTPS record: no query of type 65 goes to
   the resolver or the DoH server. ALPN is then chosen without the record, and ECH that takes its
-  configuration from the record has none, so `hard` fails as with no record ("ECH: requested but
-  no ECHConfig available") unless the configuration is given (`ecl:`). C asks for the record in
-  both: measured 2026-11-20 against C's debug build with c-ares, `-x socks5h://...
-  https://o.example/` sends one type-65 query for `o.example` to `--dns-servers` and no address
-  query; this build sends none. The record's filter is still in the chain, as C's is, and knows
+  configuration from the record has none, as when the origin has no record. C asks for the
+  record through both. Measured 2026-11-20 against C's debug build with c-ares for `socks5h`:
+  `-x socks5h://... https://o.example/` sends one type-65 query for `o.example` to
+  `--dns-servers` and no address query, where this build sends none; through an HTTP tunnel, read
+  from the code (C's DNS filter for the record is added whatever the proxy). The record's filter is still in the chain, as C's is, and knows
   at once there is none, so the HTTPS connect filter chooses its second attempt before the first
   starts, as over C's threaded resolver. Pinned by
   `a_record_is_looked_up_here_only_where_the_name_is_resolved_here`

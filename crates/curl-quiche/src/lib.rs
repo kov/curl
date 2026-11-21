@@ -807,7 +807,7 @@ impl curl_core::http3::Connection for Connection {
         _now: Instant,
         buf: &mut [u8],
         _events: Events<'_>,
-    ) -> Result<Option<usize>, QuicError> {
+    ) -> Result<Option<std::num::NonZeroUsize>, QuicError> {
         let (tls, _, parts) = self.parts();
         let mut wrote = Ok(None);
         tls.drive(cx, &mut || None, &mut |_| {
@@ -820,7 +820,8 @@ impl curl_core::http3::Connection for Connection {
                 });
             }
             wrote = match quiet(|| parts.quic.send(buf)) {
-                Ok((n, _)) => Ok(Some(n)),
+                // A packet of no bytes is none to send.
+                Ok((n, _)) => Ok(std::num::NonZeroUsize::new(n)),
                 Err(quiche::Error::Done) => Ok(None),
                 Err(e) => Err(quic_error(Layer::Quic, "quiche_conn_send", e)),
             };

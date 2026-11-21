@@ -566,11 +566,9 @@ witness: curl-core conn::chain::tests::an_http3_proxy_s_tunnel_is_the_race_s_att
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_tunnel_takes_a_datagram_at_a_time
 --- old
-        if gso == 0 || len <= gso {
-            return match cx.send_below(&self.out.bytes[at..at + len]) {
+        let Some(gso) = gso.filter(|gso| len > gso.get()) else {
 --- new
-        if true {
-            return match cx.send_below(&self.out.bytes[at..at + len]) {
+        let Some(gso) = gso.filter(|_| false) else {
 
 === a tunnel's short send of a datagram counts as sent
 file: crates/curl-core/src/conn/quic.rs
@@ -1304,7 +1302,7 @@ witness: curl-core proto::http::tests::h3_trace::a_sibling_runs_for_its_stream_s
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_joined_datagram_s_packets_are_read_in_order_until_one_fails
 --- old
-            let packets = bytes.chunks(d.segment);
+            let packets = bytes.chunks(size.get());
 --- new
             let packets = bytes.chunks(bytes.len().max(1));
 
@@ -1549,23 +1547,21 @@ witness: curl-core conn::quic::tests::a_larger_packet_splits_the_run_before_it
         if self.is_empty() {
             self.filled = 0;
             self.sent = 0;
+            self.gso = None;
         }
 --- new
         if self.is_empty() {
             self.sent = 0;
+            self.gso = None;
         }
 
 === an empty datagram is read without spending the packet budget
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::empty_datagrams_spend_the_packet_budget
 --- old
-    if d.len == 0 {
-        1
-    } else {
+    d.packet_size().map_or(1, |size| d.len.div_ceil(size.get()))
 --- new
-    if d.len == 0 {
-        0
-    } else {
+    d.packet_size().map_or(0, |size| d.len.div_ceil(size.get()))
 
 === a QUIC handshake done with its peer's check never reported connects
 file: crates/curl-core/src/conn/quic.rs
@@ -1849,10 +1845,27 @@ witness: curl-core proto::http::tests::h3_trace::a_status_after_the_body_over_qu
                     return Heard::Failed;
                 }
 
-=== a send apart with no datagram size sends datagrams of no bytes
+=== a send apart with no datagram size is cut into datagrams of a byte
 file: crates/curl-core/src/conn/quic.rs
 witness: curl-core conn::quic::tests::a_send_apart_with_no_size_is_one_datagram
 --- old
-        let gso = if gso == 0 { len } else { gso };
+        let gso = gso.map_or(len, NonZeroUsize::get);
 --- new
-        let gso = if gso == 0 { gso } else { gso };
+        let gso = gso.map_or(1, NonZeroUsize::get);
+
+=== a run with no datagram size known is cut into datagrams of a byte
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_first_packet_past_the_quantum_goes_as_one_datagram
+--- old
+        let segment = gso.unwrap_or(bytes.len());
+--- new
+        let segment = gso.unwrap_or(NonZeroUsize::MIN);
+
+=== what a failed write leaves of a run is cut at the size of the run before it
+file: crates/curl-core/src/conn/quic.rs
+witness: curl-core conn::quic::tests::a_run_cut_short_by_a_failure_is_cut_at_its_own_size
+--- old
+                gso = n;
+                self.out.gso = Some(size);
+--- new
+                gso = n;

@@ -30,6 +30,7 @@ use core::ptr::{self, NonNull};
 use std::fmt;
 use std::mem::ManuallyDrop;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -1174,7 +1175,7 @@ impl curl_core::http3::Connection for Connection {
         now: Instant,
         buf: &mut [u8],
         events: Events<'_>,
-    ) -> Result<Option<usize>, QuicError> {
+    ) -> Result<Option<NonZeroUsize>, QuicError> {
         self.call(cx, events, |inner| write_packet(inner, ts(now), buf))
     }
 
@@ -1579,7 +1580,11 @@ unsafe fn extend_conn(inner: *mut Inner, n: u64) {
 }
 
 /// The next packet to send (`read_pkt_to_send`).
-fn write_packet(inner: *mut Inner, now: u64, buf: &mut [u8]) -> Result<Option<usize>, QuicError> {
+fn write_packet(
+    inner: *mut Inner,
+    now: u64,
+    buf: &mut [u8],
+) -> Result<Option<NonZeroUsize>, QuicError> {
     let refused = |rv| quic_error("ngtcp2_conn_writev_stream", rv);
     // Once a packet is being filled from several streams
     // (`NGTCP2_WRITE_STREAM_FLAG_MORE`), no other call may be made on the
@@ -1685,7 +1690,7 @@ fn write_packet(inner: *mut Inner, now: u64, buf: &mut [u8]) -> Result<Option<us
                 return Err(h3_error("nghttp3_conn_add_write_offset", rv));
             }
         }
-        if n > 0 {
+        if let Some(n) = NonZeroUsize::new(n) {
             return Ok(Some(n));
         }
     }

@@ -89,6 +89,9 @@ pub struct Script {
     pub read: Vec<(Vec<u8>, u8)>,
     /// A read fails with this code, the QUIC library's.
     pub read_fails: Option<i32>,
+    /// Once the scripted packets are written, the next write fails with
+    /// this code, the QUIC library's, once.
+    pub write_fails: Option<i32>,
     /// Its timer is due in this long, or never.
     pub expiry: Option<Duration>,
     /// A timer that starts as it is first asked about once a request was
@@ -547,7 +550,7 @@ impl Connection for FakeConnection {
         now: Instant,
         buf: &mut [u8],
         events: Events<'_>,
-    ) -> Result<Option<usize>, QuicError> {
+    ) -> Result<Option<std::num::NonZeroUsize>, QuicError> {
         let read = {
             let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
             // quiche holds what it was given as it is given it: it reads
@@ -580,18 +583,23 @@ impl Connection for FakeConnection {
                 let len = packet.len().min(buf.len());
                 buf[..len].copy_from_slice(&packet[..len]);
                 s.packet_at(now, true);
-                return Ok(Some(len));
+                return Ok(std::num::NonZeroUsize::new(len));
             }
         }
         let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         s.at(now);
+        if s.out.is_empty()
+            && let Some(code) = s.write_fails.take()
+        {
+            return Err(quic_error("ngtcp2_conn_writev_stream", code));
+        }
         let Some(packet) = s.out.pop_front().filter(|p| !p.is_empty()) else {
             return Ok(None);
         };
         assert!(packet.len() <= buf.len(), "a scripted packet fits");
         buf[..packet.len()].copy_from_slice(&packet);
         s.packet_at(now, true);
-        Ok(Some(packet.len()))
+        Ok(std::num::NonZeroUsize::new(packet.len()))
     }
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {

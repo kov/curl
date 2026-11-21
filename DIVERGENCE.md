@@ -886,6 +886,20 @@ so: weaknesses kept because C has them.
   `the_back_and_forth_rests_only_between_a_reply_and_a_command`
   (`crates/curl-core/src/proto/pingpong/tests.rs`).
 
+## Datagram sizes C keeps past their run
+
+- **What a failed write leaves of a QUIC run is cut at that run's size.** The packets collected
+  to send carry the size their datagrams are cut at, taken from the run's first packet as it is
+  collected and forgotten once the run is sent. When the library fails to write a packet partway
+  through a run, the connection closes and its close sends what was collected. C sends those
+  packets cut at the size the run sent before them was cut at (`ctx->q.gsolen`, which
+  `cf_progress_egress` sets only once a run is complete and `Curl_vquic_flush` reads), or with
+  none on the first run. Here they go at their own run's size. Read from
+  `lib/vquic/cf-ngtcp2-cmn.c` and `lib/vquic/vquic.c`; neither suite fails a write partway
+  through a run. Pinned by `a_run_cut_short_by_a_failure_is_cut_at_its_own_size` and
+  `a_first_run_cut_short_by_a_failure_goes_as_one_datagram`
+  (`crates/curl-core/src/conn/quic.rs`).
+
 ## Ends C runs inside a send
 
 - **An SCP upload's channel is closed in DONE.** C sends the EOF and waits for the channel to

@@ -8,13 +8,16 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use curl_alloc::TryVec;
 
 #[cfg(unix)]
 use super::io::IO_FAILED;
-use super::io::{BATCH, Datagram, DatagramRoom, Events, Recv, SLOT, Sent, Socket, TOO_LARGE};
+use super::io::{
+    BATCH, Datagram, DatagramRoom, Events, NonEmpty, Recv, SLOT, Sent, Socket, TOO_LARGE,
+};
 
 /// The call a run of datagrams goes out with, as C's traces name it
 /// (`VQUIC_SEND_METHOD`): `sendmsg` where the system has it, `send` on
@@ -46,29 +49,39 @@ const RECVFROM_ROOM: usize = 64 * 1024;
 /// Send `bytes` as datagrams of `segment` bytes in one call: how many
 /// bytes went.
 #[cfg(unix)]
-fn send_datagrams(socket: &dyn Socket, bytes: &[u8], segment: usize) -> io::Result<usize> {
+fn send_datagrams(
+    socket: &dyn Socket,
+    bytes: NonEmpty<'_>,
+    segment: NonZeroUsize,
+) -> io::Result<usize> {
     socket.send_segments(bytes, segment)
 }
 
 /// Send `bytes` as one datagram (`swrite`), as C does on Windows, which
 /// has no `sendmsg` to cut a run with: how many bytes went.
 #[cfg(windows)]
-fn send_datagrams(socket: &dyn Socket, bytes: &[u8], _segment: usize) -> io::Result<usize> {
-    match socket.send(bytes)? {
+fn send_datagrams(
+    socket: &dyn Socket,
+    bytes: NonEmpty<'_>,
+    _segment: NonZeroUsize,
+) -> io::Result<usize> {
+    match socket.send(bytes.bytes())? {
         Sent::Bytes(n) => Ok(n.get()),
         Sent::WouldBlock => Err(io::ErrorKind::WouldBlock.into()),
     }
+}
+
+/// Whether `len` bytes are more than one datagram of `gso` bytes: with no
+/// size known, any bytes are (C's `pktlen > gsolen` with a `gsolen` of 0).
+fn more_than(len: usize, gso: Option<NonZeroUsize>) -> bool {
+    gso.is_none_or(|gso| len > gso.get())
 }
 
 /// How many packets a datagram read counts for against [`MAX_PACKETS`]:
 /// those the kernel joined into it, and one for an empty one
 /// (`vquic.c`'s `++pkts`), so that no datagram is free.
 fn packets_in(d: &Datagram) -> usize {
-    if d.len == 0 {
-        1
-    } else {
-        d.len.div_ceil(d.segment)
-    }
+    d.packet_size().map_or(1, |size| d.len.div_ceil(size.get()))
 }
 
 /// Receive datagrams into slots of `room`, at most as many as `out`
@@ -97,7 +110,7 @@ fn recv_datagrams(
         Some((len, from)) => {
             out[0] = Datagram {
                 len,
-                segment: len,
+                segment: None,
                 ecn: 0,
                 from: Some(from),
             };
@@ -421,7 +434,8 @@ fn number(r: Result<(), Stop>) -> u16 {
 
 /// The packets collected to send (`sendbuf`): the bytes at `sent..`,
 /// sent as datagrams of `gso` bytes each, the first `split` of them, if
-/// set, as datagrams of their own size.
+/// set, as datagrams of their own size. The sizes are the run's: set as
+/// its packets are collected, and forgotten once it is all sent.
 struct Out {
     /// The packets collected, then the room earlier packets made: room
     /// is zeroed as it is first made, not again for each packet the
@@ -430,8 +444,10 @@ struct Out {
     /// How much of `bytes` is packets.
     filled: usize,
     sent: usize,
-    gso: usize,
-    split: Option<(usize, usize)>,
+    /// The size of each datagram of the run, if known (C's `gsolen`, 0
+    /// when not): with none known the run goes as one datagram.
+    gso: Option<NonZeroUsize>,
+    split: Option<(usize, NonZeroUsize)>,
     /// The kernel failed to cut a run once, or cannot (Windows): each
     /// datagram goes on its own from then on.
     no_gso: bool,
@@ -474,6 +490,7 @@ impl Out {
         if self.is_empty() {
             self.filled = 0;
             self.sent = 0;
+            self.gso = None;
         }
     }
 }
@@ -597,7 +614,7 @@ impl Quic {
                 bytes,
                 filled: 0,
                 sent: 0,
-                gso: 0,
+                gso: None,
                 split: None,
                 // Only Linux cuts a run into datagrams (`UDP_SEGMENT`).
                 no_gso: cfg!(not(target_os = "linux")),
@@ -1224,7 +1241,7 @@ impl Quic {
             // Its failure is passed over: the close is as graceful as it
             // can be.
             if let Ok(n) = written
-                && n > 0
+                && let Some(size) = NonZeroUsize::new(n)
             {
                 let added = self
                     .out
@@ -1242,7 +1259,7 @@ impl Quic {
                 }
                 self.out.add(n);
                 self.out.no_gso = true;
-                self.out.gso = n;
+                self.out.gso = Some(size);
                 self.out.split = None;
             }
         }
@@ -1356,19 +1373,23 @@ impl Quic {
             );
         }
         let (mut packets, mut gso) = (0usize, 0usize);
-        while let Some(n) = self.collect(cx, max, at)? {
+        while let Some(size) = self.collect(cx, max, at)? {
+            let n = size.get();
             let len = self.out.unsent().len();
             if len >= quantum || len + gso >= SEND_ROOM {
                 break;
             }
             packets += 1;
             if packets == 1 {
-                // The first: of a size known to work, or a probe.
+                // The first: of a size known to work, or a probe. What a
+                // failure leaves of the run goes as datagrams of it.
                 gso = n;
+                self.out.gso = Some(size);
             } else if n > gso || (gso > path_max && n != gso) {
                 // This one is a probe, or those before were and this one
                 // is smaller: those before go first.
-                match self.send_tail_split(cx, gso, n, n) {
+                let gso = NonZeroUsize::new(gso).expect("the run's first packet's size");
+                match self.send_tail_split(cx, gso, n, size) {
                     Ok(()) => {}
                     Err(Stop::Again) => {
                         cx.quic_due(Duration::from_millis(1));
@@ -1390,7 +1411,7 @@ impl Quic {
                     format_args!("egress, send collected {packets} packets in {len} bytes"),
                 );
             }
-            self.out.gso = gso;
+            self.out.gso = NonZeroUsize::new(gso);
             match self.flush(cx) {
                 Ok(()) => {}
                 Err(Stop::Again) => {
@@ -1415,12 +1436,13 @@ impl Quic {
             let collected = self.collect(cx, max, at)?;
             if let Some(n) = collected {
                 packets += 1;
-                if n == max && packets < BURST {
+                // Every burst's datagrams are of the largest size.
+                self.out.gso = NonZeroUsize::new(max);
+                if n.get() == max && packets < BURST {
                     continue;
                 }
             }
             if !self.out.is_empty() {
-                self.out.gso = max;
                 match self.flush(cx) {
                     Ok(()) => {}
                     Err(Stop::Again) => {
@@ -1445,7 +1467,7 @@ impl Quic {
         cx: &mut dyn QuicIo,
         max: usize,
         now: Instant,
-    ) -> Result<Option<usize>, ErrorKind> {
+    ) -> Result<Option<NonZeroUsize>, ErrorKind> {
         self.state.now = now;
         let wrote = {
             let flavour = self.flavour;
@@ -1466,7 +1488,7 @@ impl Quic {
         };
         match wrote {
             Ok(Some(n)) => {
-                self.out.add(n);
+                self.out.add(n.get());
                 Ok(Some(n))
             }
             Ok(None) => Ok(None),
@@ -1493,15 +1515,15 @@ impl Quic {
     fn send_tail_split(
         &mut self,
         cx: &mut dyn QuicIo,
-        gso: usize,
+        gso: NonZeroUsize,
         tail: usize,
-        tail_gso: usize,
+        tail_gso: NonZeroUsize,
     ) -> Result<(), Stop> {
         let len = self.out.unsent().len();
         assert!(len > tail, "a tail is split from packets before it");
         let head = len - tail;
         self.out.split = Some((head, gso));
-        self.out.gso = tail_gso;
+        self.out.gso = Some(tail_gso);
         cx.of(
             self.state.component,
             format_args!("vquic_send_tail_split: [{head} gso={gso}][{tail} gso={tail_gso}]"),
@@ -1514,7 +1536,7 @@ impl Quic {
         while !self.out.is_empty() {
             let unsent = self.out.unsent().len();
             let (len, gso) = match self.out.split {
-                Some((len, gso)) => (unsent.min(len), gso),
+                Some((len, gso)) => (unsent.min(len), Some(gso)),
                 None => (unsent, self.out.gso),
             };
             let (sent, r) = self.send_packets(cx, len, gso);
@@ -1526,16 +1548,19 @@ impl Quic {
     }
 
     /// The first `len` bytes of what waits sent, as datagrams of `gso`
-    /// bytes: how many went (`vquic_send_packets`).
+    /// bytes, or as one with no size known: how many went
+    /// (`vquic_send_packets`).
     fn send_packets(
         &mut self,
         cx: &mut dyn QuicIo,
         len: usize,
-        gso: usize,
+        gso: Option<NonZeroUsize>,
     ) -> (usize, Result<(), Stop>) {
         match cx.via() {
             Via::Layers(below) => self.send_through(below, len, gso),
-            Via::Socket(on) if self.out.no_gso && len > gso => self.send_apart(on, len, gso),
+            Via::Socket(on) if self.out.no_gso && more_than(len, gso) => {
+                self.send_apart(on, len, gso)
+            }
             Via::Socket(on) => self.send_run(on, len, gso),
         }
     }
@@ -1548,22 +1573,22 @@ impl Quic {
         &mut self,
         cx: &mut dyn LayersIo,
         len: usize,
-        gso: usize,
+        gso: Option<NonZeroUsize>,
     ) -> (usize, Result<(), Stop>) {
         let at = self.out.sent;
-        if gso == 0 || len <= gso {
+        let Some(gso) = gso.filter(|gso| len > gso.get()) else {
             return match cx.send_below(&self.out.bytes[at..at + len]) {
                 Ok(Sent::Bytes(n)) => (n.get(), Ok(())),
                 Ok(Sent::WouldBlock) => (0, Err(Stop::Again)),
                 Err(kind) => (0, Err(Stop::Failed(kind))),
             };
-        }
+        };
         let (mut sent, mut calls) = (0, 0);
         let r = loop {
             if sent == len {
                 break Ok(());
             }
-            let one = gso.min(len - sent);
+            let one = gso.get().min(len - sent);
             let datagram = &self.out.bytes[at + sent..at + sent + one];
             let r = cx.send_below(datagram);
             calls += 1;
@@ -1592,13 +1617,13 @@ impl Quic {
         &mut self,
         cx: &mut dyn SocketIo,
         len: usize,
-        gso: usize,
+        gso: Option<NonZeroUsize>,
     ) -> (usize, Result<(), Stop>) {
         let at = self.out.sent;
-        let bytes = &self.out.bytes[at..at + len];
+        let bytes = NonEmpty::new(&self.out.bytes[at..at + len]).expect("a send has bytes");
         // No size known yet is no cutting: one datagram, as the kernel
         // takes a segment size of 0.
-        let segment = if gso == 0 { len } else { gso };
+        let segment = gso.unwrap_or(bytes.len());
         let (sent, r) = match send_datagrams(cx.socket(), bytes, segment) {
             Ok(n) if n == len => (n, Ok(())),
             // C checks a short send only of `sendmsg`'s.
@@ -1616,7 +1641,7 @@ impl Quic {
             // Too large for the path, a probe of its MTU: lost.
             Err(e) if e.raw_os_error() == Some(TOO_LARGE) => (len, Ok(())),
             #[cfg(unix)]
-            Err(e) if e.raw_os_error() == Some(IO_FAILED) && len > gso => {
+            Err(e) if e.raw_os_error() == Some(IO_FAILED) && more_than(len, gso) => {
                 // The kernel cannot cut it: each datagram goes on its own
                 // from now on.
                 let errno = IO_FAILED;
@@ -1636,6 +1661,8 @@ impl Quic {
             }
         };
         let code = number(r);
+        // As C traces it: 0 for no size known.
+        let gso = gso.map_or(0, NonZeroUsize::get);
         cx.of(
             self.state.component,
             format_args!(
@@ -1645,16 +1672,15 @@ impl Quic {
         (sent, r)
     }
 
-    /// `len` bytes sent a datagram of `gso` bytes at a time
-    /// (`send_packet_no_gso`).
+    /// `len` bytes sent a datagram of `gso` bytes at a time, or as one
+    /// with no size known (`send_packet_no_gso`).
     fn send_apart(
         &mut self,
         cx: &mut dyn SocketIo,
         len: usize,
-        gso: usize,
+        gso: Option<NonZeroUsize>,
     ) -> (usize, Result<(), Stop>) {
-        // No size known: all of it is one datagram.
-        let gso = if gso == 0 { len } else { gso };
+        let gso = gso.map_or(len, NonZeroUsize::get);
         let (mut sent, mut calls) = (0, 0);
         let mut r = Ok(());
         let start = self.out.sent;
@@ -1663,7 +1689,7 @@ impl Quic {
             // Each is sent from where the last left off, which the
             // collected bytes are not yet skipped past.
             self.out.sent = start + sent;
-            let (n, got) = self.send_run(cx, one, one);
+            let (n, got) = self.send_run(cx, one, NonZeroUsize::new(one));
             self.out.sent = start;
             if let Err(stop) = got {
                 r = Err(stop);
@@ -1790,7 +1816,7 @@ impl Quic {
         let mut at = None;
         for _ in 0..MAX_PACKETS {
             let n = match cx.recv_below(buf) {
-                Ok(Recv::Data(n)) => n.get(),
+                Ok(Recv::Data(n)) => n,
                 // Nothing more now, or the tunnel closed.
                 Ok(Recv::WouldBlock | Recv::Eof) => return Ok(()),
                 Err(kind) => {
@@ -1803,13 +1829,13 @@ impl Quic {
                 }
             };
             let d = Datagram {
-                len: n,
-                segment: n,
+                len: n.get(),
+                segment: None,
                 ecn: 0,
                 from: None,
             };
             let read_at = *at.get_or_insert_with(|| self.clock.now());
-            self.read_datagram(cx, &d, &buf[..n], read_at)?;
+            self.read_datagram(cx, &d, n, &buf[..n.get()], read_at)?;
             // The call's time, its first datagram's, as C sets both to
             // `last_op` after each datagram; a call that reads nothing
             // sets neither.
@@ -1873,14 +1899,14 @@ impl Quic {
                 // An empty datagram is no QUIC packet, but is counted as
                 // one: every datagram read spends the budget, the empty
                 // ones too.
-                if d.len > 0 {
+                if let Some(size) = d.packet_size() {
                     total += d.len;
                     // The time of the call's first datagram is every
                     // one's, as C's `cf_ngtcp2_recv_pkts` takes it once
                     // for the call.
                     let at = *first.get_or_insert_with(|| self.clock.now());
                     let bytes = room.datagram(i, d.len);
-                    if let Err(kind) = self.read_datagram(cx, d, bytes, at) {
+                    if let Err(kind) = self.read_datagram(cx, d, size, bytes, at) {
                         failed = Some(kind);
                         break;
                     }
@@ -1915,17 +1941,19 @@ impl Quic {
         r
     }
 
-    /// The packets of datagram `d`, `bytes`, handed to the library one by
-    /// one as received at `now` (`cf_ngtcp2_recv_pkts`).
+    /// The packets of datagram `d`, `bytes`, each `size` bytes but the
+    /// last, handed to the library one by one as received at `now`
+    /// (`cf_ngtcp2_recv_pkts`).
     fn read_datagram(
         &mut self,
         cx: &mut dyn QuicIo,
         d: &Datagram,
+        size: NonZeroUsize,
         bytes: &[u8],
         now: Instant,
     ) -> Result<(), ErrorKind> {
         if d.ecn != 0 && self.flavour == Flavour::Ngtcp2 {
-            let (len, gso, ecn) = (d.len, d.segment, d.ecn);
+            let (len, gso, ecn) = (d.len, size, d.ecn);
             cx.of(
                 self.state.component,
                 format_args!("vquic_recv(len={len}, gso={gso}, ecn={ecn:x})"),
@@ -1941,7 +1969,7 @@ impl Quic {
                 conn, peer, state, ..
             } = self;
             let mut tcx = TlsCx::new(cx, state.component, peer);
-            let packets = bytes.chunks(d.segment);
+            let packets = bytes.chunks(size.get());
             conn.read_packets(&mut tcx, now, from, d.ecn, packets, &mut |tcx, e| {
                 state.heard(tcx, flavour, e)
             })
@@ -2076,7 +2104,7 @@ pub(crate) mod tests {
         /// The size of the packets the kernel joined each datagram of
         /// (GRO), if it did.
         #[cfg(unix)]
-        pub(crate) segment: Lock<Option<usize>>,
+        pub(crate) segment: Lock<Option<NonZeroUsize>>,
         /// The most datagrams one receive gives, each into its own slot,
         /// as `recvmmsg` does; one if unset.
         #[cfg(unix)]
@@ -2174,8 +2202,8 @@ pub(crate) mod tests {
             }
         }
         #[cfg(unix)]
-        fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
-            self.take_send(buf, segment)
+        fn send_segments(&self, buf: NonEmpty<'_>, segment: NonZeroUsize) -> io::Result<usize> {
+            self.take_send(buf.bytes(), segment.get())
         }
         #[cfg(unix)]
         fn recv_batch(&self, room: &mut DatagramRoom, out: &mut [Datagram]) -> io::Result<usize> {
@@ -2193,7 +2221,7 @@ pub(crate) mod tests {
                 };
                 out[n] = Datagram {
                     len,
-                    segment: self.segment.lock().unwrap().unwrap_or(len),
+                    segment: *self.segment.lock().unwrap(),
                     ecn: 0,
                     from: None,
                 };
@@ -2469,12 +2497,75 @@ pub(crate) mod tests {
         q.out.no_gso = true;
         q.out.bytes = vec![0x51; 1200];
         q.out.sent = 0;
-        let (sent, r) = q.send_packets(&mut cx, 1200, 0);
+        let (sent, r) = q.send_packets(&mut cx, 1200, None);
         assert_eq!((sent, r), (1200, Ok(())));
         assert_eq!(*cx.socket.sent.lock().unwrap(), [(1200, 1200)]);
         assert_eq!(
             cx.lines.last().map(String::as_str),
             Some("vquic_sendmsg(len=1200, gso=1200, calls=1) -> 0, sent=1200")
+        );
+    }
+
+    /// A write that fails after the first run's first packet closes the
+    /// connection, and the close sends that packet as one datagram of its
+    /// size: not cut into datagrams of no bytes, as C did before upstream
+    /// d342e8e87b. C sends it with no size known (DIVERGENCE.md, "Datagram
+    /// sizes C keeps past their run").
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_first_run_cut_short_by_a_failure_goes_as_one_datagram() {
+        // Sent apart, and in one send: of the run's first packet's size.
+        for no_gso in [true, false] {
+            let script = Script::new();
+            packets(&script, &[1200]);
+            script.lock().unwrap().write_fails = Some(-502);
+            let (mut q, mut cx) = quic(&script);
+            q.out.no_gso = no_gso;
+            assert_eq!(q.egress(&mut cx), Err(ErrorKind::SendError));
+            assert_eq!(*cx.socket.sent.lock().unwrap(), [(1200, 1200), (5, 5)]);
+            let line = "vquic_sendmsg(len=1200, gso=1200, calls=1) -> 0, sent=1200";
+            assert!(cx.lines.iter().any(|l| l == line), "{:?}", cx.lines);
+        }
+    }
+
+    /// A first packet that fills the send quantum ends the run before
+    /// its size is taken: the run goes as one datagram of no size known,
+    /// traced as C traces it, 0 (`cf_progress_egress`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_first_packet_past_the_quantum_goes_as_one_datagram() {
+        let script = Script::new();
+        script.lock().unwrap().send_quantum = 1000;
+        packets(&script, &[1200]);
+        let (mut q, mut cx) = quic(&script);
+        q.egress(&mut cx).unwrap();
+        assert_eq!(*cx.socket.sent.lock().unwrap(), [(1200, 1200)]);
+        assert_eq!(
+            cx.lines,
+            [
+                "egress, collect and send packets, quantum=1000",
+                "egress, send collected 0 packets in 1200 bytes",
+                "vquic_sendmsg(len=1200, gso=0, calls=1) -> 0, sent=1200",
+            ]
+        );
+    }
+
+    /// The packets a failed write leaves are cut at their own run's size,
+    /// the first packet's. C cuts them at the size of the run sent before
+    /// them (DIVERGENCE.md, "Datagram sizes C keeps past their run").
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_run_cut_short_by_a_failure_is_cut_at_its_own_size() {
+        let script = Script::new();
+        packets(&script, &[1200, 1200]);
+        let (mut q, mut cx) = quic(&script);
+        q.egress(&mut cx).unwrap();
+        packets(&script, &[1000, 1000]);
+        script.lock().unwrap().write_fails = Some(-502);
+        assert_eq!(q.egress(&mut cx), Err(ErrorKind::SendError));
+        assert_eq!(
+            *cx.socket.sent.lock().unwrap(),
+            [(2400, 1200), (2000, 1000), (5, 5)]
         );
     }
 
@@ -2720,7 +2811,7 @@ pub(crate) mod tests {
     fn a_joined_datagram_s_packets_are_read_in_order_until_one_fails() {
         let script = Script::new();
         let (mut q, mut cx) = quic(&script);
-        *cx.socket.segment.lock().unwrap() = Some(10);
+        *cx.socket.segment.lock().unwrap() = NonZeroUsize::new(10);
         let joined = [vec![1; 10], vec![2; 10], vec![3; 5]];
         let datagram = || Ok(joined.concat());
         cx.socket.datagrams.lock().unwrap().push_back(datagram());

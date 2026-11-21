@@ -214,7 +214,9 @@ pub fn flush(
     let mut buf = [0u8; 1500];
     loop {
         let n = conn.write_packet(cx, over.clock.now(), &mut buf, &mut |_, e| told.hear(e))?;
-        let Some(n) = n else { break };
+        let Some(n) = n.map(std::num::NonZeroUsize::get) else {
+            break;
+        };
         over.sock.send(&buf[..n]).unwrap();
     }
     conn.egress_done(cx, over.clock.now(), &mut |_, e| told.hear(e))

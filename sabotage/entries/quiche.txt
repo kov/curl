@@ -26,9 +26,9 @@ file: crates/curl-core/src/conn/quic.rs
 witness: curl-core proto::http::tests::h3_trace::a_get_over_quiche_is_traced_as_its_filter_traces_it
 features: test-util
 --- old
-                self.out.gso = max;
+                self.out.gso = NonZeroUsize::new(max);
 --- new
-                self.out.gso = self.out.unsent().len().min(max);
+                self.out.gso = Some(n);
 
 === a connection over quiche keeps the sessions the peer gives
 file: crates/curl-core/src/tls/cache.rs
@@ -188,9 +188,9 @@ file: crates/curl-core/src/conn/quic.rs
 witness: curl-core proto::http::tests::h3_trace::quiche_s_packets_go_in_bursts_of_ten
 features: test-util
 --- old
-                if n == max && packets < BURST {
+                if n.get() == max && packets < BURST {
 --- new
-                if n == max {
+                if n.get() == max {
 
 === a stream quiche says blocked is said blocked
 file: crates/curl-core/src/proto/http/h3.rs

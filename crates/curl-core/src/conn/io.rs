@@ -16,8 +16,8 @@ use crate::time::Instant;
 pub use curl_os::net::IO_FAILED;
 pub use curl_os::net::{
     AF_INET, AF_INET6, BATCH, Connect, Datagram, DatagramRoom, InterfaceAddress, Ipv6Scope,
-    Protocol, Recv, SLOT, Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, Winsock, adopt,
-    adopt_udp, ipv6_scope, open, open_udp,
+    NonEmpty, Protocol, Recv, SLOT, Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, Winsock,
+    adopt, adopt_udp, ipv6_scope, open, open_udp,
 };
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
@@ -203,11 +203,15 @@ pub trait Socket: fmt::Debug + Send {
     /// Send from `buf`, which is not empty.
     fn send(&self, buf: &[u8]) -> io::Result<Sent>;
 
-    /// Send `buf`, which is not empty, as datagrams of `segment` bytes in
-    /// one call, as a UDP socket does (`UdpSocket::send_segments`); a
-    /// socket of another kind cannot.
+    /// Send `buf` as datagrams of `segment` bytes in one call, as a UDP
+    /// socket does (`UdpSocket::send_segments`); a socket of another kind
+    /// cannot.
     #[cfg(unix)]
-    fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
+    fn send_segments(
+        &self,
+        buf: NonEmpty<'_>,
+        segment: std::num::NonZeroUsize,
+    ) -> io::Result<usize> {
         let _ = (buf, segment);
         Err(io::ErrorKind::Unsupported.into())
     }
@@ -774,7 +778,11 @@ impl Socket for curl_os::net::UdpSocket {
     }
 
     #[cfg(unix)]
-    fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
+    fn send_segments(
+        &self,
+        buf: NonEmpty<'_>,
+        segment: std::num::NonZeroUsize,
+    ) -> io::Result<usize> {
         curl_os::net::UdpSocket::send_segments(self, buf, segment)
     }
 
@@ -2558,8 +2566,12 @@ impl Socket for FakeSocket {
 
     /// One send, as a stream's: the run is the peer's to cut.
     #[cfg(unix)]
-    fn send_segments(&self, buf: &[u8], _segment: usize) -> io::Result<usize> {
-        match self.send(buf)? {
+    fn send_segments(
+        &self,
+        buf: NonEmpty<'_>,
+        _segment: std::num::NonZeroUsize,
+    ) -> io::Result<usize> {
+        match self.send(buf.bytes())? {
             Sent::Bytes(n) => Ok(n.get()),
             Sent::WouldBlock => Err(io::ErrorKind::WouldBlock.into()),
         }
@@ -2629,7 +2641,7 @@ impl Socket for FakeSocket {
                         .ecn;
                     out[n] = Datagram {
                         len,
-                        segment: len,
+                        segment: None,
                         ecn,
                         from: None,
                     };

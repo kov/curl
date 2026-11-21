@@ -536,7 +536,7 @@ pub trait Connection: fmt::Debug + Send {
         now: Instant,
         buf: &mut [u8],
         events: Events<'_>,
-    ) -> Result<Option<usize>, QuicError>;
+    ) -> Result<Option<std::num::NonZeroUsize>, QuicError>;
 
     /// Get its TLS ready for the peer's bytes: the trust store set up,
     /// if it is not (`Curl_vquic_tls_before_recv`).

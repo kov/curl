@@ -1130,8 +1130,8 @@ impl UdpSocket {
     }
 
     #[cfg(unix)]
-    /// Send `buf`, which must not be empty, as datagrams of `segment`
-    /// bytes each, the last what is left: one `sendmsg`, the kernel
+    /// Send `buf` as datagrams of `segment` bytes each, the last what is
+    /// left: one `sendmsg`, the kernel
     /// cutting it (`UDP_SEGMENT`) if it is longer than one (`do_sendmsg`).
     /// How many bytes went, or the system's error as it is: what a
     /// datagram too large, a failed segmentation or a full buffer mean is
@@ -1140,9 +1140,8 @@ impl UdpSocket {
     /// macOS cannot cut a send: there `buf` must be one datagram, no
     /// longer than `segment`, and goes without a control message, as C
     /// sends each datagram apart there (`no_gso`).
-    pub fn send_segments(&self, buf: &[u8], segment: usize) -> io::Result<usize> {
-        assert!(!buf.is_empty(), "a send needs bytes");
-        assert!(segment > 0, "a segment has bytes");
+    pub fn send_segments(&self, buf: NonEmpty<'_>, segment: NonZeroUsize) -> io::Result<usize> {
+        let (buf, segment) = (buf.bytes(), segment.get());
         #[cfg(target_vendor = "apple")]
         assert!(buf.len() <= segment, "the system cannot cut a send");
         let mut iov = libc::iovec {
@@ -1285,7 +1284,7 @@ impl UdpSocket {
             let (segment, ecn) = control_of(&hdrs[i].msg_hdr, names[i].ss_family);
             *told = Datagram {
                 len,
-                segment: if segment == 0 { len } else { segment },
+                segment,
                 ecn,
                 from: socket_addr(&names[i]),
             };
@@ -1352,7 +1351,7 @@ impl UdpSocket {
         let (_, ecn) = control_of(&msg, name.ss_family);
         out[0] = Datagram {
             len,
-            segment: len,
+            segment: None,
             ecn,
             from: socket_addr(&name),
         };
@@ -1392,13 +1391,42 @@ pub const SLOT: usize = 64 * 1500;
 pub struct Datagram {
     /// Its length, at the start of its slot.
     pub len: usize,
-    /// The size of each packet the kernel joined into it, its own length
-    /// if it joined none (`UDP_GRO`).
-    pub segment: usize,
+    /// The size of each packet the kernel joined into it, if it said
+    /// (`UDP_GRO`); see [`Datagram::packet_size`].
+    pub segment: Option<NonZeroUsize>,
     /// The ECN bits it came with.
     pub ecn: u8,
     /// Whom it came from, if the kernel said.
     pub from: Option<SocketAddr>,
+}
+
+impl Datagram {
+    /// The size of each packet in it: the size the kernel joined them
+    /// at, or, if it joined none, its own length (`recvmmsg_packets`).
+    /// None for an empty datagram, which holds no packet.
+    pub fn packet_size(&self) -> Option<NonZeroUsize> {
+        self.segment.or(NonZeroUsize::new(self.len))
+    }
+}
+
+/// Bytes to send, never none: what a send of datagrams takes, so that
+/// no send asks the system for a datagram of no bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NonEmpty<'a>(&'a [u8]);
+
+impl<'a> NonEmpty<'a> {
+    /// `bytes`, if there are some.
+    pub fn new(bytes: &'a [u8]) -> Option<NonEmpty<'a>> {
+        (!bytes.is_empty()).then_some(NonEmpty(bytes))
+    }
+
+    pub fn bytes(self) -> &'a [u8] {
+        self.0
+    }
+
+    pub fn len(self) -> NonZeroUsize {
+        NonZeroUsize::new(self.0.len()).expect("never empty")
+    }
 }
 
 /// The room a batched receive reads datagrams into: slots of one size,
@@ -1501,51 +1529,42 @@ const IPV4_TOS_MESSAGE: libc::c_int = libc::IP_RECVTOS;
 
 #[cfg(unix)]
 /// The joined packets' size and the ECN bits a received message's control
-/// messages say, each 0 if none does (`vquic_msghdr_get_udp_gro`, which
-/// Linux alone has; `vquic_msghdr_get_ecn`).
-fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (usize, u8) {
+/// messages say, none and 0 if none does (`vquic_msghdr_get_udp_gro`,
+/// which Linux alone has; `vquic_msghdr_get_ecn`).
+fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (Option<NonZeroUsize>, u8) {
     const ECN_MASK: libc::c_int = 0x03;
     // Never joined where the kernel does not join (macOS).
     #[cfg_attr(target_vendor = "apple", allow(unused_mut))]
-    let (mut segment, mut ecn) = (0, 0);
+    let (mut segment, mut ecn) = (None, 0);
     // SAFETY: a header the kernel filled, its control room alive.
     let mut cm = unsafe { libc::CMSG_FIRSTHDR(hdr) };
     while !cm.is_null() {
         // SAFETY: a control message within the room, as the kernel wrote it.
         let header = unsafe { &*cm };
         let (level, kind) = (header.cmsg_level, header.cmsg_type);
-        // Its data is read only as far as its length says it goes
-        // (`CMSG_LEN`): a message cut short carries less than its kind.
-        #[allow(clippy::useless_conversion, reason = "a `socklen_t` on macOS")]
-        let carries = |size: usize| {
-            let size = u32::try_from(size).expect("fits");
-            // SAFETY: a size computation, no pointer.
-            let wanted = unsafe { libc::CMSG_LEN(size) };
-            usize::try_from(header.cmsg_len).is_ok_and(|len| len >= wanted as usize)
-        };
-        // SAFETY: as above: its data follows its header.
-        let data = unsafe { libc::CMSG_DATA(cm) };
-        let int = || {
-            // SAFETY: an int's data, which its length says it carries.
-            unsafe { data.cast::<libc::c_int>().read_unaligned() }
-        };
-        let int_size = size_of::<libc::c_int>();
+        // SAFETY: as above.
+        let int = || unsafe { cmsg_data::<libc::c_int>(cm) };
         match (level, kind) {
             #[cfg(target_os = "linux")]
-            (libc::SOL_UDP, libc::UDP_GRO) if segment == 0 && carries(int_size) => {
-                segment = usize::try_from(int()).unwrap_or(0);
+            (libc::SOL_UDP, libc::UDP_GRO) if segment.is_none() => {
+                segment = int()
+                    .and_then(|size| usize::try_from(size).ok())
+                    .and_then(NonZeroUsize::new);
             }
             (libc::IPPROTO_IP, IPV4_TOS_MESSAGE)
-                if family == libc::AF_INET as libc::sa_family_t && carries(1) =>
+                if family == libc::AF_INET as libc::sa_family_t =>
             {
-                // SAFETY: the type of service's one byte, which its length
-                // says it carries.
-                ecn = unsafe { data.read() } & ECN_MASK as u8;
+                // SAFETY: as above.
+                if let Some(tos) = unsafe { cmsg_data::<u8>(cm) } {
+                    ecn = tos & ECN_MASK as u8;
+                }
             }
             (libc::IPPROTO_IPV6, libc::IPV6_TCLASS)
-                if family == libc::AF_INET6 as libc::sa_family_t && carries(int_size) =>
+                if family == libc::AF_INET6 as libc::sa_family_t =>
             {
-                ecn = (int() & ECN_MASK) as u8;
+                if let Some(class) = int() {
+                    ecn = (class & ECN_MASK) as u8;
+                }
             }
             _ => {}
         }
@@ -1553,6 +1572,42 @@ fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (usize, u8) {
         cm = unsafe { libc::CMSG_NXTHDR(hdr, cm) };
     }
     (segment, ecn)
+}
+
+#[cfg(all(test, unix))]
+/// `bytes` sent through `socket` as datagrams of `segment` bytes.
+fn send_cut(socket: &UdpSocket, bytes: &[u8], segment: usize) -> io::Result<usize> {
+    let bytes = NonEmpty::new(bytes).expect("a send has bytes");
+    socket.send_segments(
+        bytes,
+        NonZeroUsize::new(segment).expect("a segment has bytes"),
+    )
+}
+
+#[cfg(unix)]
+/// The data of control message `cm` as a `T`, if its length says it
+/// carries one (`CMSG_LEN`): a message cut short carries less than its
+/// kind, and is read as carrying nothing.
+///
+/// # Safety
+///
+/// `cm` points at a control message within a room the kernel filled,
+/// which lives through the call.
+unsafe fn cmsg_data<T: Copy>(cm: *const libc::cmsghdr) -> Option<T> {
+    let size = u32::try_from(size_of::<T>()).expect("fits");
+    // SAFETY: a size computation, no pointer.
+    let wanted = unsafe { libc::CMSG_LEN(size) } as usize;
+    // SAFETY: the caller's: a control message's header.
+    let len = unsafe { (*cm).cmsg_len };
+    #[allow(clippy::useless_conversion, reason = "a `socklen_t` on macOS")]
+    let carries = usize::try_from(len).is_ok_and(|len| len >= wanted);
+    carries.then(|| {
+        // SAFETY: its data follows its header.
+        let data = unsafe { libc::CMSG_DATA(cm) };
+        // SAFETY: its length says it holds a `T`, which may be unaligned
+        // there.
+        unsafe { data.cast::<T>().read_unaligned() }
+    })
 }
 
 #[cfg(unix)]
@@ -2443,7 +2498,7 @@ mod control_tests {
         said: usize,
         data: &[u8],
         family: libc::c_int,
-    ) -> (usize, u8) {
+    ) -> (Option<NonZeroUsize>, u8) {
         let mut room = [0u64; 8];
         let base = room.as_mut_ptr().cast::<u8>();
         // SAFETY: all zeroes is a valid header.
@@ -2473,6 +2528,20 @@ mod control_tests {
         control_of(&hdr, family as libc::sa_family_t)
     }
 
+    /// A datagram the kernel joined none into is one packet, its own
+    /// length; an empty one holds none.
+    #[test]
+    fn a_datagram_not_joined_is_one_packet() {
+        let d = |len, segment| Datagram {
+            len,
+            segment: NonZeroUsize::new(segment),
+            ..Datagram::default()
+        };
+        assert_eq!(d(100, 0).packet_size(), NonZeroUsize::new(100));
+        assert_eq!(d(250, 100).packet_size(), NonZeroUsize::new(100));
+        assert_eq!(d(0, 0).packet_size(), None);
+    }
+
     /// A control message is read only as far as its length says it goes,
     /// as C checks it against `CMSG_LEN` of what its kind carries: one cut
     /// short tells nothing, though bytes follow its header.
@@ -2484,17 +2553,17 @@ mod control_tests {
         let v6 = libc::AF_INET6;
         // The type of service: its one byte.
         let tos = (libc::IPPROTO_IP, IPV4_TOS_MESSAGE);
-        assert_eq!(read_one(tos.0, tos.1, 1, &[3], v4), (0, 3));
-        assert_eq!(read_one(tos.0, tos.1, 0, &[3], v4), (0, 0));
+        assert_eq!(read_one(tos.0, tos.1, 1, &[3], v4), (None, 3));
+        assert_eq!(read_one(tos.0, tos.1, 0, &[3], v4), (None, 0));
         // The traffic class: an int.
         let class = (libc::IPPROTO_IPV6, libc::IPV6_TCLASS);
         assert_eq!(
             read_one(class.0, class.1, int, &tclass.to_ne_bytes(), v6),
-            (0, 2)
+            (None, 2)
         );
         assert_eq!(
             read_one(class.0, class.1, 1, &tclass.to_ne_bytes(), v6),
-            (0, 0)
+            (None, 0)
         );
         // The joined packets' size: an int, which Linux alone says.
         #[cfg(target_os = "linux")]
@@ -2503,9 +2572,18 @@ mod control_tests {
             let gro = (libc::SOL_UDP, libc::UDP_GRO);
             assert_eq!(
                 read_one(gro.0, gro.1, int, &size.to_ne_bytes(), v4),
-                (1200, 0)
+                (NonZeroUsize::new(1200), 0)
             );
-            assert_eq!(read_one(gro.0, gro.1, 2, &size.to_ne_bytes(), v4), (0, 0));
+            assert_eq!(
+                read_one(gro.0, gro.1, 2, &size.to_ne_bytes(), v4),
+                (None, 0)
+            );
+            // A size of none is no size told.
+            let none = 0 as libc::c_int;
+            assert_eq!(
+                read_one(gro.0, gro.1, int, &none.to_ne_bytes(), v4),
+                (None, 0)
+            );
         }
     }
 }
@@ -2757,7 +2835,7 @@ mod tests {
         let from = Some(s.local_addr().unwrap());
         let bytes: Vec<u8> = (0..250u8).collect();
         for chunk in bytes.chunks(100) {
-            assert_eq!(s.send_segments(chunk, 100).unwrap(), chunk.len());
+            assert_eq!(send_cut(&s, chunk, 100).unwrap(), chunk.len());
         }
         let mut buf = DatagramRoom::try_new(4, 128).unwrap();
         let mut out = [Datagram::default(); 4];
@@ -2767,7 +2845,7 @@ mod tests {
             assert_eq!(r.recv_batch(&mut buf, &mut out).unwrap(), 1);
             let d = Datagram {
                 len,
-                segment: len,
+                segment: None,
                 ecn: 2,
                 from,
             };
@@ -2786,7 +2864,7 @@ mod tests {
     fn a_send_longer_than_a_segment_is_refused() {
         let s = open_udp("127.0.0.1:1".parse().unwrap(), true).unwrap();
         s.connect("127.0.0.1:9".parse().unwrap()).unwrap();
-        s.send_segments(&[0; 200], 100).ok();
+        send_cut(&s, &[0; 200], 100).ok();
     }
 
     /// One send of segments is that many datagrams, the last what is
@@ -2805,7 +2883,7 @@ mod tests {
         assert_eq!(s.connect(at).unwrap(), Connect::Done);
         let from = Some(s.local_addr().unwrap());
         let bytes: Vec<u8> = (0..250u8).collect();
-        assert_eq!(s.send_segments(&bytes, 100).unwrap(), 250);
+        assert_eq!(send_cut(&s, &bytes, 100).unwrap(), 250);
         let mut buf = DatagramRoom::try_new(4, 128).unwrap();
         let mut out = [Datagram::default(); 4];
         let mut fds = [PollFd::new(r.fd(), Events::IN)];
@@ -2815,7 +2893,7 @@ mod tests {
         for (i, len) in [100, 100, 50].into_iter().enumerate() {
             let d = Datagram {
                 len,
-                segment: len,
+                segment: None,
                 ecn: 2,
                 from,
             };
@@ -2827,21 +2905,21 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
 
         r.set(SocketOption::ReceiveJoined).unwrap();
-        assert_eq!(s.send_segments(&bytes, 100).unwrap(), 250);
+        assert_eq!(send_cut(&s, &bytes, 100).unwrap(), 250);
         assert_eq!(poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
         let mut big = DatagramRoom::try_new(1, SLOT).unwrap();
         let mut one = [Datagram::default(); 1];
         assert_eq!(r.recv_batch(&mut big, &mut one).unwrap(), 1);
         let joined = Datagram {
             len: 250,
-            segment: 100,
+            segment: NonZeroUsize::new(100),
             ecn: 2,
             from,
         };
         assert_eq!(one[0], joined);
         assert_eq!(big.datagram(0, 250), &bytes[..]);
         // One segment's worth goes as it is, with no segmenting asked.
-        assert_eq!(s.send_segments(&bytes[..100], 100).unwrap(), 100);
+        assert_eq!(send_cut(&s, &bytes[..100], 100).unwrap(), 100);
     }
 
     /// IPv6 works here, as `connects_over_ipv4_and_ipv6` needs.
@@ -3573,7 +3651,7 @@ mod tests {
         for ip in loopbacks() {
             let (from, to) = udp_pair(ip, &[]);
             let bytes: Vec<u8> = (0..2500u32).map(|i| i as u8).collect();
-            assert_eq!(from.send_segments(&bytes, 1000).unwrap(), 2500);
+            assert_eq!(send_cut(&from, &bytes, 1000).unwrap(), 2500);
             let mut buf = DatagramRoom::try_new(4, SLOT).unwrap();
             let mut out = [Datagram::default(); 4];
             let mut got = Vec::new();
@@ -3585,7 +3663,7 @@ mod tests {
             let lens: Vec<_> = got.iter().map(|d| (d.len, d.segment, d.from)).collect();
             assert_eq!(
                 lens,
-                [(1000, 1000, me), (1000, 1000, me), (500, 500, me)],
+                [(1000, None, me), (1000, None, me), (500, None, me)],
                 "{ip}"
             );
         }
@@ -3600,11 +3678,15 @@ mod tests {
         for ip in loopbacks() {
             let (from, to) = udp_pair(ip, &[SocketOption::ReceiveJoined]);
             let bytes = vec![7; 20 * 1400];
-            assert_eq!(from.send_segments(&bytes, 1400).unwrap(), bytes.len());
+            assert_eq!(send_cut(&from, &bytes, 1400).unwrap(), bytes.len());
             let mut buf = DatagramRoom::try_new(1, SLOT).unwrap();
             let mut out = [Datagram::default(); 1];
             assert_eq!(batch(&to, &mut buf, &mut out), 1);
-            assert_eq!((out[0].len, out[0].segment), (20 * 1400, 1400), "{ip}");
+            assert_eq!(
+                (out[0].len, out[0].segment),
+                (20 * 1400, NonZeroUsize::new(1400)),
+                "{ip}"
+            );
             assert!(buf.datagram(0, 20 * 1400).iter().all(|&b| b == 7));
         }
     }
@@ -3658,7 +3740,7 @@ mod tests {
     fn a_datagram_too_large_fails_the_send() {
         let (from, _to) = udp_pair(Ipv4Addr::LOCALHOST.into(), &[]);
         let bytes = vec![0; 70_000];
-        let failed = from.send_segments(&bytes, bytes.len()).unwrap_err();
+        let failed = send_cut(&from, &bytes, bytes.len()).unwrap_err();
         assert_eq!(failed.raw_os_error(), Some(TOO_LARGE));
     }
 }

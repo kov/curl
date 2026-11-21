@@ -346,7 +346,9 @@ fn flush(
     let mut buf = [0u8; 1500];
     loop {
         let n = conn.write_packet(cx, over.clock.now(), &mut buf, &mut |_, e| told.hear(e))?;
-        let Some(n) = n else { return Ok(()) };
+        let Some(n) = n.map(std::num::NonZeroUsize::get) else {
+            return Ok(());
+        };
         over.sock.send(&buf[..n]).unwrap();
         over.sent.borrow_mut().push(buf[..n].to_vec());
         conn.sent_at(over.clock.now());

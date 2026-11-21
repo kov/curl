@@ -641,19 +641,22 @@ fn readback_bytes(offset: &mut u64, buf: &mut [u8], bytes: &[u8], trail: &[u8]) 
     n
 }
 
+/// A file's read failed (`ferror`): what it read before is not a read.
+struct ReadFailed;
+
 /// Read as much of a file as fits, as `fread` does: all of the room
-/// unless the file ends or fails first.
-fn fread(file: &mut File, buf: &mut [u8]) -> (usize, bool) {
+/// unless the file ends first, or nothing if it fails.
+fn fread(file: &mut File, buf: &mut [u8]) -> Result<usize, ReadFailed> {
     let mut n = 0;
     while n < buf.len() {
         match file.read(&mut buf[n..]) {
             Ok(0) => break,
             Ok(k) => n += k,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return (n, true),
+            Err(_) => return Err(ReadFailed),
         }
     }
-    (n, false)
+    Ok(n)
 }
 
 /// Read a part's content as it is (`read_part_content`): at most one read
@@ -704,10 +707,8 @@ fn read_content(
                 }
                 let file = src.file.as_mut().expect("opened above");
                 match fread(file, buf) {
-                    // A failed read is a read error, what came before it
-                    // in the same read dropped (`ferror`).
-                    (_, true) => Got::Error,
-                    (n, false) => {
+                    Err(ReadFailed) => Got::Error,
+                    Ok(n) => {
                         src.file_eof |= n < buf.len();
                         Got::Bytes(n)
                     }

@@ -678,8 +678,8 @@ pub(crate) struct Request {
     /// When DONE, as it waits, looks again: C's wait on the socket in
     /// `ssh_block_statemach`, at most a second.
     done_due: Option<crate::time::Instant>,
-    /// Where the transfer starts (`state.resume_from`): -1 for the end.
-    resume_from: i64,
+    /// Where the transfer starts (`state.resume_from`).
+    resume: Option<Resume>,
     /// The range asked for, or the resume point's (`state.range` while
     /// `use_range`).
     range: Option<Vec<u8>>,
@@ -721,15 +721,16 @@ impl Request {
         };
         let url_path = url.get(Part::Path, encoded).map_err(url_error)?;
         let options = cx.easy().options();
-        // A resume point is asked for as the range from it (`setup_range`).
-        let resume_from = match options.resume {
-            Some(Resume::At(n)) => n.signed(),
-            Some(Resume::AtEnd) => -1,
-            None => 0,
-        };
-        let range = if resume_from != 0 {
+        // A resume point is asked for as the range from it (`setup_range`),
+        // which C writes -1 for the end.
+        let resume = options.resume;
+        let range = if let Some(at) = resume {
+            let at = match at {
+                Resume::At(n) => n.signed(),
+                Resume::AtEnd => -1,
+            };
             let mut r = Vec::new();
-            let text = curl_alloc::try_format(format_args!("{resume_from}-"))
+            let text = curl_alloc::try_format(format_args!("{at}-"))
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             r.try_extend_from_slice(text.as_bytes())
                 .map_err(|_| ErrorKind::OutOfMemory)?;
@@ -747,7 +748,7 @@ impl Request {
             readdir_count: 0,
             yielded: false,
             done_due: None,
-            resume_from,
+            resume,
             range,
             infilesize: None,
             source: None,
@@ -1483,38 +1484,45 @@ impl Request {
     /// point, its directories made first if asked and missing, and the
     /// upload set up (`myssh_in_UPLOAD_INIT`).
     fn sftp_upload_init<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut SshConn) {
-        if self.resume_from < 0 {
-            let path = self.path.take().unwrap_or_default();
-            let attrs = sc.session().stat(&path);
-            self.path = Some(path);
-            match attrs {
-                Err(AttrsError::OutOfMemory) => {
-                    sc.goto_error(cx, ErrorKind::OutOfMemory);
-                    return;
-                }
-                // C reads the field whether or not the server gave it, which
-                // the library leaves zero then.
-                Ok(attrs) => match i64::try_from(attrs.size.unwrap_or_default()) {
-                    Ok(size) => self.resume_from = size,
-                    Err(_) => {
-                        let size = attrs.size.unwrap_or_default() as i64;
-                        let kind = trace::fail(
-                            cx,
-                            ErrorKind::BadDownloadResume,
-                            format_args!("Bad file size ({size})"),
-                        );
-                        sc.goto_error(cx, kind);
+        // Where in the stored file the upload starts: at the end, the
+        // stored file's size, or its start if it cannot be had.
+        let from = match self.resume {
+            None => 0,
+            Some(Resume::At(n)) => n.get(),
+            Some(Resume::AtEnd) => {
+                let path = self.path.take().unwrap_or_default();
+                let attrs = sc.session().stat(&path);
+                self.path = Some(path);
+                match attrs {
+                    Err(AttrsError::OutOfMemory) => {
+                        sc.goto_error(cx, ErrorKind::OutOfMemory);
                         return;
                     }
-                },
-                Err(AttrsError::Status(_)) => self.resume_from = 0,
+                    // C reads the field whether or not the server gave it,
+                    // which the library leaves zero then.
+                    Ok(attrs) => {
+                        let size = attrs.size.unwrap_or_default();
+                        if i64::try_from(size).is_err() {
+                            let size = size as i64;
+                            let kind = trace::fail(
+                                cx,
+                                ErrorKind::BadDownloadResume,
+                                format_args!("Bad file size ({size})"),
+                            );
+                            sc.goto_error(cx, kind);
+                            return;
+                        }
+                        size
+                    }
+                    Err(AttrsError::Status(_)) => 0,
+                }
             }
-        }
+        };
         let options = cx.easy().options();
         let append = options.line.ftp.append;
         let mode = if append {
             OpenMode::Append
-        } else if self.resume_from > 0 {
+        } else if from > 0 {
             // Seeking, never appending: a server may write all at the end
             // of a file opened to append.
             OpenMode::Write
@@ -1549,8 +1557,7 @@ impl Request {
             }
         };
         self.infilesize = upload.size();
-        if self.resume_from > 0 && !append {
-            let from = self.resume_from.unsigned_abs();
+        if from > 0 && !append {
             if let Err(e) = upload.resume_from(cx, from) {
                 sc.goto_error(cx, e);
                 return;
@@ -1845,33 +1852,23 @@ impl Request {
                     .announce_size(cx, Some(size.unsigned_abs()));
             }
         }
-        if self.resume_from != 0 {
-            if self.resume_from < 0 {
-                if size < -self.resume_from {
-                    let from = self.resume_from;
+        if let Some(resume) = self.resume {
+            let from = match download_from(resume, size) {
+                Ok(from) => from,
+                Err(said) => {
                     let kind = trace::fail(
                         cx,
                         ErrorKind::BadDownloadResume,
-                        format_args!("Offset ({from}) was beyond file size ({size})"),
+                        format_args!("Offset ({said}) was beyond file size ({size})"),
                     );
                     sc.goto_error(cx, kind);
                     return;
                 }
-                self.resume_from += size;
-            } else if size < self.resume_from {
-                let from = self.resume_from;
-                let kind = trace::fail(
-                    cx,
-                    ErrorKind::BadDownloadResume,
-                    format_args!("Offset ({from}) was beyond file size ({size})"),
-                );
-                sc.goto_error(cx, kind);
-                return;
-            }
-            req_size = size - self.resume_from;
+            };
+            req_size = size - from;
             let announced = u64::try_from(req_size).ok();
             self.base.pipeline.announce_size(cx, announced);
-            if let Err(status) = sc.session().seek(self.resume_from.unsigned_abs()) {
+            if let Err(status) = sc.session().seek(from.unsigned_abs()) {
                 sc.goto_close(cx, status);
                 return;
             }
@@ -3212,6 +3209,19 @@ impl super::Phases for Request {
 
     fn waits(&self, _: Waiting, line: Option<&LineConn>) -> Events {
         Self::pollset(Directions::default(), line)
+    }
+}
+
+/// Where a download of a file of `size` bytes starts from `resume`
+/// (`sftp_download_stat`): the offset, the end's being the last byte; or,
+/// for a file too short for it, the resume point as C says it, -1 for the
+/// end.
+fn download_from(resume: Resume, size: i64) -> Result<i64, i64> {
+    match resume {
+        Resume::AtEnd if size >= 1 => Ok(size - 1),
+        Resume::AtEnd => Err(-1),
+        Resume::At(n) if n.signed() <= size => Ok(n.signed()),
+        Resume::At(n) => Err(n.signed()),
     }
 }
 

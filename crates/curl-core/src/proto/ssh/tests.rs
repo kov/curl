@@ -1195,6 +1195,22 @@ fn a_range_reads_its_part() {
     assert_eq!(body, b"234");
 }
 
+/// Where a resumed download starts, as C reckons it from the file's size
+/// (`myssh_in_SFTP_DOWNLOAD_STAT`): the end is the last byte, a point
+/// past the size is refused, said as C says it, -1 for the end. The range
+/// C asks first refuses the end of a file with bytes, so only this test
+/// reaches that arm.
+#[test]
+fn a_download_from_the_end_starts_at_its_last_byte() {
+    use crate::options::{Resume, ResumeOffset};
+    let at = |n| Resume::At(ResumeOffset::new(n).unwrap());
+    assert_eq!(super::download_from(Resume::AtEnd, 10), Ok(9));
+    assert_eq!(super::download_from(Resume::AtEnd, 0), Err(-1));
+    assert_eq!(super::download_from(at(3), 10), Ok(3));
+    assert_eq!(super::download_from(at(10), 10), Ok(10));
+    assert_eq!(super::download_from(at(11), 10), Err(11));
+}
+
 /// A resumed download is asked for as the range from its resume point,
 /// and the resume point is applied again to what the range left, as C
 /// applies both (`setup_range`, `myssh_in_SFTP_DOWNLOAD_STAT`): from 3 of

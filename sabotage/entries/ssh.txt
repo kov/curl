@@ -364,3 +364,11 @@ witness: curl-core proto::ssh::tests::commands_after_the_transfer_cleared_by_a_c
                     if run.advance() {
 --- new
                     if run.advance() && cx.easy().options().line.postquote.iter().nth(run.at).is_some() {
+
+=== a download resumed from the end starts past its last byte
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::a_download_from_the_end_starts_at_its_last_byte
+--- old
+        Resume::AtEnd if size >= 1 => Ok(size - 1),
+--- new
+        Resume::AtEnd if size >= 1 => Ok(size),

@@ -35,7 +35,7 @@ use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HostKey, KeyEncoding, KeyMatch, KeyVerdict};
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
-use crate::options::{CreateDirs, SshAuthTypes};
+use crate::options::{CreateDirs, Resume, SshAuthTypes};
 use crate::progress::rate::Way;
 use crate::proto::{Connect, DoPhase, DoStep, Finish, ProtoStep};
 use crate::report::Timer;
@@ -2044,31 +2044,37 @@ impl Request {
     /// point, its directories made first if asked and missing, and the
     /// upload set up (`sftp_upload_init`).
     fn sftp_upload_init2<H: Host>(&mut self, cx: &mut StepCx<'_, H>, sc: &mut Ssh2Conn) -> Ran {
-        if self.resume_from < 0 {
-            let path = self.path.take().unwrap_or_default();
-            let attrs = sc.session().sftp_stat(&path);
-            self.path = Some(path);
-            match attrs {
-                Err(rc) if rc.again() => return Err(Halt::Again),
-                Err(_) => self.resume_from = 0,
-                Ok(attrs) => {
-                    let size = attrs.filesize as i64;
-                    if size < 0 {
-                        return Err(Halt::Fail(trace::fail(
-                            cx,
-                            ErrorKind::BadDownloadResume,
-                            format_args!("Bad file size ({size})"),
-                        )));
+        // Where in the stored file the upload starts: at the end, the
+        // stored file's size, or its start if it cannot be had.
+        let from = match self.resume {
+            None => 0,
+            Some(Resume::At(n)) => n.get(),
+            Some(Resume::AtEnd) => {
+                let path = self.path.take().unwrap_or_default();
+                let attrs = sc.session().sftp_stat(&path);
+                self.path = Some(path);
+                match attrs {
+                    Err(rc) if rc.again() => return Err(Halt::Again),
+                    Err(_) => 0,
+                    Ok(attrs) => {
+                        let size = attrs.filesize as i64;
+                        if size < 0 {
+                            return Err(Halt::Fail(trace::fail(
+                                cx,
+                                ErrorKind::BadDownloadResume,
+                                format_args!("Bad file size ({size})"),
+                            )));
+                        }
+                        size.unsigned_abs()
                     }
-                    self.resume_from = size;
                 }
             }
-        }
+        };
         let options = cx.easy().options();
         let append = options.line.ftp.append;
         let mode = if append {
             OpenMode::Append
-        } else if self.resume_from > 0 {
+        } else if from > 0 {
             // Seeking, never appending: a server may write all at the end
             // of a file opened to append.
             OpenMode::Write
@@ -2122,11 +2128,11 @@ impl Request {
         }
         let mut upload = Upload::open(cx)?;
         self.infilesize = upload.size();
-        if self.resume_from > 0 && !append {
-            let from = self.resume_from.unsigned_abs();
+        if from > 0 && !append {
             upload.resume_from(cx, from)?;
             if let Some(size) = self.infilesize.filter(|&s| s > 0) {
-                let left = size as i64 - self.resume_from;
+                // Neither is past what an `i64` holds.
+                let left = size as i64 - from as i64;
                 self.infilesize = u64::try_from(left).ok();
                 crate::upload::announce_size(cx, self.infilesize);
             }
@@ -2377,30 +2383,19 @@ impl Request {
                 a.filesize as i64
             }
         };
-        if self.resume_from != 0 {
-            if self.resume_from < 0 {
-                if filesize < -self.resume_from {
-                    let from = self.resume_from;
-                    return Err(Halt::Fail(trace::fail(
-                        cx,
-                        ErrorKind::BadDownloadResume,
-                        format_args!("Offset ({from}) was beyond file size ({filesize})"),
-                    )));
-                }
-                self.resume_from += filesize;
-            } else if filesize < self.resume_from {
-                let from = self.resume_from;
-                return Err(Halt::Fail(trace::fail(
+        if let Some(resume) = self.resume {
+            let from = super::download_from(resume, filesize).map_err(|said| {
+                Halt::Fail(trace::fail(
                     cx,
                     ErrorKind::BadDownloadResume,
-                    format_args!("Offset ({from}) was beyond file size ({filesize})"),
-                )));
-            }
-            req_size = filesize - self.resume_from;
+                    format_args!("Offset ({said}) was beyond file size ({filesize})"),
+                ))
+            })?;
+            req_size = filesize - from;
             self.base
                 .pipeline
                 .announce_size(cx, u64::try_from(req_size).ok());
-            sc.session().sftp_seek(self.resume_from.unsigned_abs());
+            sc.session().sftp_seek(from.unsigned_abs());
         }
         if req_size == 0 {
             self.xfer_setup(cx, Directions::default());

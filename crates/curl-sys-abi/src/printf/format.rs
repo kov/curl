@@ -55,10 +55,6 @@ const UNSIGNED: u32 = 1 << 9;
 const OCTAL: u32 = 1 << 10;
 const HEX: u32 = 1 << 11;
 const UPPER: u32 = 1 << 12;
-const WIDTH: u32 = 1 << 13;
-const WIDTHPARAM: u32 = 1 << 14;
-const PREC: u32 = 1 << 15;
-const PRECPARAM: u32 = 1 << 16;
 const CHAR: u32 = 1 << 17;
 const FLOATE: u32 = 1 << 18;
 const FLOATG: u32 = 1 << 19;
@@ -71,13 +67,31 @@ enum Dollar {
     Use,
 }
 
+/// Where a conversion's width or precision comes from, as parsed: a `*`
+/// takes the next argument, or the one its `$` numbers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Written {
+    None,
+    Number(i32),
+    Star(Option<usize>),
+}
+
+/// Where a conversion's width or precision comes from, once its
+/// arguments are numbered.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Given {
+    #[default]
+    None,
+    Number(i32),
+    /// The `int` argument at this index.
+    Arg(usize),
+}
+
 /// One piece of output: literal text, then possibly a conversion.
 #[derive(Clone, Copy, Default)]
 struct Segment {
-    /// The width, or the index of the argument giving it.
-    width: i32,
-    /// The precision, or the index of the argument giving it.
-    precision: i32,
+    width: Given,
+    precision: Given,
     flags: u32,
     input: usize,
     /// Literal format text to output first.
@@ -89,8 +103,8 @@ impl Segment {
     /// A segment of nothing: what `Parsed::new` fills its room with, a
     /// constant so that filling is a `memset`.
     const EMPTY: Segment = Segment {
-        width: 0,
-        precision: 0,
+        width: Given::None,
+        precision: Given::None,
         flags: 0,
         input: 0,
         start: 0,
@@ -188,8 +202,8 @@ fn dollarstring(fmt: &[u8], pos: &mut usize) -> Option<usize> {
 
 struct Spec {
     flags: u32,
-    width: i32,
-    precision: i32,
+    width: Written,
+    precision: Written,
 }
 
 /// Parse the flags, width and precision of a conversion at `*pos`.
@@ -198,8 +212,15 @@ fn parse_flags(fmt: &[u8], pos: &mut usize, dollar: Dollar) -> Option<Spec> {
     let mut p = *pos;
     let mut s = Spec {
         flags: 0,
-        width: 0,
-        precision: 0,
+        width: Written::None,
+        precision: Written::None,
+    };
+    let star = |p: &mut usize| {
+        if dollar == Dollar::Use {
+            dollarstring(fmt, p).map(Some)
+        } else {
+            Some(None)
+        }
     };
     loop {
         let c = at(fmt, p);
@@ -212,27 +233,26 @@ fn parse_flags(fmt: &[u8], pos: &mut usize, dollar: Dollar) -> Option<Spec> {
                 s.flags &= !PAD_NIL;
             }
             b'#' => s.flags |= ALT,
+            // A precision is `*` or a number, never both, though either
+            // may be given again (`PFMT_PREC`).
             b'.' => {
-                if at(fmt, p) == b'*' {
-                    s.flags |= PRECPARAM;
+                s.precision = if at(fmt, p) == b'*' {
+                    if matches!(s.precision, Written::Number(_)) {
+                        return None;
+                    }
                     p += 1;
-                    s.precision = if dollar == Dollar::Use {
-                        dollarstring(fmt, &mut p)? as i32
-                    } else {
-                        -1
-                    };
+                    Written::Star(star(&mut p)?)
                 } else {
-                    s.flags |= PREC;
+                    if matches!(s.precision, Written::Star(_)) {
+                        return None;
+                    }
                     let neg = at(fmt, p) == b'-';
                     if neg {
                         p += 1;
                     }
                     let num = number(fmt, &mut p, i64::from(i32::MAX))? as i32;
-                    s.precision = if neg { -num } else { num };
-                }
-                if s.flags & (PREC | PRECPARAM) == PREC | PRECPARAM {
-                    return None;
-                }
+                    Written::Number(if neg { -num } else { num })
+                };
             }
             b'h' => s.flags |= SHORT,
             b'l' => {
@@ -263,25 +283,18 @@ fn parse_flags(fmt: &[u8], pos: &mut usize, dollar: Dollar) -> Option<Spec> {
                 }
             }
             b'0'..=b'9' => {
-                // A width is `*` or a number, never both (`PFMT_WIDTH`).
-                if s.flags & WIDTHPARAM != 0 {
+                // A number after a `*` width is no width (`PFMT_WIDTH`);
+                // a `*` after a number takes the argument.
+                if matches!(s.width, Written::Star(_)) {
                     return None;
                 }
                 if c == b'0' && s.flags & LEFT == 0 {
                     s.flags |= PAD_NIL;
                 }
-                s.flags |= WIDTH;
                 p -= 1;
-                s.width = number(fmt, &mut p, i64::from(i32::MAX))? as i32;
+                s.width = Written::Number(number(fmt, &mut p, i64::from(i32::MAX))? as i32);
             }
-            b'*' => {
-                s.flags |= WIDTHPARAM;
-                s.width = if dollar == Dollar::Use {
-                    dollarstring(fmt, &mut p)? as i32
-                } else {
-                    -1
-                };
-            }
+            b'*' => s.width = Written::Star(star(&mut p)?),
             _ => {
                 p -= 1;
                 break;
@@ -427,38 +440,32 @@ pub(crate) fn parse<const N: usize>(fmt: &[u8], parsed: &mut Parsed<N>) -> Resul
         };
         spec.flags |= conv_flags;
 
-        if spec.flags & WIDTHPARAM != 0 {
-            let w = if spec.width < 0 {
-                param_num += 1;
-                param_num - 1
-            } else {
-                let w = spec.width as usize;
-                if used.get(w).copied().unwrap_or(false) {
-                    return Err(rejected);
+        // A `*`'s argument: the next, or the one its `$` numbers, which
+        // no other conversion may have taken.
+        let mut given = |written: Written, ty: ArgType| -> Result<Given, Unparsed> {
+            Ok(match written {
+                Written::None => Given::None,
+                Written::Number(n) => Given::Number(n),
+                Written::Star(at) => {
+                    let w = match at {
+                        None => {
+                            param_num += 1;
+                            param_num - 1
+                        }
+                        Some(w) if used.get(w).copied().unwrap_or(false) => {
+                            return Err(rejected);
+                        }
+                        Some(w) => w,
+                    };
+                    note(w, &mut max_param)?;
+                    parsed.inputs[w] = ty;
+                    used[w] = true;
+                    Given::Arg(w)
                 }
-                w
-            };
-            note(w, &mut max_param)?;
-            spec.width = w as i32;
-            parsed.inputs[w] = ArgType::Width;
-            used[w] = true;
-        }
-        if spec.flags & PRECPARAM != 0 {
-            let w = if spec.precision < 0 {
-                param_num += 1;
-                param_num - 1
-            } else {
-                let w = spec.precision as usize;
-                if used.get(w).copied().unwrap_or(false) {
-                    return Err(rejected);
-                }
-                w
-            };
-            note(w, &mut max_param)?;
-            spec.precision = w as i32;
-            parsed.inputs[w] = ArgType::Precision;
-            used[w] = true;
-        }
+            })
+        };
+        let width = given(spec.width, ArgType::Width)?;
+        let precision = given(spec.precision, ArgType::Precision)?;
         let param = param.unwrap_or_else(|| {
             param_num += 1;
             param_num - 1
@@ -471,8 +478,8 @@ pub(crate) fn parse<const N: usize>(fmt: &[u8], parsed: &mut Parsed<N>) -> Resul
         push(
             parsed,
             Segment {
-                width: spec.width,
-                precision: spec.precision,
+                width,
+                precision,
                 flags: spec.flags,
                 input: param,
                 start,
@@ -881,24 +888,28 @@ fn render_into<const N: usize, A: Args, S: Sink>(
         }
         let mut p = Props {
             flags: seg.flags,
-            width: seg.width,
+            width: 0,
             prec: -1,
         };
-        if p.flags & WIDTHPARAM != 0 {
-            p.width = args.bits(seg.width as usize) as i32;
-            if p.width < 0 {
-                // A negative width is a `-` flag and a positive width.
-                p.width = p.width.checked_neg().unwrap_or(i32::MAX);
-                p.flags |= LEFT;
-                p.flags &= !PAD_NIL;
+        match seg.width {
+            Given::None => {}
+            Given::Number(n) => p.width = n,
+            Given::Arg(at) => {
+                p.width = args.bits(at) as i32;
+                if p.width < 0 {
+                    // A negative width is a `-` flag and a positive width.
+                    p.width = p.width.checked_neg().unwrap_or(i32::MAX);
+                    p.flags |= LEFT;
+                    p.flags &= !PAD_NIL;
+                }
             }
         }
-        if p.flags & PRECPARAM != 0 {
+        p.prec = match seg.precision {
+            Given::None => -1,
+            Given::Number(n) => n,
             // A negative precision is as if there were none.
-            p.prec = (args.bits(seg.precision as usize) as i32).max(-1);
-        } else if p.flags & PREC != 0 {
-            p.prec = seg.precision;
-        }
+            Given::Arg(at) => (args.bits(at) as i32).max(-1),
+        };
         let i = seg.input;
         match parsed.inputs[i] {
             ArgType::UInt | ArgType::ULong | ArgType::ULongLong => {

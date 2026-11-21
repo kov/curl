@@ -86,6 +86,22 @@ witness: curl-sys-abi printf::tests::output_past_int_max_counts_minus_one
 file: crates/curl-sys-abi/src/printf/format.rs
 witness: curl-sys-abi printf::tests::a_width_both_star_and_digits_is_refused
 --- old
-                if s.flags & WIDTHPARAM != 0 {
+                if matches!(s.width, Written::Star(_)) {
 --- new
-                if false && s.flags & WIDTHPARAM != 0 {
+                if false && matches!(s.width, Written::Star(_)) {
+
+=== a precision given as a number, then as a star, takes the star
+file: crates/curl-sys-abi/src/printf/format.rs
+witness: curl-sys-abi printf::tests::widths_and_precisions_given_twice_are_read_as_c_reads_them
+--- old
+                    if matches!(s.precision, Written::Number(_)) {
+--- new
+                    if false && matches!(s.precision, Written::Number(_)) {
+
+=== a precision given as a star, then as a number, takes the number
+file: crates/curl-sys-abi/src/printf/format.rs
+witness: curl-sys-abi printf::tests::widths_and_precisions_given_twice_are_read_as_c_reads_them
+--- old
+                    if matches!(s.precision, Written::Star(_)) {
+--- new
+                    if false && matches!(s.precision, Written::Star(_)) {

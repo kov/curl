@@ -824,6 +824,34 @@ mod tests {
         );
     }
 
+    /// A width or precision given more than once is read as C's build
+    /// reads it: a `*` after a number takes the argument, a second of the
+    /// same kind replaces the first, and a precision both `*` and a
+    /// number refuses the format. Each line was run against the C build.
+    #[test]
+    fn widths_and_precisions_given_twice_are_read_as_c_reads_them() {
+        let cases: [(&CStr, [c_int; 3], &str); 14] = [
+            (c"%5*d|", [3, 7, 0], "  7|"),
+            (c"%**d|", [4, 7, 0], "   7|"),
+            (c"%.3.4d|", [7, 0, 0], "0007|"),
+            (c"%.*.*d|", [4, 7, 0], "0007|"),
+            (c"%.3.*d|", [4, 7, 0], ""),
+            (c"%.*.3d|", [4, 7, 0], ""),
+            (c"%*.*d|", [6, 3, 7], "   007|"),
+            (c"%-*d|", [4, 7, 0], "7   |"),
+            (c"%*d|", [-4, 7, 0], "7   |"),
+            (c"%.*d|", [-4, 7, 0], "7|"),
+            (c"%.-3d|", [7, 0, 0], "7|"),
+            (c"%2$*1$d|", [5, 7, 0], "    7|"),
+            (c"%1$.*2$d|", [7, 4, 0], "0007|"),
+            (c"%0*d|", [4, 7, 0], "0007|"),
+        ];
+        for (fmt, [a, b, c], want) in cases {
+            let got = snprintf!(fmt, a, b, c);
+            assert_eq!(got, (want.len() as c_int, want.to_owned()), "{fmt:?}");
+        }
+    }
+
     /// A precision near `INT_MAX` takes the width below what an `int`
     /// holds once the digits, sign and prefix are taken from it: the
     /// width is spent, no padding is written, and the number's zeros run

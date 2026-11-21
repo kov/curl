@@ -742,6 +742,27 @@ pub(crate) unsafe extern "C" fn fread(
     unsafe { libc::fread(ptr.cast(), size, n, stream.cast()) }
 }
 
+/// The default read: `stream` read into `buf`, as `fread` reads it, and
+/// its error a read error whatever it read before it (`use_fread`). No
+/// stream reads nothing.
+///
+/// # Safety
+///
+/// `stream` is a `FILE *` or null.
+unsafe fn read_stream(stream: *mut c_void, buf: &mut [u8]) -> Read {
+    if stream.is_null() {
+        return Read::Eof;
+    }
+    // SAFETY: `buf` has room for its length, and the caller's `stream` is
+    // a `FILE *`.
+    let n = unsafe { libc::fread(buf.as_mut_ptr().cast(), 1, buf.len(), stream.cast()) };
+    // SAFETY: the stream just read.
+    if unsafe { libc::ferror(stream.cast()) } != 0 {
+        return Read::Fail;
+    }
+    NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
+}
+
 /// The write function's verdict on what it was given (`cw_out_cb_write`).
 fn write_verdict(wrote: usize) -> Write {
     if wrote == CURL_WRITEFUNC_PAUSE as usize {
@@ -827,21 +848,16 @@ impl HeaderHandler for Adapter {
 impl ReadHandler for Adapter {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
         let ccb = self.easy().ccb.get();
-        let f = ccb.read.unwrap_or(fread);
+        let Some(f) = ccb.read else {
+            // SAFETY: with no read function set, the application gave
+            // `read_data` as a `FILE *`, or none.
+            return self.call(cx, || unsafe { read_stream(ccb.read_data, buf) });
+        };
         let len = buf.len();
         let got = self.call(cx, || {
             // SAFETY: `buf` has room for `len` bytes.
             unsafe { f(buf.as_mut_ptr().cast(), 1, len, ccb.read_data) }
         });
-        // The default reads a `FILE *`, whose error is a read error,
-        // whatever it read before it (`use_fread`).
-        if ccb.read.is_none() && !ccb.read_data.is_null() {
-            // SAFETY: with no read function set, the application gave
-            // `read_data` as a `FILE *`, which `fread` just read.
-            if unsafe { libc::ferror(ccb.read_data.cast()) } != 0 {
-                return Read::Fail;
-            }
-        }
         if got == CURL_READFUNC_ABORT as usize {
             Read::Abort
         } else if got == CURL_READFUNC_PAUSE as usize {

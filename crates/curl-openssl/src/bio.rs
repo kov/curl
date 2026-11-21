@@ -48,8 +48,6 @@ pub(crate) struct Flags {
     pub(crate) input_pending: bool,
     /// The connection below ended (`peer_closed`).
     pub(crate) peer_closed: bool,
-    /// The trust store is set up (`x509_store_setup`).
-    pub(crate) store_ready: bool,
     /// Apple's SecTrust verified the peer (`sectrust_verified`), which the
     /// sessions it gives are kept with.
     pub(crate) sectrust_verified: bool,
@@ -111,7 +109,7 @@ pub(crate) struct Slot<'s, 'a> {
     pub(crate) io: Reach<'s, 'a>,
     pub(crate) flags: &'s mut Flags,
     pub(crate) below: Below,
-    /// Sets the trust store up, unless `flags.store_ready`.
+    /// Sets the trust store up, unless it is.
     pub(crate) store: StoreSetup<'s>,
     /// Where the secrets the library tells of are logged, if anywhere;
     /// LibreSSL tells of none (no keylog callback).
@@ -469,14 +467,11 @@ unsafe extern "C" fn in_read(bio: *mut BIO, buf: *mut c_char, blen: c_int) -> c_
             -1
         }
     };
-    if !slot.flags.store_ready {
-        if let Err(kind) = (slot.store)(slot.io.cx()) {
-            // SAFETY: as above.
-            unsafe { openssl_sys::BIO_clear_retry_flags(bio) };
-            slot.below = Below::Store(kind);
-            return -1;
-        }
-        slot.flags.store_ready = true;
+    if let Err(kind) = (slot.store)(slot.io.cx()) {
+        // SAFETY: as above.
+        unsafe { openssl_sys::BIO_clear_retry_flags(bio) };
+        slot.below = Below::Store(kind);
+        return -1;
     }
     if let Some(e) = failed {
         // Where the library reads why, as C's failed receive leaves it.

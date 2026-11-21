@@ -233,7 +233,7 @@ impl OpenSsl {
             crypto: Crypto::default(),
             method: None,
             identity: identity.clone(),
-            shared: StoreCache::new(shared.clone()),
+            trust: TrustStore::Waiting(shared.clone()),
             host,
             port: peer.port,
             kind: peer.kind,
@@ -374,7 +374,7 @@ struct Session {
     identity: TryArc<TlsIdentity>,
     /// What the library keeps for the multi, until the trust store is
     /// set up: the store it may take, and keep its own in.
-    shared: StoreCache,
+    trust: TrustStore,
     /// The origin's name as the URL gives it, without brackets.
     host: Vec<u8>,
     port: u16,
@@ -505,54 +505,66 @@ fn errno_of(below: Below) -> i32 {
     }
 }
 
-/// What the library keeps for the multi, as a session holds it until its
-/// trust store is set up: in a module of its own, so that nothing else
-/// reaches it but through the filter.
-mod store_cache {
-    use super::{Crypto, TlsShared};
+/// The session's trust store, in a module of its own, so that nothing
+/// else reaches the multi's state but through the filter.
+mod trust_store {
+    use core::ptr::NonNull;
 
-    /// The multi's state, read only for the session's trust store,
-    /// through the filter that keeps a store loaded under a provider's
-    /// library context out of the multi.
-    pub(super) struct StoreCache(Option<TlsShared>);
+    use curl_alloc::TryArc;
+    use curl_core::error::ErrorKind;
+    use curl_core::tls::{TlsCx, TlsIdentity, TlsShared};
+    use openssl_sys::SSL_CTX;
 
-    impl StoreCache {
-        pub(super) fn new(shared: TlsShared) -> StoreCache {
-            StoreCache(Some(shared))
+    use super::Crypto;
+    use crate::x509;
+
+    /// Not set up yet, holding the multi's state the store may be taken
+    /// from and kept in; or set up, the multi's state let go: the
+    /// connection does not keep it alive, wherever it goes
+    /// (`x509_store_setup`).
+    pub(super) enum TrustStore {
+        Waiting(TlsShared),
+        Ready,
+    }
+
+    impl TrustStore {
+        /// Set up the context's store, once: a store set up is not set
+        /// up again, and the multi's state goes with the setting up.
+        pub(super) fn ensure(
+            &mut self,
+            ctx: NonNull<SSL_CTX>,
+            identity: &TryArc<TlsIdentity>,
+            crypto: &Crypto,
+            cx: &mut TlsCx<'_>,
+        ) -> Result<(), ErrorKind> {
+            if let TrustStore::Waiting(shared) = self {
+                x509::setup_store(ctx, identity, for_store(shared, crypto), cx)?;
+                *self = TrustStore::Ready;
+            }
+            Ok(())
         }
+    }
 
-        /// The multi's state the store may be taken from and kept in:
-        /// none once a provider's library context is in use, by name or
-        /// loaded for a PKCS#11 URI, as a store loaded under it cannot
-        /// outlive it (`USING_PROVIDER`). Asked when the store is set up,
-        /// after the client's certificate and key are loaded.
-        pub(super) fn for_store(&self, crypto: &Crypto) -> Option<&TlsShared> {
-            self.0.as_ref().filter(|_| !crypto.has_libctx())
-        }
-
-        /// Not needed past the store: the connection does not keep the
-        /// multi's state alive, wherever it goes.
-        pub(super) fn release(&mut self) {
-            self.0 = None;
-        }
+    /// The multi's state the store may be taken from and kept in: none
+    /// once a provider's library context is in use, by name or loaded
+    /// for a PKCS#11 URI, as a store loaded under it cannot outlive it
+    /// (`USING_PROVIDER`). Asked when the store is set up, after the
+    /// client's certificate and key are loaded.
+    fn for_store<'s>(shared: &'s TlsShared, crypto: &Crypto) -> Option<&'s TlsShared> {
+        (!crypto.has_libctx()).then_some(shared)
     }
 }
-use store_cache::StoreCache;
+use trust_store::TrustStore;
 
 impl Session {
-    /// As `StoreCache::for_store`, with the session's crypto.
-    fn store_cache(&self) -> Option<&TlsShared> {
-        self.shared.for_store(&self.crypto)
-    }
-
     /// Run `op` on the SSL with the BIO reaching `io` (`bio::call`).
     fn call<R>(&mut self, io: &mut TlsIo<'_>, op: impl FnOnce(*mut SSL) -> R) -> (R, Below) {
         let ssl = self.ssl();
         let ctx = self.ctx.as_ref().expect("made at the first step").0;
         let identity = &self.identity;
         // Its fields borrowed apart from the flags.
-        let shared = self.shared.for_store(&self.crypto);
-        let mut setup = |cx: &mut TlsCx<'_>| x509::setup_store(ctx, identity, shared, cx);
+        let (trust, crypto) = (&mut self.trust, &self.crypto);
+        let mut setup = |cx: &mut TlsCx<'_>| trust.ensure(ctx, identity, crypto, cx);
         let mut slot = Slot {
             io: bio::Reach::Stream(io),
             flags: &mut self.flags,
@@ -831,10 +843,7 @@ impl Session {
         // The application's turn at the context (`ssl_fsslctx`), made
         // whole first, its trust store too (C's #11800).
         if io.configures_context() {
-            if !self.flags.store_ready {
-                x509::setup_store(ctx, &self.identity, self.store_cache(), io)?;
-                self.flags.store_ready = true;
-            }
+            self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
             io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
         }
         // The SSL (`ossl_init_ssl`).
@@ -1062,16 +1071,10 @@ impl Session {
         unsafe { openssl_sys::ERR_clear_error() };
         // SAFETY: the session's SSL, its BIO reaching `io`.
         let (err, below) = self.call(io, |ssl| unsafe { openssl_sys::SSL_connect(ssl) });
-        if !self.flags.store_ready {
-            // The ClientHello went out without a read: the store is set
-            // up for the certificate to come.
-            let ctx = self.ctx.as_ref().expect("made at the first step").0;
-            x509::setup_store(ctx, &self.identity, self.store_cache(), io)?;
-            self.flags.store_ready = true;
-        }
-        if self.flags.store_ready {
-            self.shared.release();
-        }
+        // The ClientHello went out without a read: the store is set up
+        // for the certificate to come.
+        let ctx = self.ctx.as_ref().expect("made at the first step").0;
+        self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
         #[cfg(libressl)]
         if let Some(log) = self.keylog.as_deref().filter(|l| KeyLog::enabled(l))
             && !self.flags.keylog_done
@@ -1929,14 +1932,8 @@ impl QuicTls for QuicSession {
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let s = &mut self.0;
-        if !s.flags.store_ready {
-            let ctx = s.ctx.as_ref().expect("made as the session is").0;
-            x509::setup_store(ctx, &s.identity, s.shared.for_store(&s.crypto), cx)?;
-            s.flags.store_ready = true;
-            // Not needed past the store, as for a stream session.
-            s.shared.release();
-        }
-        Ok(())
+        let ctx = s.ctx.as_ref().expect("made as the session is").0;
+        s.trust.ensure(ctx, &s.identity, &s.crypto, cx)
     }
 
     fn drive(
@@ -1949,8 +1946,8 @@ impl QuicTls for QuicSession {
         let ssl = s.ssl();
         let ctx = s.ctx.as_ref().expect("made as the session is").0;
         let identity = &s.identity;
-        let shared = s.shared.for_store(&s.crypto);
-        let mut setup = |cx: &mut TlsCx<'_>| x509::setup_store(ctx, identity, shared, cx);
+        let (trust, crypto) = (&mut s.trust, &s.crypto);
+        let mut setup = |cx: &mut TlsCx<'_>| trust.ensure(ctx, identity, crypto, cx);
         let mut slot = Slot {
             io: bio::Reach::Quic(cx),
             flags: &mut s.flags,

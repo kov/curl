@@ -42,11 +42,13 @@ witness: curl-openssl no_ca_named_trusts_the_build_s_default
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_missing_ca_file_fails_as_a_bad_file_twice_said
 --- old
-        if !self.flags.store_ready {
-            // The ClientHello went out without a read: the store is set
+        // for the certificate to come.
+        let ctx = self.ctx.as_ref().expect("made at the first step").0;
+        self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
 --- new
-        if false {
-            // The ClientHello went out without a read: the store is set
+        // for the certificate to come.
+        let ctx = self.ctx.as_ref().expect("made at the first step").0;
+        let _ = (ctx, &self.trust);
 
 === a connection never takes the store the multi kept, and loads its own
 file: crates/curl-openssl/src/x509.rs
@@ -302,10 +304,7 @@ witness: curl-openssl an_aborted_transfer_s_connection_says_no_goodbye
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_set_up
 --- old
-            if !self.flags.store_ready {
-                x509::setup_store(ctx, &self.identity, self.store_cache(), io)?;
-                self.flags.store_ready = true;
-            }
+            self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
             io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
 --- new
             io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
@@ -586,9 +585,9 @@ witness: curl-openssl a_ccc_whose_close_notify_fails_to_go_reads_nothing_more
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_pkcs11_uri_s_provider_keeps_the_store_from_the_multi
 --- old
-            self.0.as_ref().filter(|_| !crypto.has_libctx())
+        (!crypto.has_libctx()).then_some(shared)
 --- new
-            self.0.as_ref()
+        Some(shared)
 
 === a PKCS#11 URI's provider is dropped beside an engine
 file: crates/curl-openssl/src/engine.rs
@@ -620,9 +619,9 @@ witness: curl-openssl a_read_meeting_a_ticket_returns_wanting_more
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_store_made_for_the_context_handler_is_its_own
 --- old
-            self.0.as_ref().filter(|_| !crypto.has_libctx())
+        (!crypto.has_libctx()).then_some(shared)
 --- new
-            self.0.as_ref().filter(|_| !crypto.has_libctx() && false)
+        (!crypto.has_libctx() && false).then_some(shared)
 
 === a store a context handler may have changed is kept for the multi
 file: crates/curl-openssl/src/cache.rs

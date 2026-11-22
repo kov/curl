@@ -16,7 +16,7 @@ use curl_alloc::TryVec;
 #[cfg(unix)]
 use super::io::IO_FAILED;
 use super::io::{
-    BATCH, Datagram, DatagramRoom, Events, NonEmpty, Recv, SLOT, Sent, Socket, TOO_LARGE,
+    BATCH, Datagram, DatagramRoom, Events, Joined, NonEmpty, Recv, SLOT, Sent, Socket, TOO_LARGE,
 };
 
 /// The call a run of datagrams goes out with, as C's traces name it
@@ -110,7 +110,7 @@ fn recv_datagrams(
         Some((len, from)) => {
             out[0] = Datagram {
                 len,
-                segment: None,
+                joined: Joined::Not,
                 ecn: 0,
                 from: Some(from),
             };
@@ -1830,7 +1830,7 @@ impl Quic {
             };
             let d = Datagram {
                 len: n.get(),
-                segment: None,
+                joined: Joined::Not,
                 ecn: 0,
                 from: None,
             };
@@ -2101,10 +2101,10 @@ pub(crate) mod tests {
         pub(crate) sends: Lock<VecDeque<Act>>,
         pub(crate) sent: Lock<Vec<(usize, usize)>>,
         pub(crate) datagrams: Lock<VecDeque<Result<Vec<u8>, i32>>>,
-        /// The size of the packets the kernel joined each datagram of
-        /// (GRO), if it did.
+        /// Whether and at what size the kernel joined packets into each
+        /// datagram (GRO).
         #[cfg(unix)]
-        pub(crate) segment: Lock<Option<NonZeroUsize>>,
+        pub(crate) joined: Lock<Joined>,
         /// The most datagrams one receive gives, each into its own slot,
         /// as `recvmmsg` does; one if unset.
         #[cfg(unix)]
@@ -2221,7 +2221,7 @@ pub(crate) mod tests {
                 };
                 out[n] = Datagram {
                     len,
-                    segment: *self.segment.lock().unwrap(),
+                    joined: *self.joined.lock().unwrap(),
                     ecn: 0,
                     from: None,
                 };
@@ -2811,7 +2811,7 @@ pub(crate) mod tests {
     fn a_joined_datagram_s_packets_are_read_in_order_until_one_fails() {
         let script = Script::new();
         let (mut q, mut cx) = quic(&script);
-        *cx.socket.segment.lock().unwrap() = NonZeroUsize::new(10);
+        *cx.socket.joined.lock().unwrap() = Joined::At(NonZeroUsize::new(10).unwrap());
         let joined = [vec![1; 10], vec![2; 10], vec![3; 5]];
         let datagram = || Ok(joined.concat());
         cx.socket.datagrams.lock().unwrap().push_back(datagram());
@@ -2831,6 +2831,34 @@ pub(crate) mod tests {
         assert_eq!(script.lock().unwrap().read.len(), 1, "the first, failed");
         let said = "ingress, read_pkt -> ERR_FAKE (-215)";
         assert!(cx.lines.iter().any(|l| l == said), "{:?}", cx.lines);
+    }
+
+    /// A datagram whose packets cannot be told apart, the kernel having
+    /// cut the size it joined them at, is passed over, not read as one
+    /// packet as C reads it; the next is read.
+    #[cfg(unix)]
+    #[test]
+    fn a_datagram_of_packets_not_told_apart_is_passed_over() {
+        let script = Script::new();
+        let (mut q, mut cx) = quic(&script);
+        *cx.socket.joined.lock().unwrap() = Joined::Unknown;
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(vec![1; 25]));
+        q.ingress(&mut cx).unwrap();
+        assert!(script.lock().unwrap().read.is_empty(), "no packet is read");
+
+        *cx.socket.joined.lock().unwrap() = Joined::Not;
+        cx.socket
+            .datagrams
+            .lock()
+            .unwrap()
+            .push_back(Ok(vec![2; 25]));
+        q.ingress(&mut cx).unwrap();
+        let read: Vec<Vec<u8>> = script.lock().unwrap().read.drain(..).map(|r| r.0).collect();
+        assert_eq!(read, [vec![2; 25]]);
     }
 
     /// A refused datagram before the connect is done fails it as a

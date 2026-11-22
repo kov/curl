@@ -1281,10 +1281,10 @@ impl UdpSocket {
             let len = hdrs[i].msg_len as usize;
             // The kernel wrote the datagram at the start of its slot.
             room.wrote(i, len);
-            let (segment, ecn) = control_of(&hdrs[i].msg_hdr, names[i].ss_family);
+            let (joined, ecn) = control_of(&hdrs[i].msg_hdr, names[i].ss_family);
             *told = Datagram {
                 len,
-                segment,
+                joined,
                 ecn,
                 from: socket_addr(&names[i]),
             };
@@ -1351,7 +1351,7 @@ impl UdpSocket {
         let (_, ecn) = control_of(&msg, name.ss_family);
         out[0] = Datagram {
             len,
-            segment: None,
+            joined: Joined::Not,
             ecn,
             from: socket_addr(&name),
         };
@@ -1391,9 +1391,9 @@ pub const SLOT: usize = 64 * 1500;
 pub struct Datagram {
     /// Its length, at the start of its slot.
     pub len: usize,
-    /// The size of each packet the kernel joined into it, if it said
-    /// (`UDP_GRO`); see [`Datagram::packet_size`].
-    pub segment: Option<NonZeroUsize>,
+    /// Whether the kernel joined packets into it, and at what size; see
+    /// [`Datagram::packet_size`].
+    pub joined: Joined,
     /// The ECN bits it came with.
     pub ecn: u8,
     /// Whom it came from, if the kernel said.
@@ -1403,10 +1403,31 @@ pub struct Datagram {
 impl Datagram {
     /// The size of each packet in it: the size the kernel joined them
     /// at, or, if it joined none, its own length (`recvmmsg_packets`).
-    /// None for an empty datagram, which holds no packet.
+    /// None for a datagram with no packet to read: an empty one, or one
+    /// whose packets cannot be told apart.
     pub fn packet_size(&self) -> Option<NonZeroUsize> {
-        self.segment.or(NonZeroUsize::new(self.len))
+        match self.joined {
+            Joined::Not => NonZeroUsize::new(self.len),
+            Joined::At(size) => Some(size),
+            Joined::Unknown => None,
+        }
     }
+}
+
+/// Whether, and at what size, the kernel joined packets into a datagram
+/// it received.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Joined {
+    /// It joined none: the datagram is one packet.
+    #[default]
+    Not,
+    /// It joined packets of this size, the last perhaps shorter
+    /// (`UDP_GRO`).
+    At(NonZeroUsize),
+    /// It cut the control messages short (`MSG_CTRUNC`), the size it
+    /// joined at perhaps among them: where one packet ends and the next
+    /// begins is not known.
+    Unknown,
 }
 
 /// Bytes to send, never none: what a send of datagrams takes, so that
@@ -1528,10 +1549,13 @@ const IPV4_TOS_MESSAGE: libc::c_int = libc::IP_TOS;
 const IPV4_TOS_MESSAGE: libc::c_int = libc::IP_RECVTOS;
 
 #[cfg(unix)]
-/// The joined packets' size and the ECN bits a received message's control
-/// messages say, none and 0 if none does (`vquic_msghdr_get_udp_gro`,
-/// which Linux alone has; `vquic_msghdr_get_ecn`).
-fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (Option<NonZeroUsize>, u8) {
+/// Whether and at what size the kernel joined packets into a received
+/// message, and its ECN bits, as its control messages say: joined none
+/// and 0 if none does (`vquic_msghdr_get_udp_gro`, which Linux alone
+/// has; `vquic_msghdr_get_ecn`). Where the kernel cut them short, the
+/// size of the packets is not known, which C does not check: it reads
+/// such a datagram as one packet.
+fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (Joined, u8) {
     const ECN_MASK: libc::c_int = 0x03;
     // Never joined where the kernel does not join (macOS).
     #[cfg_attr(target_vendor = "apple", allow(unused_mut))]
@@ -1571,7 +1595,15 @@ fn control_of(hdr: &libc::msghdr, family: libc::sa_family_t) -> (Option<NonZeroU
         // SAFETY: the next message after `cm`, or NULL at the room's end.
         cm = unsafe { libc::CMSG_NXTHDR(hdr, cm) };
     }
-    (segment, ecn)
+    // On macOS the kernel joins none, and a cut message costs the ECN
+    // bits only.
+    let cut = cfg!(target_os = "linux") && hdr.msg_flags & libc::MSG_CTRUNC != 0;
+    let joined = match segment {
+        _ if cut => Joined::Unknown,
+        Some(size) => Joined::At(size),
+        None => Joined::Not,
+    };
+    (joined, ecn)
 }
 
 #[cfg(all(test, unix))]
@@ -2498,7 +2530,19 @@ mod control_tests {
         said: usize,
         data: &[u8],
         family: libc::c_int,
-    ) -> (Option<NonZeroUsize>, u8) {
+    ) -> (Joined, u8) {
+        read_flagged(level, kind, said, data, family, 0)
+    }
+
+    /// The same, for a message the kernel received with `flags`.
+    fn read_flagged(
+        level: libc::c_int,
+        kind: libc::c_int,
+        said: usize,
+        data: &[u8],
+        family: libc::c_int,
+        flags: libc::c_int,
+    ) -> (Joined, u8) {
         let mut room = [0u64; 8];
         let base = room.as_mut_ptr().cast::<u8>();
         // SAFETY: all zeroes is a valid header.
@@ -2525,6 +2569,7 @@ mod control_tests {
         let longest = u32::try_from(said.max(data.len())).unwrap();
         // SAFETY: a size computation, no pointer.
         hdr.msg_controllen = unsafe { libc::CMSG_SPACE(longest) } as _;
+        hdr.msg_flags = flags;
         control_of(&hdr, family as libc::sa_family_t)
     }
 
@@ -2532,14 +2577,17 @@ mod control_tests {
     /// length; an empty one holds none.
     #[test]
     fn a_datagram_not_joined_is_one_packet() {
-        let d = |len, segment| Datagram {
+        let d = |len, joined| Datagram {
             len,
-            segment: NonZeroUsize::new(segment),
+            joined,
             ..Datagram::default()
         };
-        assert_eq!(d(100, 0).packet_size(), NonZeroUsize::new(100));
-        assert_eq!(d(250, 100).packet_size(), NonZeroUsize::new(100));
-        assert_eq!(d(0, 0).packet_size(), None);
+        let at = |size| Joined::At(NonZeroUsize::new(size).unwrap());
+        assert_eq!(d(100, Joined::Not).packet_size(), NonZeroUsize::new(100));
+        assert_eq!(d(250, at(100)).packet_size(), NonZeroUsize::new(100));
+        assert_eq!(d(0, Joined::Not).packet_size(), None);
+        // Its packets not told apart, it has none to read.
+        assert_eq!(d(250, Joined::Unknown).packet_size(), None);
     }
 
     /// A control message is read only as far as its length says it goes,
@@ -2553,17 +2601,17 @@ mod control_tests {
         let v6 = libc::AF_INET6;
         // The type of service: its one byte.
         let tos = (libc::IPPROTO_IP, IPV4_TOS_MESSAGE);
-        assert_eq!(read_one(tos.0, tos.1, 1, &[3], v4), (None, 3));
-        assert_eq!(read_one(tos.0, tos.1, 0, &[3], v4), (None, 0));
+        assert_eq!(read_one(tos.0, tos.1, 1, &[3], v4), (Joined::Not, 3));
+        assert_eq!(read_one(tos.0, tos.1, 0, &[3], v4), (Joined::Not, 0));
         // The traffic class: an int.
         let class = (libc::IPPROTO_IPV6, libc::IPV6_TCLASS);
         assert_eq!(
             read_one(class.0, class.1, int, &tclass.to_ne_bytes(), v6),
-            (None, 2)
+            (Joined::Not, 2)
         );
         assert_eq!(
             read_one(class.0, class.1, 1, &tclass.to_ne_bytes(), v6),
-            (None, 0)
+            (Joined::Not, 0)
         );
         // The joined packets' size: an int, which Linux alone says.
         #[cfg(target_os = "linux")]
@@ -2572,19 +2620,43 @@ mod control_tests {
             let gro = (libc::SOL_UDP, libc::UDP_GRO);
             assert_eq!(
                 read_one(gro.0, gro.1, int, &size.to_ne_bytes(), v4),
-                (NonZeroUsize::new(1200), 0)
+                (Joined::At(NonZeroUsize::new(1200).unwrap()), 0)
             );
             assert_eq!(
                 read_one(gro.0, gro.1, 2, &size.to_ne_bytes(), v4),
-                (None, 0)
+                (Joined::Not, 0)
             );
             // A size of none is no size told.
             let none = 0 as libc::c_int;
             assert_eq!(
                 read_one(gro.0, gro.1, int, &none.to_ne_bytes(), v4),
-                (None, 0)
+                (Joined::Not, 0)
             );
         }
+    }
+
+    /// A datagram whose control messages the kernel cut short, the size
+    /// it joined packets at among them perhaps, is told as joined at a
+    /// size not known, though what it kept says a size: C reads it as one
+    /// packet.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_datagram_whose_control_messages_were_cut_has_no_size_known() {
+        let int = size_of::<libc::c_int>();
+        let size = 1200 as libc::c_int;
+        let gro = (libc::SOL_UDP, libc::UDP_GRO);
+        let v4 = libc::AF_INET;
+        let cut = libc::MSG_CTRUNC;
+        let told = |flags| read_flagged(gro.0, gro.1, int, &size.to_ne_bytes(), v4, flags);
+        assert_eq!(told(cut).0, Joined::Unknown);
+        let tos = (libc::IPPROTO_IP, IPV4_TOS_MESSAGE);
+        assert_eq!(
+            read_flagged(tos.0, tos.1, 1, &[3], v4, cut).0,
+            Joined::Unknown
+        );
+        // Other flags do not cut it.
+        let at = Joined::At(NonZeroUsize::new(1200).unwrap());
+        assert_eq!(told(libc::MSG_TRUNC).0, at);
     }
 }
 
@@ -2845,7 +2917,7 @@ mod tests {
             assert_eq!(r.recv_batch(&mut buf, &mut out).unwrap(), 1);
             let d = Datagram {
                 len,
-                segment: None,
+                joined: Joined::Not,
                 ecn: 2,
                 from,
             };
@@ -2893,7 +2965,7 @@ mod tests {
         for (i, len) in [100, 100, 50].into_iter().enumerate() {
             let d = Datagram {
                 len,
-                segment: None,
+                joined: Joined::Not,
                 ecn: 2,
                 from,
             };
@@ -2912,7 +2984,7 @@ mod tests {
         assert_eq!(r.recv_batch(&mut big, &mut one).unwrap(), 1);
         let joined = Datagram {
             len: 250,
-            segment: NonZeroUsize::new(100),
+            joined: Joined::At(NonZeroUsize::new(100).unwrap()),
             ecn: 2,
             from,
         };
@@ -3660,10 +3732,11 @@ mod tests {
                 got.extend_from_slice(&out[..n]);
             }
             let me = Some(from.local_addr().unwrap());
-            let lens: Vec<_> = got.iter().map(|d| (d.len, d.segment, d.from)).collect();
+            let lens: Vec<_> = got.iter().map(|d| (d.len, d.joined, d.from)).collect();
+            let not = Joined::Not;
             assert_eq!(
                 lens,
-                [(1000, None, me), (1000, None, me), (500, None, me)],
+                [(1000, not, me), (1000, not, me), (500, not, me)],
                 "{ip}"
             );
         }
@@ -3683,8 +3756,8 @@ mod tests {
             let mut out = [Datagram::default(); 1];
             assert_eq!(batch(&to, &mut buf, &mut out), 1);
             assert_eq!(
-                (out[0].len, out[0].segment),
-                (20 * 1400, NonZeroUsize::new(1400)),
+                (out[0].len, out[0].joined),
+                (20 * 1400, Joined::At(NonZeroUsize::new(1400).unwrap())),
                 "{ip}"
             );
             assert!(buf.datagram(0, 20 * 1400).iter().all(|&b| b == 7));

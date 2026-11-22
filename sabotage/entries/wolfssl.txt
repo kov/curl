@@ -363,3 +363,11 @@ witness: curl-wolfssl trust::tests::a_store_a_context_handler_may_change_is_not_
         && !identity.configured_by_handler()
 --- new
         && true
+
+=== a check whose name was checked after the handshake keeps it as unchecked
+file: crates/curl-wolfssl/src/session.rs
+witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
+--- old
+        Checked::new(io, pin, Residuals::NONE)
+--- new
+        Checked::new(io, pin, Residuals::NONE.host_check_follows_chain(io))

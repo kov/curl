@@ -995,16 +995,13 @@ impl<W: Wolfssl> Session<W> {
 
     /// The peer checked once the handshake is done: its public key is the
     /// pinned one, if one is (`Curl_wssl_verify_pinned`); the library
-    /// matched its name, with the chain where it is a name, and the
-    /// handshake its address.
+    /// matched its name, and the handshake checked it again on the peer's
+    /// certificate where the chain is not verified, as it checked an
+    /// address: no weakness kept.
     fn check_peer(&mut self, io: &mut TlsCx<'_>) -> Result<Checked, ErrorKind> {
         let ssl = self.ssl.as_ref().expect("made at the first step");
         let pin = verify_pinned(ssl, io)?;
-        let residuals = match self.sni()? {
-            Some(_) => Residuals::NONE.host_check_follows_chain(io),
-            None => Residuals::NONE,
-        };
-        Checked::new(io, pin, residuals)
+        Checked::new(io, pin, Residuals::NONE)
     }
 
     /// What the peer chose of the ALPN offer, if one was made

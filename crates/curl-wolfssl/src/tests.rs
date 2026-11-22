@@ -11,8 +11,8 @@ use curl_core::options::{
     CaCache, CaSetting, ColdGroup as _, SslOptions, TlsMaxVersion, TlsMinVersion, TlsOptions,
 };
 use curl_core::tls::{
-    Alpn, CaDefaults, Goodbye, Handshake, Kept, SharedKeyLog, TlsIdentity, TlsIo, TlsPeer,
-    TlsPeerKind, TlsSession as _, TlsShared, TlsTicket, TlsWait,
+    Alpn, CaDefaults, Goodbye, Handshake, Kept, Residual, Residuals, Shaken, SharedKeyLog,
+    TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession as _, TlsShared, TlsTicket, TlsWait,
 };
 
 use crate::fake::{Act, Fake, SOCKET_ERROR_E, Wire, World};
@@ -107,6 +107,20 @@ fn shake(
     });
     let calls = lib.w().calls.clone();
     (r, kept.notes.0, calls)
+}
+
+/// The weaknesses the check of a handshake over `world` keeps.
+fn residuals_of(world: World, id: &TryArc<TlsIdentity>) -> Residuals {
+    let lib = Fake::new(world);
+    let shared = TlsShared::testing();
+    let mut s = session(lib, id, Alpn::H2Http11, &shared);
+    let mut kept = Kept::new();
+    let wire = Wire::default();
+    let r = with_io(&mut s, id, &mut kept, &wire, |s, io| s.handshake(io));
+    match r {
+        Ok(Shaken::Done(checked)) => checked.residuals(),
+        _ => panic!("the handshake is done"),
+    }
 }
 
 fn has(notes: &[String], line: &str) -> bool {
@@ -565,6 +579,9 @@ fn the_name_is_checked_whether_or_not_the_chain_is() {
         let case = (verify_peer, verify_host);
         let (r, notes, calls) = shake(World::default(), &id);
         assert_eq!(r, Ok(Handshake::Done), "{case:?}: {notes:#?}");
+        // The name checked either way, the check keeps no weakness.
+        let kept = residuals_of(World::default(), &id);
+        assert!(!kept.has(Residual::HostCheckFollowsChain), "{case:?}");
         assert_eq!(
             calls.iter().any(|c| c == "check_domain(example.com)"),
             verify_host,

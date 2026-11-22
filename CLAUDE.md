@@ -10,7 +10,8 @@ What the rewrite covers (platforms, backends, which tests count, the reference b
 in [`SCOPE.md`](SCOPE.md); what the C tree contains is enumerated in [`inventory/`](inventory/README.md).
 How the code is shaped (crates, ownership, types, allocation) is in [`DESIGN.md`](DESIGN.md); the
 transfer engine in detail is in [`ENGINE.md`](ENGINE.md), and the order it is built in, with each
-step's status, in [`MILESTONES.md`](MILESTONES.md). Bringing the C tree up to upstream's, and acting
+step's status, in [`MILESTONES.md`](MILESTONES.md); work agreed on but not yet scheduled is in
+[`BACKLOG.md`](BACKLOG.md). Bringing the C tree up to upstream's, and acting
 on the vulnerability reports published since, follows [`UPSTREAM.md`](UPSTREAM.md).
 
 ## Why Rust, and what follows from it

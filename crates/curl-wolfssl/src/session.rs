@@ -28,6 +28,7 @@ use crate::library::{
     Ssl, Wolfssl, as_c, c_string,
 };
 use crate::sys;
+use crate::trust::TrustStore;
 
 /// The most early data a handshake holds to send (`CURL_SSL_EARLY_MAX`).
 const EARLY_MOST: usize = 64 * 1024;
@@ -82,9 +83,7 @@ pub(crate) struct Session<W: Wolfssl> {
     pub(crate) ssl: Option<SslOf<W>>,
     ctx: Option<W::Ctx>,
     pub(crate) identity: TryArc<TlsIdentity>,
-    /// What the library keeps for the multi, until the trust store is set
-    /// up.
-    shared: Option<TlsShared>,
+    trust: TrustStore,
     /// The origin's name as the URL gives it, without brackets.
     pub(crate) host: Vec<u8>,
     pub(crate) kind: TlsPeerKind,
@@ -156,7 +155,7 @@ impl<W: Wolfssl> Session<W> {
             ssl: None,
             ctx: None,
             identity: identity.clone(),
-            shared: Some(shared.clone()),
+            trust: TrustStore::waiting(shared.clone()),
             host,
             kind: peer.kind,
             alpn,
@@ -211,16 +210,11 @@ impl<W: Wolfssl> Session<W> {
         curl_core::tls::sni(&self.host, self.kind).map_err(|OutOfMemory| ErrorKind::OutOfMemory)
     }
 
-    /// Set the trust store up outside a call into the library
-    /// (`Curl_wssl_setup_x509_store`).
+    /// Set the trust store up outside a call into the library, if it is
+    /// not (`Curl_wssl_setup_x509_store`).
     pub(crate) fn setup_store(&mut self, io: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
-        self.state.store_ready = true;
         let ctx = self.ctx.as_mut().expect("made at the first step");
-        let set_up = crate::trust::setup(self.lib, ctx, &self.identity, self.shared.as_ref(), io);
-        // Not needed past the store: the connection does not keep the
-        // multi's state alive, wherever it goes.
-        self.shared = None;
-        set_up
+        self.trust.ensure(self.lib, ctx, &self.identity, io)
     }
 
     /// Run `op`, a call into the library on the session's object, with
@@ -236,7 +230,7 @@ impl<W: Wolfssl> Session<W> {
             ssl,
             ctx,
             identity,
-            shared,
+            trust,
             state,
             negotiated,
             ..
@@ -244,9 +238,7 @@ impl<W: Wolfssl> Session<W> {
         let lib = *lib;
         let ssl = ssl.as_mut().expect("made at the first step");
         let ctx = ctx.as_mut().expect("made at the first step");
-        let kept = shared.as_ref();
-        let mut setup =
-            |cx: &mut TlsCx<'_>| crate::trust::setup(lib, &mut *ctx, identity, kept, cx);
+        let mut setup = |cx: &mut TlsCx<'_>| trust.ensure(lib, &mut *ctx, identity, cx);
         let mut call = Call {
             io: Reach::Stream(io),
             state,
@@ -254,11 +246,7 @@ impl<W: Wolfssl> Session<W> {
             alpn: *negotiated,
             quic_params: None,
         };
-        let r = op(ssl, &mut call);
-        if self.state.store_ready {
-            self.shared = None;
-        }
-        r
+        op(ssl, &mut call)
     }
 
     /// Make the context and the session's object, and set them up
@@ -364,9 +352,7 @@ impl<W: Wolfssl> Session<W> {
         // The application's turn at the context (`ssl_fsslctx`), its
         // trust store set up first.
         if io.configures_context() {
-            if !self.state.store_ready {
-                self.setup_store(io)?;
-            }
+            self.setup_store(io)?;
             let native = self.ctx().native(None);
             io.configure_context(native)?;
         }
@@ -829,16 +815,14 @@ impl<W: Wolfssl> Session<W> {
     fn handshake_step(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
         self.waits = TlsWait::Nothing;
         let mut ret = self.call(io, |ssl, call| ssl.connect(call));
-        if !self.state.store_ready {
-            // The ClientHello went without a read: the store is set up for
-            // the certificate to come.
-            if let Err(kind) = self.setup_store(io) {
-                io.trace(format_args!(
-                    "Curl_wssl_setup_x509_store() -> {}",
-                    kind.number()
-                ));
-                return Err(kind);
-            }
+        // Where the ClientHello went without a read, the store is set up
+        // for the certificate to come.
+        if let Err(kind) = self.setup_store(io) {
+            io.trace(format_args!(
+                "Curl_wssl_setup_x509_store() -> {}",
+                kind.number()
+            ));
+            return Err(kind);
         }
         if self.keylog().is_some() {
             let ssl = self.ssl.as_ref().expect("made at the first step");

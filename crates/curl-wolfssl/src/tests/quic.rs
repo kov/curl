@@ -356,10 +356,16 @@ fn an_address_is_checked_as_one_and_an_unverified_host_not_at_all() {
     assert!(using < failed, "{notes:#?}");
 }
 
+/// The store is set up once, as the peer's first bytes are about to be
+/// read: with none kept for the multi, a second setting up would load the
+/// certificates again.
 #[test]
 fn a_quic_session_s_trust_is_set_up_once_before_the_peer_s_first_bytes() {
     let lib = Fake::new(World::default());
-    let id = identity(|i| i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec()));
+    let id = identity(|i| {
+        i.options.ca_file = CaSetting::Given(b"/ca.pem".to_vec());
+        i.options.ca_cache = CaCache::Off;
+    });
     let mut kept = Kept::new();
     let mut s = quic(lib, &id, &mut kept, false, &|_| Ok(())).unwrap();
     for _ in 0..2 {

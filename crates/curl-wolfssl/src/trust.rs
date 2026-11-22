@@ -16,6 +16,40 @@ use crate::library::{Ctx, Store as _, Wolfssl, as_c, c_string};
 /// loaded.
 type Kept<S> = StoreCache<S>;
 
+/// A session's trust store: not set up yet, holding the multi's state it
+/// may be taken from and kept in; or set up, that state let go, as the
+/// connection does not keep the multi's state alive, wherever it goes
+/// (`x509_store_setup`).
+pub(crate) struct TrustStore(Stage);
+
+enum Stage {
+    Waiting(TlsShared),
+    Ready,
+}
+
+impl TrustStore {
+    /// Not set up yet, the store to be taken from and kept in `shared`.
+    pub(crate) fn waiting(shared: TlsShared) -> TrustStore {
+        TrustStore(Stage::Waiting(shared))
+    }
+
+    /// Set the store of `ctx` up, once: it is set up before it is
+    /// loaded, as C marks it, so that one that failed is not tried again;
+    /// the multi's state goes with the setting up.
+    pub(crate) fn ensure<W: Wolfssl>(
+        &mut self,
+        lib: &W,
+        ctx: &mut W::Ctx,
+        identity: &TryArc<TlsIdentity>,
+        io: &mut TlsCx<'_>,
+    ) -> Result<(), ErrorKind> {
+        match std::mem::replace(&mut self.0, Stage::Ready) {
+            Stage::Waiting(shared) => setup(lib, ctx, identity, Some(&shared), io),
+            Stage::Ready => Ok(()),
+        }
+    }
+}
+
 /// A session's store may be taken from the multi, and kept there
 /// (`cache_criteria_met`): the certificates to trust come from a file
 /// alone, or from the library's default. A session whose context the
@@ -53,7 +87,7 @@ enum Found<S> {
 /// multi, if one serves it; else, where the multi may keep one, a store
 /// of the context's own made, loaded and kept; else the context's store
 /// loaded.
-pub(crate) fn setup<W: Wolfssl>(
+fn setup<W: Wolfssl>(
     lib: &W,
     ctx: &mut W::Ctx,
     identity: &TryArc<TlsIdentity>,

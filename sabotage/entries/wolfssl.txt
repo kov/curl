@@ -29,9 +29,11 @@ witness: curl-wolfssl tests::the_trust_is_loaded_as_c_loads_it
 file: crates/curl-wolfssl/src/library.rs
 witness: curl-wolfssl tests::the_store_is_set_up_at_the_handshake_s_first_read
 --- old
-        if self.state.handshaking && !self.state.store_ready {
+        if self.state.handshaking {
+            // Set up before the server's answer is read, so the
 --- new
         if false {
+            // Set up before the server's answer is read, so the
 
 === a retried close_notify is sent whole again (wolfSSL#7784)
 file: crates/curl-wolfssl/src/library.rs
@@ -242,11 +244,12 @@ witness: curl-wolfssl tests::quic::an_address_is_checked_as_one_and_an_unverifie
 file: crates/curl-wolfssl/src/quic.rs
 witness: curl-wolfssl tests::quic::a_quic_session_s_trust_is_set_up_once_before_the_peer_s_first_bytes
 --- old
-        if !self.0.state.store_ready {
-            self.0.setup_store(cx)?;
-        }
+    fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
+        self.0.setup_store(cx)
 --- new
+    fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let _ = cx;
+        Ok(())
 
 === the session-ticket callback finds no call through the BIO
 file: crates/curl-wolfssl/src/wolfssl.rs
@@ -371,3 +374,15 @@ witness: curl-wolfssl tests::the_name_is_checked_whether_or_not_the_chain_is
         Checked::new(io, pin, Residuals::NONE)
 --- new
         Checked::new(io, pin, Residuals::NONE.host_check_follows_chain(io))
+
+=== a trust store set up is set up again at the next read
+file: crates/curl-wolfssl/src/trust.rs
+witness: curl-wolfssl tests::quic::a_quic_session_s_trust_is_set_up_once_before_the_peer_s_first_bytes
+--- old
+            Stage::Waiting(shared) => setup(lib, ctx, identity, Some(&shared), io),
+--- new
+            Stage::Waiting(shared) => {
+                let r = setup(lib, ctx, identity, Some(&shared), io);
+                self.0 = Stage::Waiting(shared);
+                r
+            }

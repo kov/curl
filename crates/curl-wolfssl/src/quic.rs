@@ -82,10 +82,7 @@ impl<W: Wolfssl> QuicTls for QuicSession<W> {
     }
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
-        if !self.0.state.store_ready {
-            self.0.setup_store(cx)?;
-        }
-        Ok(())
+        self.0.setup_store(cx)
     }
 
     fn drive(

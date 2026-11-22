@@ -378,11 +378,10 @@ pub(crate) struct IoState {
     /// The handshake's first step is over (`ssl_connect_2`): its reads
     /// set the trust store up first, if it is not.
     pub(crate) handshaking: bool,
-    /// The trust store is set up (`x509_store_setup`).
-    pub(crate) store_ready: bool,
 }
 
-/// Sets the trust store up, from inside a read, on the context.
+/// Sets the trust store up, from inside a read, on the context, if it is
+/// not.
 pub(crate) type SetupStore<'s> = &'s mut dyn FnMut(&mut TlsCx<'_>) -> Result<(), ErrorKind>;
 
 /// A session the library made, as `wssl_vtls_new_session_cb` hands it to
@@ -500,10 +499,9 @@ impl Call<'_, '_> {
         if buf.is_empty() {
             return Moved::Bytes(0);
         }
-        if self.state.handshaking && !self.state.store_ready {
+        if self.state.handshaking {
             // Set up before the server's answer is read, so the
             // ClientHello goes without waiting for it.
-            self.state.store_ready = true;
             if let Some(setup) = self.store.as_mut()
                 && let Err(kind) = setup(self.io.cx())
             {

@@ -77,7 +77,7 @@ pub(crate) fn replace(path: &[u8], text: &[u8], on_close: OnClose) -> Result<(),
     // regular one is written after what it holds.
     #[cfg(unix)]
     let was = {
-        let file = fs::open_write(&target, Keep::Everything, 0o666)?;
+        let file = fs::open_append(&target, 0o666)?;
         let was = file.metadata()?;
         if !was.is_file() {
             let mut out = Writer::new(file, Mode::TEXT);

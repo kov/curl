@@ -408,6 +408,13 @@ pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
     open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode_t(mode))
 }
 
+/// Open `path` to add to it, as C's `fopen(.., "a")` does, creating it
+/// with permissions `mode` (before the umask) if it does not exist: what
+/// it holds is never cut, as this takes no `Keep` that could say so.
+pub fn open_append(path: &CStr, mode: u32) -> io::Result<File> {
+    open_write(path, Keep::Everything, mode)
+}
+
 /// This thread's `errno`, where the C library keeps it.
 #[cfg(target_os = "linux")]
 use libc::__errno_location as errno_location;

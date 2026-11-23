@@ -146,3 +146,19 @@ witness: curl-sys-abi handle_tests::a_notification_walks_and_waits_on_the_multi_
         return CURLM_RECURSIVE_API_CALL;
     }
     let mut highest = -1;
+
+=== a cleanup recurses into a callback on the handle's multi
+file: crates/curl-sys-abi/src/gate/table.rs
+witness: curl-sys-abi handle_tests::cleanup_and_reset_tell_the_debug_function_of_the_resolves_let_go
+--- old
+            EasyCall::Cleanup => EasyRules { kills: true, recurse: false, readonly: false, no_scache_lock: false },
+--- new
+            EasyCall::Cleanup => EasyRules { kills: true, recurse: true, readonly: false, no_scache_lock: false },
+
+=== a pause is let in by the event callbacks, which let in only reads
+file: crates/curl-sys-abi/src/gate/table.rs
+witness: curl-sys-abi gate::tests::knows_the_callback_kinds
+--- old
+            EasyCall::Pause => EasyRules { kills: false, recurse: true, readonly: false, no_scache_lock: false },
+--- new
+            EasyCall::Pause => EasyRules { kills: false, recurse: true, readonly: true, no_scache_lock: false },

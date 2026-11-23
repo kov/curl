@@ -953,6 +953,8 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
         // `Curl_close` ignores what the removal returns.
         let on_multi = multi.stack.hold();
         let Ok(reach @ Reach::Direct(_)) = on_multi.as_ref().map(|e| e.reach) else {
+            // The generated table says so, or the build fails.
+            const _: () = assert!(!EasyCall::Cleanup.rules().recurse);
             unreachable!("cleanup does not recurse");
         };
         let removed = crate::multi::remove(multi, reach, easy);
@@ -1180,7 +1182,11 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
         }
         // Reset may not recurse: the gate refuses it while a callback
         // runs on the handle, the only time it is reached through a frame.
-        EasyRef::Frame(..) => unreachable!("refused by the gate inside a callback"),
+        // The generated table says so, or the build fails.
+        EasyRef::Frame(..) => {
+            const _: () = assert!(!EasyCall::Reset.rules().recurse);
+            unreachable!("refused by the gate inside a callback")
+        }
     });
     match reset {
         // A handle being added has no transfer to reset.
@@ -1381,8 +1387,13 @@ impl ShimEasy {
             EasyRef::Easy(mut easy) => easy.release_resolves(),
             // Cleanup and reset may not recurse: the gate refuses them while
             // a callback runs on the handle's multi, the only time its
-            // transfer is reached through a frame.
-            EasyRef::Frame(..) => unreachable!("refused by the gate inside a callback"),
+            // transfer is reached through a frame. The generated table says
+            // so, or the build fails.
+            EasyRef::Frame(..) => {
+                const _: () =
+                    assert!(!EasyCall::Cleanup.rules().recurse && !EasyCall::Reset.rules().recurse);
+                unreachable!("refused by the gate inside a callback")
+            }
         });
         match released {
             // A handle being added keeps none.
@@ -1443,8 +1454,13 @@ pub unsafe extern "C" fn curl_easy_pause(curl: *mut CURL, action: c_int) -> CURL
             // SAFETY: as above.
             unsafe { &mut *cx.as_ptr() }.pause(id, req, &mut ShimEvents::new(m))
         }
-        // The gate refuses a pause in the event callbacks.
-        Reach::Frame(Frame::Event(_)) => unreachable!("refused by the gate"),
+        // The gate refuses a pause in the event callbacks, which let in
+        // only calls that read the handle. The generated table says a
+        // pause is not one, or the build fails.
+        Reach::Frame(Frame::Event(_)) => {
+            const _: () = assert!(!EasyCall::Pause.rules().readonly);
+            unreachable!("refused by the gate")
+        }
     };
     match paused {
         Ok(()) => CURLE_OK,

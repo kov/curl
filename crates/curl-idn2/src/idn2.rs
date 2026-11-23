@@ -7,7 +7,7 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 
 use curl_alloc::TryVec as _;
-use curl_core::idn::{Idn, IdnFailure};
+use curl_core::idn::{Idn, IdnFailure, Unchecked};
 
 /// libidn2, as C's build uses it.
 #[derive(Debug)]
@@ -114,7 +114,7 @@ fn lookup(name: &CStr, flags: c_int) -> (c_int, Made) {
 }
 
 impl Idn for Idn2 {
-    fn to_ascii(&self, name: &[u8]) -> Result<Vec<u8>, IdnFailure> {
+    fn to_ascii(&self, name: &[u8]) -> Result<Unchecked, IdnFailure> {
         // SAFETY: a C string libidn2 compares its own version with.
         if unsafe { idn2_check_version(WANTED.as_ptr()) }.is_null() {
             // C's `CURLE_NOT_BUILT_IN` for a library too old, which the
@@ -127,11 +127,11 @@ impl Idn for Idn2 {
         // refuses the name (`idn_decode`).
         let (rc, made) = lookup(name, NFC_INPUT | NONTRANSITIONAL);
         if rc == OK {
-            return answer(rc, made);
+            return answer(rc, made).map(Unchecked::new);
         }
         drop(made);
         let (rc, made) = lookup(name, TRANSITIONAL);
-        answer(rc, made)
+        answer(rc, made).map(Unchecked::new)
     }
 
     fn to_unicode(&self, ascii: &[u8]) -> Result<Vec<u8>, IdnFailure> {
@@ -165,11 +165,11 @@ mod tests {
         assert!(!set.is_null(), "the system has {utf8:?}");
         assert_eq!(
             Idn2.to_ascii("www.åäö.se".as_bytes()),
-            Ok(b"www.xn--4cab6c.se".to_vec())
+            Ok(Unchecked::new(b"www.xn--4cab6c.se".to_vec()))
         );
         assert_eq!(
             Idn2.to_ascii("www.große.de".as_bytes()),
-            Ok(b"www.xn--groe-xna.de".to_vec())
+            Ok(Unchecked::new(b"www.xn--groe-xna.de".to_vec()))
         );
         // Normalised first: a decomposed ä is the composed one's
         // (`IDN2_NFC_INPUT`).

@@ -7,7 +7,7 @@
 #![allow(unsafe_code)]
 
 use curl_alloc::TryVec as _;
-use curl_core::idn::{Idn, IdnFailure};
+use curl_core::idn::{Idn, IdnFailure, Unchecked};
 use windows_sys::Win32::Globalization::{
     CP_UTF8, IdnToAscii, IdnToUnicode, MB_ERR_INVALID_CHARS, MultiByteToWideChar,
     WideCharToMultiByte,
@@ -150,8 +150,8 @@ fn converted(
 }
 
 impl Idn for WinIdn {
-    fn to_ascii(&self, name: &[u8]) -> Result<Vec<u8>, IdnFailure> {
-        converted(name, IdnToAscii)
+    fn to_ascii(&self, name: &[u8]) -> Result<Unchecked, IdnFailure> {
+        converted(name, IdnToAscii).map(Unchecked::new)
     }
 
     fn to_unicode(&self, ascii: &[u8]) -> Result<Vec<u8>, IdnFailure> {
@@ -171,16 +171,16 @@ mod tests {
         let idn = WinIdn;
         assert_eq!(
             idn.to_ascii("www.åäö.se".as_bytes()),
-            Ok(b"www.xn--4cab6c.se".to_vec())
+            Ok(Unchecked::new(b"www.xn--4cab6c.se".to_vec()))
         );
         assert_eq!(
             idn.to_ascii("räksmörgås.se".as_bytes()),
-            Ok(b"xn--rksmrgs-5wao1o.se".to_vec())
+            Ok(Unchecked::new(b"xn--rksmrgs-5wao1o.se".to_vec()))
         );
         // Ending at a NUL, as C's string does.
         assert_eq!(
             idn.to_ascii("åäö.test\0ignored".as_bytes()),
-            Ok(b"xn--4cab6c.test".to_vec())
+            Ok(Unchecked::new(b"xn--4cab6c.test".to_vec()))
         );
         // The ANSI code page's å is no UTF-8.
         assert_eq!(idn.to_ascii(b"\xe5.test"), Err(IdnFailure::Malformed));
@@ -207,7 +207,10 @@ mod tests {
         // The result, too, fits in 254 units and the NUL, or is refused.
         let near =
             |m: usize| ("a".repeat(60) + ".").repeat(3) + &"a".repeat(m) + ".å" + &"a".repeat(20);
-        assert_eq!(idn.to_ascii(near(42).as_bytes()).map(|a| a.len()), Ok(254));
+        assert_eq!(
+            converted(near(42).as_bytes(), IdnToAscii).map(|a| a.len()),
+            Ok(254)
+        );
         assert_eq!(
             idn.to_ascii(near(43).as_bytes()),
             Err(IdnFailure::Malformed)

@@ -10,7 +10,7 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 
 use curl_alloc::TryVec as _;
-use curl_core::idn::{Idn, IdnFailure};
+use curl_core::idn::{Idn, IdnFailure, Unchecked};
 
 /// ICU's IDNA from the system's `icucore`, as C's build with
 /// `USE_APPLE_IDN` uses it.
@@ -191,7 +191,7 @@ fn copied(buffer: &[u8]) -> Result<Vec<u8>, IdnFailure> {
 }
 
 impl Idn for AppleIdn {
-    fn to_ascii(&self, name: &[u8]) -> Result<Vec<u8>, IdnFailure> {
+    fn to_ascii(&self, name: &[u8]) -> Result<Unchecked, IdnFailure> {
         // C measures the name with `strlen`: a NUL ends it.
         let name = name.split(|&b| b == 0).next().unwrap_or_default();
         if name.len() >= MAX_HOST_LENGTH {
@@ -222,7 +222,7 @@ impl Idn for AppleIdn {
         if err > U_ZERO_ERROR || info.errors != 0 {
             return Err(IdnFailure::Malformed);
         }
-        copied(&buffer)
+        copied(&buffer).map(Unchecked::new)
     }
 
     fn to_unicode(&self, ascii: &[u8]) -> Result<Vec<u8>, IdnFailure> {
@@ -274,12 +274,12 @@ mod tests {
         let idn = AppleIdn;
         assert_eq!(
             idn.to_ascii("www.åäö.se".as_bytes()),
-            Ok(b"www.xn--4cab6c.se".to_vec())
+            Ok(Unchecked::new(b"www.xn--4cab6c.se".to_vec()))
         );
         // Non-transitional: ß is kept, not mapped to "ss".
         assert_eq!(
             idn.to_ascii("www.große.de".as_bytes()),
-            Ok(b"www.xn--groe-xna.de".to_vec())
+            Ok(Unchecked::new(b"www.xn--groe-xna.de".to_vec()))
         );
         assert_eq!(
             idn.to_ascii("a\u{308}.test".as_bytes()),

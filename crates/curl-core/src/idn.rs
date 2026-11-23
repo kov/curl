@@ -14,10 +14,22 @@ pub trait Idn: fmt::Debug + Send + Sync {
     /// The ASCII form a name is looked up by (`Curl_idn_decode`): its
     /// labels in punycode, normalised as IDNA 2008 asks, or as IDNA 2003
     /// did where 2008 refuses the name.
-    fn to_ascii(&self, name: &[u8]) -> Result<Vec<u8>, IdnFailure>;
+    fn to_ascii(&self, name: &[u8]) -> Result<Unchecked, IdnFailure>;
 
     /// A name's labels in punycode shown in Unicode (`Curl_idn_encode`).
     fn to_unicode(&self, ascii: &[u8]) -> Result<Vec<u8>, IdnFailure>;
+}
+
+/// A library's ASCII form of a name, not yet checked to be one a host
+/// may have: only [`ascii_form`] opens it, after checking it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Unchecked(Vec<u8>);
+
+impl Unchecked {
+    /// `ascii`, as a library made it.
+    pub fn new(ascii: Vec<u8>) -> Unchecked {
+        Unchecked(ascii)
+    }
 }
 
 /// Why a name could not be converted.
@@ -81,10 +93,9 @@ impl NameRefused {
 
 /// The ASCII form `idn` makes of `name`, which is neither empty nor a
 /// name a host may not have (`Curl_idn_decode`, then
-/// `Curl_hostname_check`). The one caller of [`Idn::to_ascii`]: a
-/// library's output is never used unchecked.
+/// `Curl_hostname_check`): the one place an [`Unchecked`] is opened.
 pub(crate) fn ascii_form(idn: &dyn Idn, name: &[u8]) -> Result<Vec<u8>, NameRefused> {
-    let ascii = idn.to_ascii(name)?;
+    let Unchecked(ascii) = idn.to_ascii(name)?;
     if ascii.is_empty() {
         return Err(IdnFailure::Malformed.into());
     }
@@ -136,12 +147,12 @@ impl FakeIdn {
 
 #[cfg(any(test, feature = "test-util"))]
 impl Idn for FakeIdn {
-    fn to_ascii(&self, name: &[u8]) -> Result<Vec<u8>, IdnFailure> {
+    fn to_ascii(&self, name: &[u8]) -> Result<Unchecked, IdnFailure> {
         let found = Self::NAMES.iter().find(|(u, _)| u.as_bytes() == name);
         let (_, ascii) = found.ok_or(IdnFailure::Malformed)?;
         let mut out = Vec::new();
         out.try_extend_from_slice(ascii.as_bytes())?;
-        Ok(out)
+        Ok(Unchecked(out))
     }
 
     fn to_unicode(&self, ascii: &[u8]) -> Result<Vec<u8>, IdnFailure> {

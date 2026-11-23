@@ -571,7 +571,7 @@ exclude_re = [
     # it does; and nibbles joined at disjoint bits.
     'proto/http/sigv4\.rs:.*: (replace < with <= in post_fields_hash|replace \| with \^ in normalize)$',
     # A reservation size: a short one only makes a push grow the name.
-    'save\.rs:.*: replace \+ with (-|\*) in replace$',
+    'save\.rs:.*: replace \+ with (-|\*) in temp_beside$',
     # Counting no bytes adds nothing, and the update the bucket's drain
     # makes earns no more than the next would.
     'deliver/mod\.rs:.*: replace > with >= in BodyAccountant::counted$',

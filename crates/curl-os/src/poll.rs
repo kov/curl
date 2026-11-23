@@ -470,9 +470,11 @@ mod tests {
 
     #[test]
     fn a_sub_millisecond_timeout_still_waits() {
+        // Long enough that a wait rounded down to none ends before it.
+        let timeout = Duration::from_micros(900);
         let start = Instant::now();
-        assert_eq!(poll(&mut [], Duration::from_micros(10)).unwrap(), 0);
-        assert!(start.elapsed() >= Duration::from_micros(10));
+        assert_eq!(poll(&mut [], timeout).unwrap(), 0);
+        assert!(start.elapsed() >= timeout);
     }
 
     extern "C" fn ignore(_: libc::c_int) {}
@@ -631,9 +633,11 @@ mod windows_tests {
 
     #[test]
     fn a_sub_millisecond_timeout_still_waits() {
+        // Long enough that a wait rounded down to none ends before it.
+        let timeout = Duration::from_micros(900);
         let start = Instant::now();
-        assert_eq!(poll(&mut [], Duration::from_micros(10)).unwrap(), 0);
-        assert!(start.elapsed() >= Duration::from_micros(10));
+        assert_eq!(poll(&mut [], timeout).unwrap(), 0);
+        assert!(start.elapsed() >= timeout);
     }
 
     /// More sockets than Winsock's `FD_SETSIZE` are polled all the same.

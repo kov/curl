@@ -49,3 +49,11 @@ witness: curl-core save::tests::a_save_that_cannot_make_its_file_leaves_the_targ
         let file = fs::open_append(&target, 0o666)?;
 --- new
         let file = fs::open_write(&target, fs::Keep::Nothing, 0o666)?;
+
+=== a cookie jar whose close failed is saved all the same
+file: crates/curl-core/src/save.rs
+witness: curl-core save::tests::a_failed_close_fails_only_the_save_that_asks
+--- old
+            (OnClose::Fails, Err(_)) => Err(SaveError::Write),
+--- new
+            (OnClose::Fails, Err(_)) => Ok(()),

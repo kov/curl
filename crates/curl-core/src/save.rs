@@ -56,8 +56,9 @@ pub(crate) enum OnClose {
 }
 
 impl OnClose {
-    fn close(self, file: std::fs::File) -> Result<(), SaveError> {
-        match (self, fs::close(file)) {
+    /// What the save makes of the file's close, which `closed` says.
+    fn verdict(self, closed: io::Result<()>) -> Result<(), SaveError> {
+        match (self, closed) {
             (OnClose::Fails, Err(_)) => Err(SaveError::Write),
             _ => Ok(()),
         }
@@ -82,7 +83,7 @@ pub(crate) fn replace(path: &[u8], text: &[u8], on_close: OnClose) -> Result<(),
         if !was.is_file() {
             let mut out = Writer::new(file, Mode::TEXT);
             out.write_all(text)?;
-            return on_close.close(out.into_inner());
+            return on_close.verdict(fs::close(out.into_inner()));
         }
         was
     };
@@ -137,7 +138,7 @@ fn write_temp(
     // As text (`FOPEN_WRITETEXT`), which is binary here.
     let mut out = Writer::new(file, Mode::TEXT);
     out.write_all(text)?;
-    on_close.close(out.into_inner())
+    on_close.verdict(fs::close(out.into_inner()))
 }
 
 /// Write `text` to a new file at `temp`, readable and writable, in text
@@ -148,7 +149,7 @@ fn write_temp(temp: &CStr, text: &[u8], on_close: OnClose) -> Result<(), SaveErr
     let file = fs::open_write(temp, Keep::Absent, 0o600)?;
     let mut out = Writer::new(file, Mode::TEXT);
     out.write_all(text)?;
-    on_close.close(out.into_inner())
+    on_close.verdict(fs::close(out.into_inner()))
 }
 
 /// What C puts after the directory a temporary file is made in
@@ -208,6 +209,17 @@ fn c_path(path: &[u8]) -> Result<std::ffi::CString, SaveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed close fails the cookie jar's save and not a cache's,
+    /// whose close C does not check; a close that went fails neither.
+    #[test]
+    fn a_failed_close_fails_only_the_save_that_asks() {
+        let failed = || Err(io::Error::from_raw_os_error(5));
+        assert_eq!(OnClose::Fails.verdict(failed()), Err(SaveError::Write));
+        assert_eq!(OnClose::Ignored.verdict(failed()), Ok(()));
+        assert_eq!(OnClose::Fails.verdict(Ok(())), Ok(()));
+        assert_eq!(OnClose::Ignored.verdict(Ok(())), Ok(()));
+    }
 
     #[test]
     fn finds_the_directory_as_c() {

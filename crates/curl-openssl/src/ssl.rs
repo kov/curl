@@ -227,11 +227,7 @@ impl OpenSsl {
             None => None,
         };
         Ok(Session {
-            ssl: None,
-            ctx: None,
-            password: None,
-            crypto: Crypto::default(),
-            method: None,
+            objs: Objects::default(),
             identity: identity.clone(),
             trust: TrustStore::Waiting(shared.clone()),
             host,
@@ -321,6 +317,35 @@ impl Drop for Ssl {
     }
 }
 
+/// The library's objects one connection holds, each made after those it
+/// needs and freed before them, whatever order they are declared in.
+#[derive(Default)]
+struct Objects {
+    /// The SSL and its BIO. An SSL given to quiche it frees, before the
+    /// session is dropped.
+    ssl: Option<Held>,
+    /// The method of the SSL's BIO, which freeing the BIO calls.
+    method: Option<Method>,
+    /// The context the SSL is made of.
+    ctx: Option<Ctx>,
+    /// The client key's password as a C string, which the context points
+    /// at.
+    password: Option<Vec<u8>>,
+    /// The engine or provider the context was made with, in its library
+    /// context.
+    crypto: Crypto,
+}
+
+impl Drop for Objects {
+    fn drop(&mut self) {
+        drop(self.ssl.take());
+        drop(self.method.take());
+        drop(self.ctx.take());
+        drop(self.password.take());
+        drop(std::mem::take(&mut self.crypto));
+    }
+}
+
 /// Where a handshake put off for early data is (`earlydata_state`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Early {
@@ -359,18 +384,8 @@ impl Step {
 
 /// One connection's OpenSSL.
 struct Session {
-    // Dropped in this order: the SSL, which frees its BIO, before the
-    // BIO's method; the context after the SSL made of it. An SSL given to
-    // quiche it frees, before the session is dropped.
-    ssl: Option<Held>,
-    ctx: Option<Ctx>,
-    /// The client key's password as a C string, which the context points
-    /// at: dropped after it.
-    password: Option<Vec<u8>>,
-    /// The engine or provider the context was made with: dropped after
-    /// it.
-    crypto: Crypto,
-    method: Option<Method>,
+    /// The library's objects, freed in the order they need.
+    objs: Objects,
     identity: TryArc<TlsIdentity>,
     /// What the library keeps for the multi, until the trust store is
     /// set up: the store it may take, and keep its own in.
@@ -560,10 +575,10 @@ impl Session {
     /// Run `op` on the SSL with the BIO reaching `io` (`bio::call`).
     fn call<R>(&mut self, io: &mut TlsIo<'_>, op: impl FnOnce(*mut SSL) -> R) -> (R, Below) {
         let ssl = self.ssl();
-        let ctx = self.ctx.as_ref().expect("made at the first step").0;
+        let ctx = self.objs.ctx.as_ref().expect("made at the first step").0;
         let identity = &self.identity;
         // Its fields borrowed apart from the flags.
-        let (trust, crypto) = (&mut self.trust, &self.crypto);
+        let (trust, crypto) = (&mut self.trust, &self.objs.crypto);
         let mut setup = |cx: &mut TlsCx<'_>| trust.ensure(ctx, identity, crypto, cx);
         let mut slot = Slot {
             io: bio::Reach::Stream(io),
@@ -579,7 +594,11 @@ impl Session {
     }
 
     fn ssl(&self) -> NonNull<SSL> {
-        self.ssl.as_ref().expect("made at the first step").ptr()
+        self.objs
+            .ssl
+            .as_ref()
+            .expect("made at the first step")
+            .ptr()
     }
 
     /// Make the context and the SSL, reading and writing through the
@@ -600,7 +619,7 @@ impl Session {
         let ssl = self.ssl();
         let method = Method::new().ok_or(ErrorKind::OutOfMemory)?;
         let bio = method.bio().ok_or(ErrorKind::OutOfMemory)?;
-        self.method = Some(method);
+        self.objs.method = Some(method);
         set_bio(ssl, bio);
         Ok(())
     }
@@ -623,10 +642,10 @@ impl Session {
         let identity = self.identity.clone();
         let options = &identity.options;
         if let Some(name) = options.engine.as_deref() {
-            self.crypto = Crypto::select(name, io)?;
+            self.objs.crypto = Crypto::select(name, io)?;
         }
         if options.engine_default {
-            self.crypto.set_default(io)?;
+            self.objs.crypto.set_default(io)?;
         }
         // Not verified until the peer is checked (`!X509_V_OK`).
         io.verified(1);
@@ -657,7 +676,7 @@ impl Session {
         };
         // A context of that method, owned by `Ctx` below, in the
         // provider's library context if there is one.
-        let ctx = match self.crypto.libctx_ctx(method) {
+        let ctx = match self.objs.crypto.libctx_ctx(method) {
             Some(ctx) => ctx,
             // SAFETY: the library's method.
             None => unsafe { openssl_sys::SSL_CTX_new(method) },
@@ -670,9 +689,9 @@ impl Session {
                 format_args!("SSL: could not create a context: {e}"),
             ));
         };
-        self.ctx = Some(Ctx(ctx));
+        self.objs.ctx = Some(Ctx(ctx));
         if let Some(setup) = setup
-            && let Err(why) = setup(self.ctx.as_ref().expect("made above").native(None))
+            && let Err(why) = setup(self.objs.ctx.as_ref().expect("made above").native(None))
         {
             return Err(io.fail(ErrorKind::FailedInit, format_args!("{why}")));
         }
@@ -767,12 +786,18 @@ impl Session {
         }
         if options.cert.is_some() || options.cert_blob.is_some() || options.cert_type.is_some() {
             // Kept as long as the context, which OpenSSL hands it from.
-            self.password = options
+            self.objs.password = options
                 .key_password
                 .as_deref()
                 .map(x509::c_string)
                 .transpose()?;
-            crate::cert::client_cert(ctx, options, self.password.as_ref(), &mut self.crypto, io)?;
+            crate::cert::client_cert(
+                ctx,
+                options,
+                self.objs.password.as_ref(),
+                &mut self.objs.crypto,
+                io,
+            )?;
         }
         // SAFETY: the context. OpenSSL 1.1.1 and later need the client
         // to opt in to authenticating after the handshake; the forks have
@@ -843,8 +868,9 @@ impl Session {
         // The application's turn at the context (`ssl_fsslctx`), made
         // whole first, its trust store too (C's #11800).
         if io.configures_context() {
-            self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
-            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
+            self.trust
+                .ensure(ctx, &self.identity, &self.objs.crypto, io)?;
+            io.configure_context(self.objs.ctx.as_ref().expect("made above").native(None))?;
         }
         // The SSL (`ossl_init_ssl`).
         // SAFETY: the context.
@@ -855,7 +881,7 @@ impl Session {
                 format_args!("SSL: could not create a context (handle)"),
             ));
         };
-        self.ssl = Some(Held::Own(Ssl(ssl)));
+        self.objs.ssl = Some(Held::Own(Ssl(ssl)));
         // The status cannot be asked for where C has no OCSP (`cert_status`).
         #[cfg(not(no_ocsp))]
         if options.verify_status {
@@ -1073,8 +1099,9 @@ impl Session {
         let (err, below) = self.call(io, |ssl| unsafe { openssl_sys::SSL_connect(ssl) });
         // The ClientHello went out without a read: the store is set up
         // for the certificate to come.
-        let ctx = self.ctx.as_ref().expect("made at the first step").0;
-        self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
+        let ctx = self.objs.ctx.as_ref().expect("made at the first step").0;
+        self.trust
+            .ensure(ctx, &self.identity, &self.objs.crypto, io)?;
         #[cfg(libressl)]
         if let Some(log) = self.keylog.as_deref().filter(|l| KeyLog::enabled(l))
             && !self.flags.keylog_done
@@ -1850,7 +1877,7 @@ impl TlsSession for Session {
     /// What the peer chose, which is none before the handshake chose it,
     /// but for one put off: what the session resumed chose.
     fn chosen(&self) -> Option<Chosen> {
-        self.ssl.as_ref()?;
+        self.objs.ssl.as_ref()?;
         match self.deferred {
             Some(d) if !self.step.done() => Some(d.alpn),
             _ => Chosen::named(self.selected()),
@@ -1877,7 +1904,7 @@ impl TlsSession for Session {
 
     /// The `SSL_CTX`, and the `SSL` once made, as C hands them out.
     fn native(&self) -> Option<TlsNative> {
-        Some(self.ctx.as_ref()?.native(self.ssl.as_ref()))
+        Some(self.objs.ctx.as_ref()?.native(self.objs.ssl.as_ref()))
     }
 
     /// The binding of the peer's certificate, none before the session is
@@ -1886,7 +1913,7 @@ impl TlsSession for Session {
         &self,
         notes: &mut dyn curl_core::tls::BindingNotes,
     ) -> Result<Option<Vec<u8>>, ErrorKind> {
-        match self.ssl.as_ref() {
+        match self.objs.ssl.as_ref() {
             Some(ssl) => crate::x509::channel_binding(ssl.ptr(), notes),
             None => Ok(None),
         }
@@ -1932,8 +1959,8 @@ impl QuicTls for QuicSession {
 
     fn before_recv(&mut self, cx: &mut TlsCx<'_>) -> Result<(), ErrorKind> {
         let s = &mut self.0;
-        let ctx = s.ctx.as_ref().expect("made as the session is").0;
-        s.trust.ensure(ctx, &s.identity, &s.crypto, cx)
+        let ctx = s.objs.ctx.as_ref().expect("made as the session is").0;
+        s.trust.ensure(ctx, &s.identity, &s.objs.crypto, cx)
     }
 
     fn drive(
@@ -1944,9 +1971,9 @@ impl QuicTls for QuicSession {
     ) {
         let s = &mut self.0;
         let ssl = s.ssl();
-        let ctx = s.ctx.as_ref().expect("made as the session is").0;
+        let ctx = s.objs.ctx.as_ref().expect("made as the session is").0;
         let identity = &s.identity;
-        let (trust, crypto) = (&mut s.trust, &s.crypto);
+        let (trust, crypto) = (&mut s.trust, &s.objs.crypto);
         let mut setup = |cx: &mut TlsCx<'_>| trust.ensure(ctx, identity, crypto, cx);
         let mut slot = Slot {
             io: bio::Reach::Quic(cx),
@@ -1960,7 +1987,7 @@ impl QuicTls for QuicSession {
         let mut check = Check {
             ssl,
             // Given up to quiche, whose filter reports no handshake.
-            report: matches!(s.ssl, Some(Held::Own(_))),
+            report: matches!(s.objs.ssl, Some(Held::Own(_))),
             identity,
             host: &s.host,
             kind: s.kind,
@@ -1983,12 +2010,12 @@ impl QuicheTls for QuicSession {
     /// with it, as its connection drops, before this session and the
     /// BIO's method (`quiche_conn_new_with_tls`).
     fn give_up_session(&mut self) -> NonNull<core::ffi::c_void> {
-        let held = self.0.ssl.take().expect("made as the session is");
+        let held = self.0.objs.ssl.take().expect("made as the session is");
         let Held::Own(ssl) = held else {
             panic!("a session's SSL is given up once");
         };
         let ssl = std::mem::ManuallyDrop::new(ssl).0;
-        self.0.ssl = Some(Held::Given(Given(ssl)));
+        self.0.objs.ssl = Some(Held::Given(Given(ssl)));
         ssl.cast()
     }
 

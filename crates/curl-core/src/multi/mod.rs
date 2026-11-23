@@ -59,7 +59,8 @@ pub use sched::{Census, Counts};
 pub use sockets::{SocketFor, SocketWhat, UnknownSocket};
 pub use ssls::{ExportDone, ExportFailed, Exporting, SessionsOut};
 pub use timers::TimerChange;
-#[cfg(test)]
+// For the HTTP/3 trace tests, which run on Linux alone.
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) use wait::drive_round;
 #[cfg(any(test, feature = "test-util"))]
 pub use wait::drive_within;

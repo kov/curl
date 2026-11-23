@@ -57,9 +57,12 @@ fn serve_then(
             // it closes, as `serve` does.
             Err(openssl::ssl::HandshakeError::Failure(mut mid)) => {
                 let tcp = mid.get_mut();
-                tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-                let mut buf = [0u8; 4096];
-                while matches!(tcp.read(&mut buf), Ok(n) if n > 0) {}
+                // macOS refuses a timeout on a socket the client has
+                // already reset (EINVAL): it is closed, nothing to read.
+                if tcp.set_read_timeout(Some(Duration::from_secs(10))).is_ok() {
+                    let mut buf = [0u8; 4096];
+                    while matches!(tcp.read(&mut buf), Ok(n) if n > 0) {}
+                }
             }
             Err(e) => panic!("{e}"),
         }

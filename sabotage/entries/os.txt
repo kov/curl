@@ -362,9 +362,9 @@ witness: curl-os net::tests::a_udp_socket_moves_one_datagram_a_call
 file: crates/curl-os/src/net.rs
 witness: curl-os net::control_tests::a_datagram_not_joined_is_one_packet
 --- old
-            Joined::Not => NonZeroUsize::new(self.len),
+        self.segment.or(NonZeroUsize::new(self.len))
 --- new
-            Joined::Not => None,
+        self.segment
 
 === a send of segments goes as one datagram
 file: crates/curl-os/src/net.rs
@@ -500,19 +500,3 @@ witness: curl-os net::control_tests::a_control_message_is_read_only_as_far_as_it
     let carries = usize::try_from(len).is_ok_and(|len| len >= wanted);
 --- new
     let carries = usize::try_from(len).is_ok_and(|len| len > 0 || wanted > 0);
-
-=== a datagram whose control messages were cut is told its kept size
-file: crates/curl-os/src/net.rs
-witness: curl-os net::control_tests::a_datagram_whose_control_messages_were_cut_has_no_size_known
---- old
-    let cut = cfg!(target_os = "linux") && hdr.msg_flags & libc::MSG_CTRUNC != 0;
---- new
-    let cut = false;
-
-=== a datagram of packets not told apart is read as one packet
-file: crates/curl-os/src/net.rs
-witness: curl-core conn::quic::tests::a_datagram_of_packets_not_told_apart_is_passed_over
---- old
-            Joined::Unknown => None,
---- new
-            Joined::Unknown => NonZeroUsize::new(self.len),

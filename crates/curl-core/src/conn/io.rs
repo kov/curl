@@ -15,7 +15,7 @@ use crate::time::Instant;
 #[cfg(unix)]
 pub use curl_os::net::IO_FAILED;
 pub use curl_os::net::{
-    AF_INET, AF_INET6, BATCH, Connect, Datagram, DatagramRoom, InterfaceAddress, Ipv6Scope, Joined,
+    AF_INET, AF_INET6, BATCH, Connect, Datagram, DatagramRoom, InterfaceAddress, Ipv6Scope,
     NonEmpty, Protocol, Recv, SLOT, Sent, SocketOption, TOO_LARGE, TcpSocket, UdpSocket, Winsock,
     adopt, adopt_udp, ipv6_scope, open, open_udp,
 };
@@ -2641,7 +2641,7 @@ impl Socket for FakeSocket {
                         .ecn;
                     out[n] = Datagram {
                         len,
-                        joined: Joined::Not,
+                        segment: None,
                         ecn,
                         from: None,
                     };

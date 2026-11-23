@@ -899,18 +899,6 @@ so: weaknesses kept because C has them.
   through a run. Pinned by `a_run_cut_short_by_a_failure_is_cut_at_its_own_size` and
   `a_first_run_cut_short_by_a_failure_goes_as_one_datagram`
   (`crates/curl-core/src/conn/quic.rs`).
-- **A received datagram whose control messages the kernel cut is passed over.** On Linux, when
-  the kernel had no room for all of a datagram's control messages (`MSG_CTRUNC`), the size it
-  joined packets at (`UDP_GRO`) may be among those it dropped, so where one packet ends and the
-  next begins is not known. C reads no flag: with no size found it hands the whole datagram to
-  the QUIC library as one packet (`recvmmsg_packets` and `recvmsg_packets` in
-  `lib/vquic/vquic.c`). Here such a datagram is read as no packet, as an empty one is, and still
-  counts against the call's budget; QUIC's loss recovery sends what it held again. On macOS,
-  where the kernel joins none, a cut message costs its ECN bits only, as in C. Read from the code;
-  the room holds what C's `CMSG_PER_MSG_SIZE` holds, so neither suite cuts one. Pinned by
-  `a_datagram_whose_control_messages_were_cut_has_no_size_known`
-  (`crates/curl-os/src/net.rs`) and `a_datagram_of_packets_not_told_apart_is_passed_over`
-  (`crates/curl-core/src/conn/quic.rs`).
 
 ## Ends C runs inside a send
 

@@ -18,9 +18,9 @@ witness: curl-core proto::ws::tests::a_refused_frame_says_why_as_c_does
 file: crates/curl-core/src/proto/ws/frame.rs
 witness: curl-core proto::ws::tests::a_control_frame_is_at_most_125_bytes
 --- old
-                    && usize::from(byte) > MAX_CONTROL
+            .filter(|&l| usize::from(l) <= MAX_CONTROL)
 --- new
-                    && usize::from(byte) > MAX_CONTROL + 1
+            .filter(|&l| usize::from(l) <= MAX_CONTROL + 1)
 
 === a ping received is not answered
 file: crates/curl-core/src/proto/ws.rs
@@ -92,7 +92,7 @@ witness: curl-core proto::http::tests::connect_only::a_websocket_head_cut_short_
 file: crates/curl-core/src/deliver/ws.rs
 witness: curl-core proto::http::tests::ws::a_ping_delivered_is_answered_with_a_pong
 --- old
-            if let Some(len) = ws_of(self.cx).ping_piece(bytes, offset, len) {
+            if let Some(len) = ws_of(self.cx).ping_piece(bytes, offset, len)? {
 --- new
             if let Some(len) = None::<u64> {
 
@@ -150,8 +150,8 @@ witness: curl-core proto::ws::tests::a_ping_in_pieces_is_answered_at_its_last
 file: crates/curl-core/src/proto/ws.rs
 witness: curl-core proto::http::tests::ws::a_frame_in_pieces_is_written_as_it_comes
 --- old
-    if at + bytes.len() < total {
-        return None;
+    if end < total {
+        return Ok(None);
     }
 --- new
 
@@ -163,3 +163,11 @@ features: test-util,debug-hooks
             let bytes = &bytes[..bytes.len().min(MAX_WRITE)];
 --- new
             let bytes = &bytes[..bytes.len().min(usize::MAX)];
+
+=== a ping's piece past its end is copied
+file: crates/curl-core/src/proto/ws.rs
+witness: curl-core proto::ws::tests::a_ping_too_long_for_a_pong_is_refused_where_it_is_kept
+--- old
+        .filter(|&(_, end)| end <= total);
+--- new
+        .filter(|&(_, end)| end <= total || true);

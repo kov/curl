@@ -217,7 +217,7 @@ impl<H: Host> Take for Pass<'_, '_, '_, H> {
         if self.auto_pong && frame.kind == FrameKind::Ping {
             // A ping is never the application's: its payload, as it
             // comes, is its pong's (`ws_cw_dec_next`).
-            if let Some(len) = ws_of(self.cx).ping_piece(bytes, offset, len) {
+            if let Some(len) = ws_of(self.cx).ping_piece(bytes, offset, len)? {
                 self.ws(format_args!("auto PONG to [PING payload={len}]"));
             }
         } else if !bytes.is_empty() || remain == 0 {

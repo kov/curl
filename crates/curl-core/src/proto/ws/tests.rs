@@ -252,6 +252,41 @@ fn a_control_frame_is_at_most_125_bytes() {
     assert!(failed.is_some());
 }
 
+/// A ping's pieces are kept until it is whole and its pong then waits; a
+/// ping longer than a control frame, or a piece past its end, is refused
+/// as C refuses it, nothing written and no pong made.
+#[test]
+fn a_ping_too_long_for_a_pong_is_refused_where_it_is_kept() {
+    let mut ping = [0u8; MAX_CONTROL];
+    let mut pending = None;
+    assert_eq!(ping_piece(&mut ping, &mut pending, b"ab", 0, 4), Ok(None));
+    assert!(pending.is_none());
+    assert_eq!(
+        ping_piece(&mut ping, &mut pending, b"cd", 2, 4),
+        Ok(Some(4))
+    );
+    let pong = pending.take().expect("whole");
+    assert_eq!(&pong.payload[..usize::from(pong.len)], b"abcd");
+
+    let full = [b'p'; MAX_CONTROL];
+    assert_eq!(
+        ping_piece(&mut ping, &mut pending, &full, 0, 125),
+        Ok(Some(125))
+    );
+    pending = None;
+    let refused = Err(ErrorKind::BadFunctionArgument);
+    assert_eq!(ping_piece(&mut ping, &mut pending, b"x", 0, 126), refused);
+    assert_eq!(
+        ping_piece(&mut ping, &mut pending, b"xy", 124, 125),
+        refused
+    );
+    assert_eq!(
+        ping_piece(&mut ping, &mut pending, b"x", u64::MAX, 125),
+        refused
+    );
+    assert!(pending.is_none());
+}
+
 /// A length past 63 bits is refused again as it is asked again: the
 /// decoder stays where it was.
 #[test]

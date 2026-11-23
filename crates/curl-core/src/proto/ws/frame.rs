@@ -23,6 +23,25 @@ const MASK: u8 = 0x80;
 /// The longest payload of a control frame (RFC 6455 5.5).
 pub(crate) const MAX_CONTROL: usize = 125;
 
+/// A control frame's payload length, `MAX_CONTROL` at most: what a ping
+/// may be, and so its pong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ControlLen(u8);
+
+impl ControlLen {
+    /// `len`, if a control frame may be as long.
+    pub(crate) fn new(len: u64) -> Option<ControlLen> {
+        u8::try_from(len)
+            .ok()
+            .filter(|&l| usize::from(l) <= MAX_CONTROL)
+            .map(ControlLen)
+    }
+
+    pub(crate) fn get(self) -> usize {
+        usize::from(self.0)
+    }
+}
+
 /// The name a trace gives a frame's opcode (`ws_frame_name_of_op`).
 fn op_name(first: u8) -> &'static str {
     match first & 0xf {
@@ -308,7 +327,7 @@ impl Decoder {
                     FrameKind::Text | FrameKind::Binary => None,
                 };
                 if let Some(name) = control
-                    && usize::from(byte) > MAX_CONTROL
+                    && ControlLen::new(u64::from(byte)).is_none()
                 {
                     let why = format_args!("[WS] received {name} frame is too big");
                     let kind = said.fail(ErrorKind::RecvError, why);

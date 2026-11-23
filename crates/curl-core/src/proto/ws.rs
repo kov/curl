@@ -19,7 +19,7 @@ use curl_alloc::OutOfMemory;
 use crate::bufq::ChunkQueue;
 use crate::error::ErrorKind;
 use crate::ws::{Asked, AskedFrame, Frame, FrameKind, FrameLen, FrameType, SendFlags, Sent};
-use frame::{Decoder, Encoder, MAX_CONTROL, Passed, Take};
+use frame::{ControlLen, Decoder, Encoder, MAX_CONTROL, Passed, Take};
 
 /// The size of a WebSocket buffer's chunks (`WS_CHUNK_SIZE`), and how
 /// many make one full (`WS_CHUNK_COUNT`).
@@ -222,8 +222,13 @@ impl WsConn {
 
     /// Take `bytes` of a ping's payload, from `offset` of its `len`, and
     /// answer it once it is whole; the length answered, if it is
-    /// (`ws_auto_pong`).
-    pub(crate) fn ping_piece(&mut self, bytes: &[u8], offset: u64, len: u64) -> Option<u64> {
+    /// (`ws_auto_pong`), or a ping too long refused.
+    pub(crate) fn ping_piece(
+        &mut self,
+        bytes: &[u8],
+        offset: u64,
+        len: u64,
+    ) -> Result<Option<u64>, ErrorKind> {
         ping_piece(&mut self.ping, &mut self.pending, bytes, offset, len)
     }
 
@@ -828,7 +833,7 @@ impl Take for Collect<'_> {
         if self.auto_pong && frame.kind == FrameKind::Ping {
             // A ping is never the application's: its payload, as it
             // comes, is its pong's (`ws_client_collect`).
-            if let Some(len) = ping_piece(self.ping, self.pending, bytes, offset, len) {
+            if let Some(len) = ping_piece(self.ping, self.pending, bytes, offset, len)? {
                 self.said
                     .ws(format_args!("auto PONG to [PING payload={len}]"));
             }
@@ -855,23 +860,32 @@ impl Take for Collect<'_> {
 
 /// Keep `bytes`, from `offset` of a ping's payload of `len`, in `ping`,
 /// and once the payload is whole, make the pong of it the one waiting in
-/// `pending`: the length answered, if it is (`ws_auto_pong`). The decoder
-/// takes no ping longer than a control frame may be.
+/// `pending`: the length answered, if it is (`ws_auto_pong`). A ping
+/// longer than a control frame may be, or a piece past its end, is
+/// refused as C refuses it.
 fn ping_piece(
     ping: &mut [u8; MAX_CONTROL],
     pending: &mut Option<Pong>,
     bytes: &[u8],
     offset: u64,
     len: u64,
-) -> Option<u64> {
-    let at = usize::try_from(offset).expect("a ping is short");
-    let total = usize::try_from(len).expect("a ping is short");
-    ping[at..at + bytes.len()].copy_from_slice(bytes);
-    if at + bytes.len() < total {
-        return None;
+) -> Result<Option<u64>, ErrorKind> {
+    let total = ControlLen::new(len)
+        .ok_or(ErrorKind::BadFunctionArgument)?
+        .get();
+    let end = usize::try_from(offset)
+        .ok()
+        .and_then(|at| Some((at, at.checked_add(bytes.len())?)))
+        .filter(|&(_, end)| end <= total);
+    let Some((at, end)) = end else {
+        return Err(ErrorKind::BadFunctionArgument);
+    };
+    ping[at..end].copy_from_slice(bytes);
+    if end < total {
+        return Ok(None);
     }
     *pending = Some(Pong::of(&ping[..total]));
-    Some(len)
+    Ok(Some(len))
 }
 
 impl Pong {

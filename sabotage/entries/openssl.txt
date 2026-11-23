@@ -43,11 +43,12 @@ file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl a_missing_ca_file_fails_as_a_bad_file_twice_said
 --- old
         // for the certificate to come.
-        let ctx = self.ctx.as_ref().expect("made at the first step").0;
-        self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
+        let ctx = self.objs.ctx.as_ref().expect("made at the first step").0;
+        self.trust
+            .ensure(ctx, &self.identity, &self.objs.crypto, io)?;
 --- new
         // for the certificate to come.
-        let ctx = self.ctx.as_ref().expect("made at the first step").0;
+        let ctx = self.objs.ctx.as_ref().expect("made at the first step").0;
         let _ = (ctx, &self.trust);
 
 === a connection never takes the store the multi kept, and loads its own
@@ -304,18 +305,19 @@ witness: curl-openssl an_aborted_transfer_s_connection_says_no_goodbye
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_set_up
 --- old
-            self.trust.ensure(ctx, &self.identity, &self.crypto, io)?;
-            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
+            self.trust
+                .ensure(ctx, &self.identity, &self.objs.crypto, io)?;
+            io.configure_context(self.objs.ctx.as_ref().expect("made above").native(None))?;
 --- new
-            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
+            io.configure_context(self.objs.ctx.as_ref().expect("made above").native(None))?;
 
 === the application's context handler's error lets the handshake go on
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl the_context_handler_s_error_fails_the_handshake_before_it_starts
 --- old
-            io.configure_context(self.ctx.as_ref().expect("made above").native(None))?;
+            io.configure_context(self.objs.ctx.as_ref().expect("made above").native(None))?;
 --- new
-            let _ = io.configure_context(self.ctx.as_ref().expect("made above").native(None));
+            let _ = io.configure_context(self.objs.ctx.as_ref().expect("made above").native(None));
 
 === a transfer's handlers reach no SSL of its OpenSSL connection
 file: crates/curl-openssl/src/ssl.rs

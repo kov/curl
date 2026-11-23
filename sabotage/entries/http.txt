@@ -162,12 +162,12 @@ witness: curl-core a_get_takes_no_refusal_for_success
         let _ = out.try_reserve_exact(path.len() + query.map_or(0, |q| 1 + q.len()));
 
 === a host that cannot be copied is a malformed URL
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/proto/base.rs
 witness: curl-core a_get_survives_every_allocation_failing
 --- old
-        let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
+    let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
 --- new
-        let host = url.get(Part::Host, GetOptions::NONE).map_err(|_| ErrorKind::UrlMalformat)?;
+    let host = url.get(Part::Host, GetOptions::NONE).map_err(|_| ErrorKind::UrlMalformat)?;
 
 === the request head grows as it is written
 file: crates/curl-core/src/proto/http1/request.rs

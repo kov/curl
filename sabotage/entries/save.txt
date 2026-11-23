@@ -6,7 +6,7 @@ witness: curl-core save::tests::a_file_named_as_long_as_the_system_takes_is_repl
 --- old
     temp.try_extend_from_slice(&random)?;
 --- new
-    temp.try_extend_from_slice(&path[dir.len()..])?;
+    temp.try_extend_from_slice(&path[dir.map_or(0, <[u8]>::len)..])?;
 
 === a cache file replaced takes its mode whoever owns the new one
 file: crates/curl-core/src/save.rs

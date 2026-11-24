@@ -693,6 +693,23 @@ impl Stream {
         matches!(&self.target, Target::File { file: Some(file), .. } if file.failed())
     }
 
+    /// Set the output file's access and modification times to `t`
+    /// (`setfiletime`), through the file this transfer opened, what it
+    /// holds written out first so that its close changes neither. None
+    /// where no file is open, or what it held could not be written, which
+    /// its close says: a file the transfer did not open keeps its times
+    /// whatever its name.
+    pub(crate) fn date(&mut self, t: i64) -> Option<std::io::Result<()>> {
+        let Target::File {
+            file: Some(file), ..
+        } = &mut self.target
+        else {
+            return None;
+        };
+        file.flush().ok()?;
+        Some(fs::set_times(file.get_ref(), t))
+    }
+
     /// Close the output file, if one is open (`fclose`): whether what it
     /// held could be written.
     pub(crate) fn close(&mut self) -> Result<(), stdio::Failed> {

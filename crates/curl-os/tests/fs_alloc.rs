@@ -67,9 +67,6 @@ fn takes_a_long_name_without_allocating() {
     count("stat", &mut || {
         fs::with_c_name(&f, fs::stat).map(|st| assert!(st.is_file()))
     });
-    count("set_times", &mut || {
-        fs::with_c_name(&f, |c| fs::set_times(c, 1_000_000_000))
-    });
     count("rename", &mut || {
         fs::with_c_name(&f, |from| fs::with_c_name(&g, |to| fs::rename(from, to)))
     });

@@ -732,6 +732,44 @@ fn keeps_the_remote_time() {
     );
 }
 
+/// `--remote-time` dates only a file the transfer opened: an output a
+/// time condition left alone keeps its time, as its bytes. C's tool
+/// gives it the source's time by name all the same.
+#[cfg(unix)]
+#[test]
+fn the_remote_time_dates_only_a_file_the_transfer_opened() {
+    let s = Scratch::new("time-unmet");
+    s.write("f", b"x");
+    s.write("out", b"mine");
+    let date = |name: &str, secs: u64| {
+        std::fs::File::options()
+            .write(true)
+            .open(s.0.join(name))
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    };
+    date("f", 946_728_000);
+    date("out", 1_577_836_800);
+    let args = ["-s", "-R", "-z", "1 jan 2100", "-o", "out", &s.url("f")];
+    let r = curl(&s, &args);
+    assert_eq!(r.code, 0);
+    assert_eq!(s.read("out"), b"mine");
+    let meta = std::fs::metadata(s.0.join("out")).unwrap();
+    assert_eq!(meta.mtime(), 1_577_836_800);
+    // Met, the file is written and dated.
+    let r = curl(
+        &s,
+        &["-s", "-R", "-z", "1 jan 1990", "-o", "out", &s.url("f")],
+    );
+    assert_eq!(r.code, 0);
+    assert_eq!(s.read("out"), b"x");
+    assert_eq!(
+        std::fs::metadata(s.0.join("out")).unwrap().mtime(),
+        946_728_000
+    );
+}
+
 /// `--upload-file` writes the file to the URL's path; `-C -` appends what
 /// the target lacks.
 #[test]

@@ -46,8 +46,9 @@ witness: curl-tool skips_an_existing_output_file
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool keeps_the_remote_time
 --- old
-            set_file_time(name, t, msgs);
+                Some(t) if result.is_ok() && op.remote_time => stream.date(t).map(|r| (t, r)),
 --- new
+                Some(_) if result.is_ok() && op.remote_time => None::<(i64, std::io::Result<()>)>,
 
 === `--remote-time` sets the modification time only
 file: crates/curl-os/src/fs.rs
@@ -55,7 +56,7 @@ witness: curl-tool keeps_the_remote_time
 --- old
     let times = [at, at];
 --- new
-    let times = [libc::timeval { tv_sec: 0, tv_usec: 0 }, at];
+    let times = [libc::timespec { tv_sec: 0, tv_nsec: 0 }, at];
 
 === `--include` shows no header lines of a file
 file: crates/curl-tool/src/output.rs
@@ -1058,12 +1059,14 @@ file: crates/curl-tool/src/operate.rs
 witness: curl-tool downloads_with_long_names_under_torture
 features: debug-hooks
 --- old
-    if let Err(e) = fs::with_c_name(name, |c| fs::set_times(c, t)) {
+                Some(t) if result.is_ok() && op.remote_time => stream.date(t).map(|r| (t, r)),
 --- new
-    if let Err(e) = std::fs::File::open(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name))
-        .and_then(|f| f.set_modified(std::time::UNIX_EPOCH))
-        .and_then(|()| fs::with_c_name(name, |c| fs::set_times(c, t)))
-    {
+                Some(t) if result.is_ok() && op.remote_time => {
+                    let name = stream.file_name().unwrap_or_default();
+                    let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name);
+                    let _ = std::fs::metadata(path);
+                    stream.date(t).map(|r| (t, r))
+                }
 
 === -T opens the upload by a name std copies
 file: crates/curl-tool/src/operate.rs
@@ -1914,3 +1917,24 @@ witness: curl-tool options::parse::tests::a_local_port_range_is_read_as_c_reads_
     let Some(first) = NonZeroU16::new(first) else {
 --- new
     let Some(first) = NonZeroU16::new(first.max(1)) else {
+
+=== a file the transfer did not open is dated by its name
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool the_remote_time_dates_only_a_file_the_transfer_opened
+--- old
+                Some(t) if result.is_ok() && op.remote_time => stream.date(t).map(|r| (t, r)),
+--- new
+                Some(t) if result.is_ok() && op.remote_time => stream.file_name().map(|n| {
+                    let dated = fs::with_c_name(n, |c| fs::open_append(c, 0o666))
+                        .and_then(|f| fs::set_times(&f, t));
+                    (t, dated)
+                }),
+
+=== an output's buffered bytes are written after it is dated
+file: crates/curl-tool/src/output.rs
+witness: curl-tool keeps_the_remote_time
+--- old
+        file.flush().ok()?;
+        Some(fs::set_times(file.get_ref(), t))
+--- new
+        Some(fs::set_times(file.get_ref(), t))

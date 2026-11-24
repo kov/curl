@@ -3687,6 +3687,13 @@ fn finish(
                 result = Err(ErrorKind::WriteError);
             }
             let opened = stream.is_open_file();
+            // The time is set through the file this transfer opened, before
+            // it closes; C sets it by name after the close, whether or not
+            // this transfer opened the file (`post_close_output`).
+            let dated = match easy.report().filetime() {
+                Some(t) if result.is_ok() && op.remote_time => stream.date(t).map(|r| (t, r)),
+                _ => None,
+            };
             if stream.close().is_err() && result.is_ok() {
                 let kind = ErrorKind::WriteError;
                 // C's text, with its prefix twice.
@@ -3707,11 +3714,10 @@ fn finish(
                 remove_partial(name, msgs);
             }
             if result.is_ok()
-                && op.remote_time
+                && let Some((t, Err(e))) = dated
                 && let Some(name) = stream.file_name()
-                && let Some(t) = easy.report().filetime()
             {
-                set_file_time(name, t, msgs);
+                file_time_failed(name, t, &e, msgs);
             }
             result
         }
@@ -3846,21 +3852,20 @@ fn remove_partial(name: &[u8], msgs: Messages) {
     }
 }
 
-/// Give `name` the modification and access time `t`, seconds after the
-/// epoch (`setfiletime`). A failure is only warned about.
-fn set_file_time(name: &[u8], t: i64, msgs: Messages) {
-    if let Err(e) = fs::with_c_name(name, |c| fs::set_times(c, t)) {
-        let reason = os_message(&e);
-        if let Ok(number) = try_format(format_args!("{t}")) {
-            msgs.warn(&[
-                b"Failed to set filetime ",
-                number.as_bytes(),
-                b" on '",
-                name,
-                b"': ",
-                reason.as_bytes(),
-            ]);
-        }
+/// Warn that `name` could not be given the modification and access time
+/// `t`, seconds after the epoch, for `e` (`setfiletime`): a failure is
+/// only warned about.
+fn file_time_failed(name: &[u8], t: i64, e: &std::io::Error, msgs: Messages) {
+    let reason = os_message(e);
+    if let Ok(number) = try_format(format_args!("{t}")) {
+        msgs.warn(&[
+            b"Failed to set filetime ",
+            number.as_bytes(),
+            b" on '",
+            name,
+            b"': ",
+            reason.as_bytes(),
+        ]);
     }
 }
 

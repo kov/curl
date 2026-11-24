@@ -373,18 +373,18 @@ pub fn make_dir(path: &CStr, mode: u32) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-/// Set the access and modification times of the file at `path` to `t`
-/// seconds after the epoch (`utimes(2)`), by name: no permission to read
-/// or write it is needed, only to own it.
-pub fn set_times(path: &CStr, t: i64) -> io::Result<()> {
-    let at = libc::timeval {
+/// Set the access and modification times of the open `file` to `t`
+/// seconds after the epoch (`futimens(2)`): the file this handle is open
+/// on, whatever its name names by now. Only its owner may.
+pub fn set_times(file: &File, t: i64) -> io::Result<()> {
+    let at = libc::timespec {
         tv_sec: t,
-        tv_usec: 0,
+        tv_nsec: 0,
     };
     let times = [at, at];
-    // SAFETY: `path` is a C string and `times` two `timeval`s, both alive
-    // for the call, which only reads them.
-    if unsafe { libc::utimes(path.as_ptr(), times.as_ptr()) } < 0 {
+    // SAFETY: `file` is open for the call, and `times` two `timespec`s,
+    // alive for it, which it only reads.
+    if unsafe { libc::futimens(file.as_raw_fd(), times.as_ptr()) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -1062,13 +1062,13 @@ pub fn make_dir(path: &CStr, mode: u32) -> io::Result<()> {
     done(unsafe { wfs::CreateDirectoryW(wide.as_ptr(), std::ptr::null()) })
 }
 
-/// Set the access and modification times of the file at `path` to `t`
-/// seconds after the epoch, as C's tool sets them on Windows
-/// (`tool_filetime.c`): opened for its attributes only, then
-/// `SetFileTime`. A time a `FILETIME` cannot hold is refused; the tool
-/// caps it first, as C's does.
+/// Set the access and modification times of the open `file` to `t`
+/// seconds after the epoch with `SetFileTime`, as C's tool sets them on
+/// Windows (`tool_filetime.c`), through this handle: the file it is open
+/// on, whatever its name names by now. A time a `FILETIME` cannot hold
+/// is refused; the tool caps it first, as C's does.
 #[cfg(windows)]
-pub fn set_times(path: &CStr, t: i64) -> io::Result<()> {
+pub fn set_times(file: &File, t: i64) -> io::Result<()> {
     let ft = t
         .checked_mul(10_000_000)
         .and_then(|n| n.checked_add(EPOCH_IN_FILETIME))
@@ -1078,14 +1078,6 @@ pub fn set_times(path: &CStr, t: i64) -> io::Result<()> {
         dwLowDateTime: (ft & 0xFFFF_FFFF) as u32,
         dwHighDateTime: (ft >> 32) as u32,
     };
-    let share = wfs::FILE_SHARE_READ | wfs::FILE_SHARE_WRITE | wfs::FILE_SHARE_DELETE;
-    let file = create(
-        path,
-        wfs::FILE_WRITE_ATTRIBUTES,
-        share,
-        wfs::OPEN_EXISTING,
-        0,
-    )?;
     // SAFETY: the handle is open while `file` lives; both times are read
     // only, the creation time left as it is.
     done(unsafe {
@@ -1629,20 +1621,27 @@ mod tests {
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
-    /// A file's times are set by name, though it may not be read.
+    /// An open file's times are set through its handle, though it may
+    /// not be read: the file it is open on, not the one its name names
+    /// by then.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no utimes")]
+    #[cfg_attr(miri, ignore = "Miri has no futimens")]
     fn sets_a_file_s_times() {
         use std::os::unix::fs::MetadataExt as _;
         let s = Scratch::new("times");
-        open_write(&s.c("f"), Keep::Nothing, 0o200).unwrap();
+        let file = open_write(&s.c("f"), Keep::Nothing, 0o200).unwrap();
         for t in [1_000_000_000, -86_400, 0] {
-            set_times(&s.c("f"), t).unwrap();
+            set_times(&file, t).unwrap();
             let meta = std::fs::metadata(s.0.join("f")).unwrap();
             assert_eq!((meta.mtime(), meta.atime()), (t, t));
         }
-        let missing = set_times(&s.c("missing"), 0).unwrap_err();
-        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        rename(&s.c("f"), &s.c("g")).unwrap();
+        let other = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        let before = std::fs::metadata(s.0.join("f")).unwrap().mtime();
+        set_times(&file, 86_400).unwrap();
+        assert_eq!(std::fs::metadata(s.0.join("g")).unwrap().mtime(), 86_400);
+        assert_eq!(std::fs::metadata(s.0.join("f")).unwrap().mtime(), before);
+        drop(other);
     }
 
     #[test]
@@ -1966,17 +1965,17 @@ mod windows_tests {
         );
     }
 
+    /// An open file's times are set through its handle; one a
+    /// `FILETIME` cannot hold is refused.
     #[test]
     fn sets_a_file_s_times() {
         let s = Scratch::new("times");
-        open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        let file = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
         for t in [1_000_000_000, 0, -86_400] {
-            set_times(&s.c("f"), t).unwrap();
+            set_times(&file, t).unwrap();
             assert_eq!(stat(&s.c("f")).unwrap().modified(), t);
         }
-        let missing = set_times(&s.c("missing"), 0).unwrap_err();
-        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
-        let past = set_times(&s.c("f"), i64::MIN).unwrap_err();
+        let past = set_times(&file, i64::MIN).unwrap_err();
         assert_eq!(past.kind(), io::ErrorKind::InvalidInput);
     }
 

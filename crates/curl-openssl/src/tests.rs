@@ -565,14 +565,18 @@ fn an_error_s_text_has_what_c_s_buffer_leaves_it() {
 }
 
 /// A write that could not finish is made again whole, with as many
-/// bytes given or more; fewer is refused, not aborted on, and the
-/// blocked length is kept for the retry (`ossl_send`).
+/// bytes given or more; fewer is refused, not aborted on, as are other
+/// bytes, which C's library would send the blocked ones for
+/// (`ossl_send`).
 #[test]
 fn a_blocked_write_is_made_again_whole_and_a_shorter_one_refused() {
-    use crate::ssl::write_len;
-    assert_eq!(write_len(None, 5), Some(5));
-    assert_eq!(write_len(Some(5), 5), Some(5));
-    assert_eq!(write_len(Some(5), 9), Some(5));
-    assert_eq!(write_len(Some(5), 4), None);
-    assert_eq!(write_len(Some(5), 0), None);
+    use crate::ssl::to_write;
+    use curl_core::tls::{BlockedWrite, Retry};
+    let blocked = Some(BlockedWrite::of(b"01234"));
+    assert_eq!(to_write(None, b"01234"), Ok(&b"01234"[..]));
+    assert_eq!(to_write(blocked, b"01234"), Ok(&b"01234"[..]));
+    assert_eq!(to_write(blocked, b"012345678"), Ok(&b"01234"[..]));
+    assert_eq!(to_write(blocked, b"0123"), Err(Retry::Shorter));
+    assert_eq!(to_write(blocked, b""), Err(Retry::Shorter));
+    assert_eq!(to_write(blocked, b"abcde"), Err(Retry::Other));
 }

@@ -801,3 +801,11 @@ witness: curl-core tls::cache::tests::a_session_made_under_a_context_handler_wit
             && !matches!(self.identity.context_setup(), Some(SetupRef::Own(_)))
 --- new
             && true
+
+=== a blocked write's retry with other bytes is taken for it
+file: crates/curl-core/src/tls/blocked.rs
+witness: curl-core tls::blocked::tests::a_retry_is_the_blocked_bytes_or_refused
+--- old
+        if digest(again) != self.digest {
+--- new
+        if false {

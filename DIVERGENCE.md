@@ -939,6 +939,21 @@ so: weaknesses kept because C has them.
   a send that would block. Here such a send fails with a send error and the session is not
   asked to send it. Pinned by `other_bytes_than_went_early_are_refused`
   (`crates/curl-core/src/conn/tls.rs`).
+- **A send after one that blocked in OpenSSL or mbedTLS that gives other bytes fails.** The
+  library has taken a write that would block, and wants it made again with as many bytes, the
+  same ones. C checks the length alone (`blocked_ssl_write_len` in `ossl_send`,
+  `send_blocked_len` in `mbed_send`), so a retry of as many other bytes is reported as sent
+  while the library sends the blocked ones in their place. Here the blocked write keeps a
+  digest of its bytes beside its length, and a retry with others fails as a shorter one does,
+  "re-send data differs from previously", the blocked write kept for a retry made right.
+  Measured 2026-11-24 with `curl_easy_send` on a connection whose peer had stopped reading:
+  after the send that blocked, a retry of 16384 other bytes returned 0 with 16384 sent on C's
+  release build with OpenSSL, and its peer then read only the blocked bytes; the rewrite's
+  returned 55
+  (`CURLE_SEND_ERROR`), as both return for a shorter retry. Pinned by
+  `a_blocked_write_is_made_again_whole_and_a_shorter_one_refused`
+  (`crates/curl-openssl/src/tests.rs`) and `a_blocked_write_is_made_again_whole`
+  (`crates/curl-mbedtls/src/tests.rs`).
 
 ## Handles C adds from inside themselves
 

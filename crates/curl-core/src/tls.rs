@@ -38,6 +38,7 @@ pub use checked::{Checked, Residual, Residuals};
 pub use keylog::{KeyLog, SharedKeyLog};
 pub use store::StoreCache;
 
+mod blocked;
 pub(crate) mod cache;
 pub mod checked;
 pub mod hostcheck;
@@ -46,6 +47,8 @@ pub mod pin;
 mod store;
 pub mod suites;
 pub mod x509;
+
+pub use blocked::{BlockedWrite, Retry};
 
 /// A test double: a TLS library of text lines and scrambled records.
 #[cfg(any(test, feature = "test-util"))]

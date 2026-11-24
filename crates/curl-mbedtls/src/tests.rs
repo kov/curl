@@ -698,7 +698,7 @@ fn connected(world: World) -> (Session<Fake>, &'static Fake, TryArc<TlsIdentity>
 }
 
 /// A write that would block is made again whole, as the library wants;
-/// a shorter one is refused.
+/// a shorter one is refused, and one of other bytes.
 #[test]
 fn a_blocked_write_is_made_again_whole() {
     let (mut s, lib, id) = connected(World::default());
@@ -727,6 +727,14 @@ fn a_blocked_write_is_made_again_whole() {
         &notes,
         "fail: BadFunctionArgument: re-send data shorter than previously"
     ));
+    // As many, but others: the library would send the blocked ones.
+    let (r, notes) = send(&mut s, vec![], b"abcdefghij");
+    assert!(r.is_err());
+    assert!(has(
+        &notes,
+        "fail: BadFunctionArgument: re-send data differs from previously"
+    ));
+    assert!(has(&notes, "trace: mbedtls_ssl_write(len=10) -> 43, 0"));
     let (r, notes) = send(&mut s, vec![], b"0123456789abc");
     assert!(matches!(r, Ok(Sent::Bytes(n)) if n.get() == 10), "{r:?}");
     assert!(has(

@@ -86,7 +86,7 @@ witness: curl-mbedtls tests::sessions_are_kept_and_resumed
 file: crates/curl-mbedtls/src/session.rs
 witness: curl-mbedtls tests::a_blocked_write_is_made_again_whole
 --- old
-                len = blocked;
+                len = blocked.len();
 --- new
 
 === the goodbye is sent each time the shutdown is moved on
@@ -111,3 +111,13 @@ witness: curl-mbedtls tests::the_host_name_is_set_and_its_failure_fails
         if self.conn().hostname(as_c(&name)) != 0 {
 --- new
         if sni.is_some() && self.conn().hostname(as_c(&name)) != 0 {
+
+=== a retry of a blocked write with other bytes is made
+file: crates/curl-mbedtls/src/session.rs
+witness: curl-mbedtls tests::a_blocked_write_is_made_again_whole
+--- old
+                if let Err(why) = blocked.again(bytes) {
+--- new
+                if bytes.len() < blocked.len()
+                    && let Err(why) = blocked.again(bytes)
+                {

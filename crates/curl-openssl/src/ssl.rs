@@ -17,10 +17,10 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Checked, Chosen, Deferred, DriveCall, Goodbye, Handshake, Hashes, KeyLog,
-    QuicContextSetup, QuicTls, QuicheTls, RecordWait, Shaken, SharedKeyLog, SystemStore,
-    TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsKind, TlsNative, TlsPeer, TlsPeerKind, TlsSession,
-    TlsShared, TlsSupport, TlsTicket, TlsWait,
+    Alpn, BlockedWrite, CaDefaults, Checked, Chosen, Deferred, DriveCall, Goodbye, Handshake,
+    Hashes, KeyLog, QuicContextSetup, QuicTls, QuicheTls, RecordWait, Retry, Shaken, SharedKeyLog,
+    SystemStore, TlsBackend, TlsCx, TlsIdentity, TlsIo, TlsKind, TlsNative, TlsPeer, TlsPeerKind,
+    TlsSession, TlsShared, TlsSupport, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
@@ -398,9 +398,9 @@ struct Session {
     step: Step,
     flags: Flags,
     waits: TlsWait,
-    /// The length of a write the library could not finish, which it must
-    /// be given again (`blocked_ssl_write_len`).
-    blocked_write: Option<c_int>,
+    /// A write the library could not finish, which it must be given
+    /// again (`blocked_ssl_write_len`, its length; here its bytes too).
+    blocked_write: Option<BlockedWrite>,
     /// The goodbye is over, or failed (the filter's `shutdown`).
     shut: bool,
     /// Where the secrets are logged, if anywhere.
@@ -497,17 +497,18 @@ extern "C" fn verify_continues(_: c_int, _: *mut openssl_sys::X509_STORE_CTX) ->
     1
 }
 
-/// How many of the `given` bytes the library is to write, after a write
-/// of `blocked` bytes that could not finish: those again, as the library
-/// wants a blocked write made again whole. Fewer given is the caller's
-/// bug, and is refused, the blocked length kept so that a retry made
-/// right still goes, as C's build without debug checks refuses it
-/// (`ossl_send`): a connection's user must not abort the process.
-pub(crate) fn write_len(blocked: Option<c_int>, given: c_int) -> Option<c_int> {
+/// The bytes of `given` the library is to write, after a write that
+/// could not finish, `blocked`: those again, as the library wants a
+/// blocked write made again whole. Fewer given is the caller's bug, and
+/// is refused as C's build without debug checks refuses it (`ossl_send`):
+/// a connection's user must not abort the process. Others given are
+/// refused too, where C's library sends the blocked ones for them. The
+/// blocked write is kept either way, so that a retry made right still
+/// goes.
+pub(crate) fn to_write(blocked: Option<BlockedWrite>, given: &[u8]) -> Result<&[u8], Retry> {
     match blocked {
-        Some(blocked) if blocked > given => None,
-        Some(blocked) => Some(blocked),
-        None => Some(given),
+        Some(blocked) => blocked.again(given),
+        None => Ok(given),
     }
 }
 
@@ -1758,16 +1759,27 @@ impl TlsSession for Session {
         // SAFETY: the thread's error queue.
         unsafe { openssl_sys::ERR_clear_error() };
         self.waits = TlsWait::Nothing;
-        let given = c_int::try_from(bytes.len()).unwrap_or(c_int::MAX);
-        let Some(len) = write_len(self.blocked_write, given) else {
-            io.fail(
-                ErrorKind::BadFunctionArgument,
-                format_args!("re-send data shorter than previously"),
-            );
-            return Err(said(0));
+        let given = &bytes[..bytes.len().min(c_int::MAX as usize)];
+        let mine = match to_write(self.blocked_write, given) {
+            Ok(mine) => mine,
+            Err(Retry::Shorter) => {
+                io.fail(
+                    ErrorKind::BadFunctionArgument,
+                    format_args!("re-send data shorter than previously"),
+                );
+                return Err(said(0));
+            }
+            Err(Retry::Other) => {
+                io.fail(
+                    ErrorKind::BadFunctionArgument,
+                    format_args!("re-send data differs from previously"),
+                );
+                return Err(said(0));
+            }
         };
         self.blocked_write = None;
-        let from = bytes.as_ptr();
+        let len = c_int::try_from(mine.len()).expect("at most c_int::MAX");
+        let from = mine.as_ptr();
         // SAFETY: the SSL, and `len` bytes at `from`, the caller's.
         let (n, below) = self.call(io, |ssl| unsafe {
             openssl_sys::SSL_write(ssl, from.cast(), len)
@@ -1789,16 +1801,16 @@ impl TlsSession for Session {
         match err {
             openssl_sys::SSL_ERROR_WANT_READ => {
                 self.waits = TlsWait::Recv;
-                self.blocked_write = Some(len);
+                self.blocked_write = Some(BlockedWrite::of(mine));
                 Ok(Sent::WouldBlock)
             }
             openssl_sys::SSL_ERROR_WANT_WRITE => {
-                self.blocked_write = Some(len);
+                self.blocked_write = Some(BlockedWrite::of(mine));
                 Ok(Sent::WouldBlock)
             }
             openssl_sys::SSL_ERROR_SYSCALL => {
                 if below == Below::Again {
-                    self.blocked_write = Some(len);
+                    self.blocked_write = Some(BlockedWrite::of(mine));
                     return Ok(Sent::WouldBlock);
                 }
                 // SAFETY: the thread's error queue, its earliest taken.

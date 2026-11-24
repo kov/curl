@@ -14,8 +14,8 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::pin::{self, Pin};
 use curl_core::tls::{
-    Alpn, BindingNotes, Chosen, Goodbye, Handshake, Text, TlsCx, TlsIdentity, TlsIo, TlsNative,
-    TlsPeer, TlsPeerKind, TlsSession, TlsTicket, TlsWait,
+    Alpn, BindingNotes, BlockedWrite, Chosen, Goodbye, Handshake, Retry, Text, TlsCx, TlsIdentity,
+    TlsIo, TlsNative, TlsPeer, TlsPeerKind, TlsSession, TlsTicket, TlsWait,
 };
 use curl_core::tls::{Checked, Residuals, Shaken};
 
@@ -59,9 +59,9 @@ pub(crate) struct Session<G: Mbedtls> {
     /// (the filter's `shutdown`).
     sent_shutdown: bool,
     shut: bool,
-    /// A write that would have blocked, and how long it was: the library
-    /// wants the same again (`send_blocked`, `send_blocked_len`).
-    send_blocked: Option<usize>,
+    /// A write that would have blocked: the library wants the same again
+    /// (`send_blocked`, `send_blocked_len`; here its bytes too).
+    send_blocked: Option<BlockedWrite>,
     /// What ALPN agreed (`connssl->negotiated.alpn`).
     negotiated: Option<Chosen>,
 }
@@ -747,13 +747,15 @@ where
             self.waits = TlsWait::Nothing;
             let mut len = bytes.len();
             // The library wants a write that would have blocked made again
-            // with as many bytes, or it loses some.
+            // with as many bytes, the same, or it loses some; with others
+            // it sends the ones it took for them.
             if let Some(blocked) = self.send_blocked {
-                if blocked > len {
-                    io.fail(
-                        ErrorKind::BadFunctionArgument,
-                        format_args!("re-send data shorter than previously"),
-                    );
+                if let Err(why) = blocked.again(bytes) {
+                    let why = match why {
+                        Retry::Shorter => "re-send data shorter than previously",
+                        Retry::Other => "re-send data differs from previously",
+                    };
+                    io.fail(ErrorKind::BadFunctionArgument, format_args!("{why}"));
                     io.trace(format_args!(
                         "mbedtls_ssl_write(len={len}) -> {}, 0",
                         ErrorKind::BadFunctionArgument.number()
@@ -761,9 +763,10 @@ where
                     return Err(said());
                 }
                 io.trace(format_args!(
-                    "mbedtls_ssl_write(len={len}) -> previously blocked on {blocked} bytes"
+                    "mbedtls_ssl_write(len={len}) -> previously blocked on {} bytes",
+                    blocked.len()
                 ));
-                len = blocked;
+                len = blocked.len();
             }
             let n = self.call(io, |c, call| c.write(call, &bytes[..len]));
             let (got, code, written) = if n >= 0 {
@@ -798,7 +801,7 @@ where
                     Some(wait) => {
                         self.waits = wait;
                         if self.send_blocked.is_none() {
-                            self.send_blocked = Some(len);
+                            self.send_blocked = Some(BlockedWrite::of(&bytes[..len]));
                         }
                         (Ok(Sent::WouldBlock), AGAIN, 0)
                     }

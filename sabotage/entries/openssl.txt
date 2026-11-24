@@ -539,9 +539,9 @@ witness: curl-openssl a_resumed_session_speaks_its_http2_as_early_data
 file: crates/curl-openssl/src/ssl.rs
 witness: curl-openssl tests::a_blocked_write_is_made_again_whole_and_a_shorter_one_refused
 --- old
-        Some(blocked) if blocked > given => None,
+        Some(blocked) => blocked.again(given),
 --- new
-        Some(blocked) if blocked > given => Some(given),
+        Some(blocked) => Ok(&given[..blocked.len().min(given.len())]),
 
 === a session offered is taken as resumed whatever the server did
 file: crates/curl-openssl/src/x509.rs

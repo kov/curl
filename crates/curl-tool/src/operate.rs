@@ -1656,6 +1656,10 @@ impl Retrying {
             ]);
         }
         let mut stream = out.stream();
+        // The next attempt's response says its own ETag.
+        if let Some(save) = stream.etag_save.as_mut() {
+            save.forget();
+        }
         // What came of a GET that can be resumed is kept, and the next
         // attempt asks for the rest.
         if self.resumable(op, &stream, &attempt) && answered_resumably(easy, self.resumed_at) {
@@ -3687,6 +3691,10 @@ fn finish(
             // even replaced. Made once no attempt is to follow, so that one
             // retried empties no file a later attempt may not name.
             if result.is_ok() && !easy.report().condition_unmet() && !stream.create_at_end() {
+                result = Err(ErrorKind::WriteError);
+            }
+            // The ETag goes to its file once the transfer has succeeded.
+            if result.is_ok() && stream.etag_save.as_mut().is_some_and(|e| !e.commit()) {
                 result = Err(ErrorKind::WriteError);
             }
             let opened = stream.is_open_file();

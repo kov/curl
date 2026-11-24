@@ -122,11 +122,18 @@ enum Naming {
     Failed,
 }
 
-/// Where `--etag-save` writes the ETag: standard output for `-`, or a
-/// file, opened to add to and emptied before each ETag is written.
+/// Where `--etag-save` writes the ETag: standard output for `-`, as it
+/// comes; or a file, opened to add to, which is given the last ETag the
+/// transfer received only once it has succeeded, emptied of the one it
+/// held. C writes the file as the ETag comes, so a transfer that fails
+/// after it leaves an ETag for a document it did not deliver.
 pub(crate) enum EtagSave {
     Stdout(Stdout),
-    File(File),
+    File {
+        file: File,
+        /// The ETag to write once the transfer succeeds.
+        pending: Option<Vec<u8>>,
+    },
 }
 
 impl EtagSave {
@@ -140,7 +147,10 @@ impl EtagSave {
             return Some(EtagSave::Stdout(stdout.clone()));
         }
         match fs::with_c_name(name, |c| fs::open_write(c, Keep::Everything, NEW_FILE_MODE)) {
-            Ok(file) => Some(EtagSave::File(file)),
+            Ok(file) => Some(EtagSave::File {
+                file,
+                pending: None,
+            }),
             Err(_) => {
                 msgs.warn(&[
                     b"Failed creating file for saving etags: \"",
@@ -152,9 +162,10 @@ impl EtagSave {
         }
     }
 
-    /// Write the ETag in `value`, what follows `ETag:` in a whole header
-    /// line, without the blanks around it and a newline after it, a file
-    /// emptied first (`save_etag`). `false` if emptying it failed.
+    /// Take the ETag in `value`, what follows `ETag:` in a whole header
+    /// line, without the blanks around it (`save_etag`): written with a
+    /// newline after it to standard output now, or kept for a file.
+    /// `false` if it could not be kept.
     fn save(&mut self, value: &[u8]) -> bool {
         let Some((&b'\n', _)) = value.split_last() else {
             return true;
@@ -174,16 +185,42 @@ impl EtagSave {
                 out.fwrite(b"\n");
                 drop(out.flush());
             }
-            EtagSave::File(file) => {
-                // A regular file is emptied of the ETag before.
-                if file.metadata().is_ok_and(|m| m.is_file()) && fs::truncate(file, 0).is_err() {
+            EtagSave::File { pending, .. } => {
+                let mut kept = Vec::new();
+                if kept.try_extend_from_slice(etag).is_err() {
                     return false;
                 }
-                drop(file.write_all(etag));
-                drop(file.write_all(b"\n"));
+                *pending = Some(kept);
             }
         }
         true
+    }
+
+    /// The transfer succeeded: write the ETag kept, if any, with a
+    /// newline after it, a regular file emptied of the one it held first.
+    /// `false` if emptying it failed, as C fails the transfer then.
+    pub(crate) fn commit(&mut self) -> bool {
+        let EtagSave::File { file, pending } = self else {
+            return true;
+        };
+        let Some(etag) = pending.take() else {
+            return true;
+        };
+        if file.metadata().is_ok_and(|m| m.is_file()) && fs::truncate(file, 0).is_err() {
+            return false;
+        }
+        // C does not check these writes.
+        drop(file.write_all(&etag));
+        drop(file.write_all(b"\n"));
+        true
+    }
+
+    /// Forget the ETag kept: the attempt that received it is to be made
+    /// again, and the next one's response says its own.
+    pub(crate) fn forget(&mut self) {
+        if let EtagSave::File { pending, .. } = self {
+            *pending = None;
+        }
     }
 }
 
@@ -1704,7 +1741,10 @@ mod tests {
     fn saves_an_etag_as_c_does() {
         let path = scratch("etag-save");
         std::fs::write(&path, b"old\n").unwrap();
-        let mut save = EtagSave::File(File::options().append(true).open(&path).unwrap());
+        let mut save = EtagSave::File {
+            file: File::options().append(true).open(&path).unwrap(),
+            pending: None,
+        };
         for (value, want) in [
             (&b" \t\"abc\" \t\r\n"[..], &b"\"abc\"\n"[..]),
             (b"x\n", b"x\n"),
@@ -1715,6 +1755,7 @@ mod tests {
             (b"\x0bz\x0c\n", b"\x0bz\n"),
         ] {
             assert!(save.save(value), "{}", value.escape_ascii());
+            assert!(save.commit());
             assert_eq!(
                 std::fs::read(&path).unwrap().escape_ascii().to_string(),
                 want.escape_ascii().to_string(),
@@ -1722,6 +1763,28 @@ mod tests {
                 value.escape_ascii()
             );
         }
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A file's ETag waits for the transfer's success: until then the file
+    /// keeps the last one, and one forgotten for a retry is never written.
+    #[test]
+    fn an_etag_is_written_only_once_the_transfer_succeeds() {
+        let path = scratch("etag-pending");
+        std::fs::write(&path, b"old\n").unwrap();
+        let mut save = EtagSave::File {
+            file: File::options().append(true).open(&path).unwrap(),
+            pending: None,
+        };
+        assert!(save.save(b" \"new\"\r\n"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"old\n");
+        save.forget();
+        assert!(save.commit());
+        assert_eq!(std::fs::read(&path).unwrap(), b"old\n");
+        assert!(save.save(b" \"one\"\r\n"));
+        assert!(save.save(b" \"two\"\r\n"));
+        assert!(save.commit());
+        assert_eq!(std::fs::read(&path).unwrap(), b"\"two\"\n");
         std::fs::remove_file(&path).unwrap();
     }
 

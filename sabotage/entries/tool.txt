@@ -1260,9 +1260,9 @@ witness: curl-tool form::tests::a_header_file_that_cannot_be_read_is_refused
 file: crates/curl-tool/src/output.rs
 witness: curl-tool compares_and_saves_etags
 --- old
-                if file.metadata().is_ok_and(|m| m.is_file()) && fs::truncate(file, 0).is_err() {
+        if file.metadata().is_ok_and(|m| m.is_file()) && fs::truncate(file, 0).is_err() {
 --- new
-                if file.metadata().is_ok_and(|m| m.is_file()) && false && fs::truncate(file, 0).is_err() {
+        if file.metadata().is_ok_and(|m| m.is_file()) && false && fs::truncate(file, 0).is_err() {
 
 === an ETag file that does not open passes over one URL only
 file: crates/curl-tool/src/operate.rs
@@ -1944,4 +1944,21 @@ file: crates/curl-tool/src/operate.rs
 witness: curl-tool operate::tests::resumes_only_what_c_resumes
 --- old
             && !op.compressed
+--- new
+
+=== a failed transfer's ETag is saved
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool saves_the_etag_only_of_a_transfer_that_succeeded
+--- old
+            if result.is_ok() && stream.etag_save.as_mut().is_some_and(|e| !e.commit()) {
+--- new
+            if stream.etag_save.as_mut().is_some_and(|e| !e.commit()) && result.is_ok() {
+
+=== a retried attempt's ETag is saved by the attempt after it
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool saves_the_etag_only_of_a_transfer_that_succeeded
+--- old
+        if let Some(save) = stream.etag_save.as_mut() {
+            save.forget();
+        }
 --- new

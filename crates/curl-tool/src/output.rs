@@ -86,8 +86,9 @@ pub(crate) struct Stream {
     /// The file this transfer opened, if a regular file, kept once it is
     /// closed: what `--remove-on-error` may remove.
     opened: Option<fs::FileId>,
-    /// Set once a transfer writing under a name the user gave has opened
-    /// this one's file, a server having named it: it writes no more.
+    /// The flag its file's sink holds, under a name a server gave: set
+    /// once a transfer writing under a name the user gave has opened it.
+    /// Kept past the close, for `--remove-on-error` to ask.
     taken: Option<TryArc<AtomicBool>>,
     msgs: Messages,
 }
@@ -299,8 +300,53 @@ enum Target {
     /// written through stdio's buffer as C's `fopen`ed one is.
     File {
         name: FileName,
-        file: Option<Stdio<File>>,
+        file: Option<Stdio<OutFile>>,
     },
+}
+
+/// An output file the transfer opened, and, under a name a server gave,
+/// the flag another transfer of the run sets to take it back. Every byte
+/// and every call on the file passes here, so once taken back nothing of
+/// this transfer's reaches it: not what its buffer holds at the close,
+/// nor a truncation for a retry, nor its times.
+struct OutFile {
+    file: File,
+    taken: Option<TryArc<AtomicBool>>,
+}
+
+impl OutFile {
+    /// The file, unless another transfer took it back.
+    fn file(&self) -> Option<&File> {
+        let taken = self
+            .taken
+            .as_ref()
+            .is_some_and(|t| t.load(Ordering::Relaxed));
+        (!taken).then_some(&self.file)
+    }
+
+    fn file_mut(&mut self) -> Option<&mut File> {
+        self.file()?;
+        Some(&mut self.file)
+    }
+}
+
+impl stdio::Sink for OutFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self.file_mut() {
+            Some(file) => stdio::Sink::write(file, bytes),
+            None => Err(std::io::Error::other("taken back by another transfer")),
+        }
+    }
+
+    fn layout(&self) -> stdio::Layout {
+        self.file.layout()
+    }
+}
+
+impl stdio::Close for OutFile {
+    fn close(self) -> std::io::Result<()> {
+        stdio::Close::close(self.file)
+    }
 }
 
 /// An output file's name, ended by a zero byte, and who gave it: the
@@ -571,7 +617,10 @@ impl Stream {
                 // C takes the size it was told to resume from; it is the
                 // file's, read just before.
                 self.init = f.metadata().map_or(0, |m| m.len());
-                *file = Some(Stdio::new(f));
+                *file = Some(Stdio::new(OutFile {
+                    file: f,
+                    taken: None,
+                }));
                 self.opened_now()
             }
             Err(_) => {
@@ -618,7 +667,10 @@ impl Stream {
         let name = name.bytes_mut();
         match opened {
             Ok(f) => {
-                *file = Some(Stdio::new(f));
+                *file = Some(Stdio::new(OutFile {
+                    file: f,
+                    taken: None,
+                }));
                 self.bytes = 0;
                 self.init = 0;
                 self.opened_now()
@@ -642,16 +694,19 @@ impl Stream {
     /// name a server gave, held for the run, or else taken back from any
     /// transfer that holds it so. False if it could not be held.
     fn opened_now(&mut self) -> bool {
+        if let (Some(run), Some(taken)) = (&self.server_named, self.taken.take()) {
+            run.release(&taken);
+        }
         let Target::File {
             name,
             file: Some(file),
-        } = &self.target
+        } = &mut self.target
         else {
             unreachable!("only a file opened");
         };
         let from_server = matches!(name, FileName::FromServer(_));
-        self.opened = fs::status_of(file.get_ref()).ok().and_then(|s| s.id());
-        self.taken = None;
+        let sink = file.get_mut();
+        self.opened = fs::status_of(&sink.file).ok().and_then(|s| s.id());
         let (Some(id), Some(run)) = (self.opened, &self.server_named) else {
             return true;
         };
@@ -661,6 +716,7 @@ impl Stream {
         }
         match run.hold(id) {
             Ok(taken) => {
+                sink.taken = Some(taken.clone());
                 self.taken = Some(taken);
                 true
             }
@@ -714,7 +770,7 @@ impl Stream {
         match &self.target {
             Target::File {
                 file: Some(file), ..
-            } => Some(file.get_ref()),
+            } => file.get_ref().file(),
             _ => None,
         }
     }
@@ -742,7 +798,18 @@ impl Stream {
         else {
             return true;
         };
-        if self.bytes == 0 || !file.get_ref().metadata().is_ok_and(|m| m.is_file()) {
+        if self.bytes == 0 {
+            return true;
+        }
+        let Some(regular) = file
+            .get_ref()
+            .file()
+            .map(|f| f.metadata().is_ok_and(|m| m.is_file()))
+        else {
+            self.msgs.error(&[b"Failed to truncate file"]);
+            return false;
+        };
+        if !regular {
             return true;
         }
         // Unchecked, as in C: a failure shows in the truncation.
@@ -753,12 +820,21 @@ impl Stream {
         }
         // The debug test build fails it on request.
         let fail = cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_DBG_TRUNCATE_FAIL");
-        if fail || fs::truncate(file.get_ref(), self.init).is_err() {
+        if fail
+            || file
+                .get_ref()
+                .file()
+                .is_none_or(|f| fs::truncate(f, self.init).is_err())
+        {
             self.msgs.error(&[b"Failed to truncate file"]);
             return false;
         }
         // Written on from where it now ends.
-        if std::io::Seek::seek(file.get_mut(), std::io::SeekFrom::End(0)).is_err() {
+        let end = file
+            .get_mut()
+            .file_mut()
+            .map(|f| std::io::Seek::seek(f, std::io::SeekFrom::End(0)));
+        if !matches!(end, Some(Ok(_))) {
             self.msgs.error(&[b"Failed seeking to end of file"]);
             return false;
         }
@@ -821,7 +897,7 @@ impl Stream {
             return None;
         };
         file.flush().ok()?;
-        Some(fs::set_times(file.get_ref(), t))
+        Some(fs::set_times(file.get_ref().file()?, t))
     }
 
     /// Close the output file, if one is open (`fclose`): whether what it
@@ -842,15 +918,6 @@ impl Stream {
             return Write::Accepted;
         }
         if !self.create() {
-            return Write::Fail;
-        }
-        if self.taken.is_some() && self.taken_back() {
-            let name = self.file_name().unwrap_or_default();
-            self.msgs.warn(&[
-                b"Failed writing to ",
-                name,
-                b": another transfer opened it under the name given for it",
-            ]);
             return Write::Fail;
         }
         if self.terminal && self.bytes < BINARY_CHECK && !self.binary_ok && body.contains(&0) {
@@ -911,7 +978,7 @@ impl Stream {
             Target::Stdout(out) => out.with_file(|file| file.and_then(write)),
             Target::File {
                 file: Some(file), ..
-            } => write(file.get_ref()),
+            } => file.get_ref().file().and_then(write),
             Target::File { file: None, .. } | Target::Null => None,
         }
     }

@@ -606,9 +606,9 @@ witness: curl-tool retries_a_failure
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
 --- old
-        if fail || fs::truncate(file.get_ref(), self.init).is_err() {
+                .is_none_or(|f| fs::truncate(f, self.init).is_err())
 --- new
-        if fail || fs::truncate(file.get_ref(), 0).is_err() {
+                .is_none_or(|f| fs::truncate(f, 0).is_err())
 
 === what an attempt kept is written over by the next
 file: crates/curl-tool/src/output.rs
@@ -623,9 +623,9 @@ witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
 --- old
-        if std::io::Seek::seek(file.get_mut(), std::io::SeekFrom::End(0)).is_err() {
+            .map(|f| std::io::Seek::seek(f, std::io::SeekFrom::End(0)));
 --- new
-        if false {
+            .map(|_| Ok::<u64, std::io::Error>(0));
 
 === a URL read from a file is globbed
 file: crates/curl-tool/src/options/apply.rs
@@ -1935,9 +1935,9 @@ file: crates/curl-tool/src/output.rs
 witness: curl-tool keeps_the_remote_time
 --- old
         file.flush().ok()?;
-        Some(fs::set_times(file.get_ref(), t))
+        Some(fs::set_times(file.get_ref().file()?, t))
 --- new
-        Some(fs::set_times(file.get_ref(), t))
+        Some(fs::set_times(file.get_ref().file()?, t))
 
 === a compressed download's decoded bytes are kept to resume from
 file: crates/curl-tool/src/operate.rs
@@ -1953,13 +1953,23 @@ witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_name
                 taken.store(true, Ordering::Relaxed);
 --- new
 
-=== a server-named file taken back is written all the same
+=== a server-named file taken back is still handed out
 file: crates/curl-tool/src/output.rs
 witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for
 --- old
-        if self.taken.is_some() && self.taken_back() {
+        (!taken).then_some(&self.file)
 --- new
-        if false && self.taken_back() {
+        (taken || !taken).then_some(&self.file)
+
+=== a server-named file taken back is written what its buffer held
+file: crates/curl-tool/src/output.rs
+witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for
+--- old
+        match self.file_mut() {
+            Some(file) => stdio::Sink::write(file, bytes),
+--- new
+        match Some(&mut self.file) {
+            Some(file) => stdio::Sink::write(file, bytes),
 
 === a server-named file taken back is removed by its transfer's failure
 file: crates/curl-tool/src/output.rs

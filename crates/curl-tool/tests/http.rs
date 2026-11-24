@@ -812,14 +812,29 @@ fn scratch(name: &str) -> PathBuf {
 /// A server answering `-J` in a parallel run that names the file another
 /// transfer of the run writes under the name the user gave loses it:
 /// once that transfer opens the file, the server's writes to it fail
-/// (23), and with `--remove-on-error` its failure removes nothing. C's
+/// (23), what it held unwritten included, and with `--remove-on-error`
+/// its failure removes nothing. C's
 /// tool writes the server's body over the other transfer's file, or
 /// removes it. A deliberate difference from C (DIVERGENCE.md), so this
 /// test fails on its tool.
 #[test]
 fn a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for() {
-    for drop_body in [false, true] {
-        let dir = scratch(if drop_body { "taken-rm" } else { "taken" });
+    // What the server sends with its head, what after the other file is
+    // written (none: it drops the connection), and the exit code.
+    type Order = (&'static str, &'static [u8], Option<&'static [u8]>, i32);
+    let orders: [Order; 3] = [
+        ("taken", b"", Some(b"MALICIOUS CONTENT, quite long\n"), 23),
+        (
+            "taken-early",
+            b"MALICIOUS ",
+            Some(b"CONTENT, quite long\n"),
+            23,
+        ),
+        ("taken-rm", b"", None, 18),
+    ];
+    for (name, early, rest, code) in orders {
+        let drop_body = rest.is_none();
+        let dir = scratch(name);
         let honest = TcpListener::bind("127.0.0.1:0").unwrap();
         let other = TcpListener::bind("127.0.0.1:0").unwrap();
         let urls = [
@@ -855,17 +870,17 @@ fn a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for() {
                 let (mut peer, _) = curl_core::test_server::accept(&other);
                 let mut buf = [0; 4096];
                 let _ = peer.read(&mut buf).unwrap();
-                peer.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=report.txt\r\n\
-                      Content-Length: 30\r\n\r\n",
-                )
-                .unwrap();
+                let mut head = b"HTTP/1.1 200 OK\r\nContent-Disposition: attachment; \
+                                 filename=report.txt\r\nContent-Length: 30\r\n\r\n"
+                    .to_vec();
+                head.extend_from_slice(early);
+                peer.write_all(&head).unwrap();
                 honest_done.recv().unwrap();
                 while std::fs::read(&file).unwrap() != b"honest\n" {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
-                if !drop_body {
-                    let _ = peer.write_all(b"MALICIOUS CONTENT, quite long\n");
+                if let Some(rest) = rest {
+                    let _ = peer.write_all(rest);
                 }
             })
         };
@@ -877,8 +892,8 @@ fn a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for() {
         let run = curl(&args);
         honest.join().unwrap();
         other.join().unwrap();
-        assert_eq!(run.code, if drop_body { 18 } else { 23 }, "{}", run.stderr);
-        assert_eq!(std::fs::read(&file).unwrap(), b"honest\n", "{drop_body}");
+        assert_eq!(run.code, code, "{name}: {}", run.stderr);
+        assert_eq!(std::fs::read(&file).unwrap(), b"honest\n", "{name}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

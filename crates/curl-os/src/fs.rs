@@ -2055,6 +2055,12 @@ mod windows_tests {
         }
         let past = set_times(&file, i64::MIN).unwrap_err();
         assert_eq!(past.kind(), io::ErrorKind::InvalidInput);
+        // Written, dated, then closed: the close keeps the time.
+        let mut file = file;
+        io::Write::write_all(&mut file, b"body").unwrap();
+        set_times(&file, 86_400).unwrap();
+        close(file).unwrap();
+        assert_eq!(stat(&s.c("f")).unwrap().modified(), 86_400);
     }
 
     /// A file's id is the same by its handle and by any name for it, and
@@ -2065,9 +2071,10 @@ mod windows_tests {
         let file = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
         let id = status_of(&file).unwrap().id().expect("a regular file");
         assert_eq!(stat(&s.c("f")).unwrap().id(), Some(id));
-        rename(&s.c("f"), &s.c("g")).unwrap();
+        // An open file is not renamed here; a second link names it too.
+        std::fs::hard_link(s.0.join("f"), s.0.join("g")).unwrap();
         assert_eq!(stat(&s.c("g")).unwrap().id(), Some(id));
-        let other = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        let other = open_write(&s.c("h"), Keep::Nothing, 0o600).unwrap();
         assert_ne!(status_of(&other).unwrap().id(), Some(id));
         make_dir(&s.c("d"), 0o700).unwrap();
         assert_eq!(stat(&s.c("d")).unwrap().id(), None);

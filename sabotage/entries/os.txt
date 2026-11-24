@@ -500,3 +500,12 @@ witness: curl-os net::control_tests::a_control_message_is_read_only_as_far_as_it
     let carries = usize::try_from(len).is_ok_and(|len| len >= wanted);
 --- new
     let carries = usize::try_from(len).is_ok_and(|len| len > 0 || wanted > 0);
+
+=== a file in a removed file's record on Windows is taken for it
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::windows_tests::a_file_made_where_one_was_removed_is_another
+platform: windows
+--- old
+            index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+--- new
+            index: (u64::from(info.nFileIndexHigh) >> 32) | u64::from(info.nFileIndexLow),

@@ -610,6 +610,10 @@ exclude_re = [
     # remote time not set is not reached either.
     'curl-os/src/fs\.rs:.*: replace < with > in (status_of|set_times)$',
     'curl-tool/src/operate\.rs:.*: replace file_time_failed with \(\)$',
+    # The halves of a Windows file's index and size and of its time are
+    # put together from two 32-bit words that share no bit: `^` gives
+    # what `|` does.
+    'curl-os/src/fs\.rs:.*: replace \| with \^ in status_of$',
     # A console's output is reached only from a console, by hand: the
     # tests' output is a pipe or a file.
     'curl-tool/src/output\.rs:.*: replace Stream::write_console -> ',

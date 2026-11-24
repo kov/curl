@@ -2080,6 +2080,20 @@ mod windows_tests {
         assert_eq!(stat(&s.c("d")).unwrap().id(), None);
     }
 
+    /// A file made after another is removed is another file, though NTFS
+    /// gives it the removed file's record: the record's sequence number,
+    /// in the index's high half, tells them apart.
+    #[test]
+    fn a_file_made_where_one_was_removed_is_another() {
+        let s = Scratch::new("ids-reused");
+        let file = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        let id = status_of(&file).unwrap().id().expect("a regular file");
+        close(file).unwrap();
+        remove(&s.c("f")).unwrap();
+        let file = open_write(&s.c("g"), Keep::Nothing, 0o600).unwrap();
+        assert_ne!(status_of(&file).unwrap().id(), Some(id));
+    }
+
     /// `_fullpath`'s: absolute, its dots resolved, whether or not the file
     /// is there.
     #[test]

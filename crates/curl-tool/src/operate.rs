@@ -1695,13 +1695,16 @@ impl Retrying {
 
     /// Whether what `attempt` wrote may be kept and resumed from
     /// (`is_outfile_auto_resumable`): a GET resuming its output file, which
-    /// it wrote to and wrote all it was given of.
+    /// it wrote to and wrote all it was given of, as it came. Under
+    /// `--compressed` the bytes written are decoded ones, which a range
+    /// cannot count.
     fn resumable(&self, op: &Operation<'_>, stream: &output::Stream, attempt: &Attempt) -> bool {
         op.resume == Some(Resume::FromOutput)
             && stream.start() == self.resumed_at
             && stream.written() > 0
             && stream.is_open_file()
             && !stream.failed()
+            && !op.compressed
             && op.custom_request.is_none()
             && !attempt.upload
             && matches!(attempt.method, tool::Method::Unset | tool::Method::Get)
@@ -5473,6 +5476,9 @@ mod tests {
         op.custom_request = Some(b"GET");
         assert!(!resumable(&op, &retrying, &get()), "-X");
         op.custom_request = None;
+        op.compressed = true;
+        assert!(!resumable(&op, &retrying, &get()), "--compressed");
+        op.compressed = false;
         op.resume = Some(Resume::At(4));
         assert!(!resumable(&op, &retrying, &get()), "-C 4");
         op.resume = Some(Resume::FromOutput);

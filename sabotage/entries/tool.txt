@@ -1938,3 +1938,10 @@ witness: curl-tool keeps_the_remote_time
         Some(fs::set_times(file.get_ref(), t))
 --- new
         Some(fs::set_times(file.get_ref(), t))
+
+=== a compressed download's decoded bytes are kept to resume from
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::resumes_only_what_c_resumes
+--- old
+            && !op.compressed
+--- new

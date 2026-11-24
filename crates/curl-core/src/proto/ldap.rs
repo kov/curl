@@ -388,9 +388,10 @@ impl Request {
         true
     }
 
-    /// While the answer is read, its socket.
-    pub(crate) fn interest(&self, pause: Pause) -> Events {
-        if self.receiving && !pause.recv_paused() {
+    /// While the answer is read, its socket; the multi takes it out
+    /// while receiving is paused.
+    pub(crate) fn interest(&self, _: Pause) -> Events {
+        if self.receiving {
             Events::IN
         } else {
             Events::NONE

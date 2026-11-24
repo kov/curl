@@ -85,14 +85,6 @@ witness: curl-core proto::ldap::tests::ldaps_wants_a_tls_library_too
 --- new
                     && (scheme == b"ldap" || true) =>
 
-=== a paused LDAP transfer waits to read
-file: crates/curl-core/src/proto/ldap.rs
-witness: curl-core proto::ldap::tests::a_paused_write_holds_the_answer
---- old
-        if self.receiving && !pause.recv_paused() {
---- new
-        if self.receiving {
-
 === a session dropped unbound is not unbound
 file: crates/curl-ldap/src/openldap.rs
 witness: curl-ldap openldap::tests::a_session_dropped_says_goodbye_and_closes

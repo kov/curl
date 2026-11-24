@@ -63,11 +63,14 @@ mod tests {
     use super::*;
 
     /// A retry goes with the blocked bytes from what it is given, as
-    /// many or more; fewer, or others, are refused.
+    /// many or more; fewer, or others, are refused. A write of no bytes
+    /// is an empty one.
     #[test]
     fn a_retry_is_the_blocked_bytes_or_refused() {
         let b = BlockedWrite::of(b"01234");
         assert_eq!(b.len(), 5);
+        assert!(!b.is_empty());
+        assert!(BlockedWrite::of(b"").is_empty());
         assert_eq!(b.again(b"01234"), Ok(&b"01234"[..]));
         assert_eq!(b.again(b"0123456789"), Ok(&b"01234"[..]));
         assert_eq!(b.again(b"0123"), Err(Retry::Shorter));

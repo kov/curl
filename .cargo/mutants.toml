@@ -603,6 +603,16 @@ exclude_re = [
     # `close` of a descriptor owned and open fails only where the file
     # system reports a held write's error then, which no test has.
     'curl-os/src/fs\.rs:.*: (replace close -> io::Result<\(\)> with Ok\(\(\)\)|replace < with > in close)$',
+    'curl-tool/src/output\.rs:.*: replace <impl stdio::Close for OutFile>::close -> std::io::Result<\(\)> with Ok\(\(\)\)$',
+    # `fstat` of a descriptor owned and open does not fail; `futimens` of a
+    # regular file the transfer opened for writing fails only for a file
+    # another user owns, which no test can make, so the warning of a
+    # remote time not set is not reached either.
+    'curl-os/src/fs\.rs:.*: replace < with > in (status_of|set_times)$',
+    'curl-tool/src/operate\.rs:.*: replace file_time_failed with \(\)$',
+    # A console's output is reached only from a console, by hand: the
+    # tests' output is a pipe or a file.
+    'curl-tool/src/output\.rs:.*: replace Stream::write_console -> ',
     # Only `read_whole`'s reader has no handlers to call, and it never
     # starts over.
     'mime/read\.rs:.*: replace <impl Calls for NoCalls>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\)$',

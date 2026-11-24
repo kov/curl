@@ -1915,6 +1915,36 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A file opened under the user's name takes back that file alone,
+    /// from whichever transfer holds it, and a transfer's file released
+    /// is held no more, while the others stay held.
+    #[test]
+    fn takes_back_and_releases_only_the_file_named() {
+        let dir = scratch("server-named");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = |name: &str| {
+            let file = File::create(dir.join(name)).unwrap();
+            fs::status_of(&file).unwrap().id().unwrap()
+        };
+        let (a, b, c) = (id("a"), id("b"), id("c"));
+        let held = ServerNamed::new().unwrap();
+        let (taken_a, taken_b) = (held.hold(a).unwrap(), held.hold(b).unwrap());
+        let taken_c = held.hold(c).unwrap();
+        held.take_back(a);
+        assert!(taken_a.load(Ordering::Relaxed));
+        assert!(!taken_b.load(Ordering::Relaxed));
+        held.take_back(b);
+        assert!(taken_b.load(Ordering::Relaxed));
+        assert!(!taken_c.load(Ordering::Relaxed));
+        let taken_d = held.hold(a).unwrap();
+        held.release(&taken_c);
+        assert_eq!(held.list().len(), 1);
+        held.take_back(a);
+        assert!(taken_d.load(Ordering::Relaxed));
+        assert!(held.list().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn saves_an_etag_as_c_does() {
         let path = scratch("etag-save");

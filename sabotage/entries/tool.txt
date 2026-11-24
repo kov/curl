@@ -2002,3 +2002,29 @@ witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_name
 --- old
                 && stream.removable()
 --- new
+
+=== a file taken back stays held, and every other file is let go
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::takes_back_and_releases_only_the_file_named
+--- old
+            *held != id
+        });
+--- new
+            *held == id
+        });
+
+=== a server-named file closed stays held
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::takes_back_and_releases_only_the_file_named
+--- old
+        self.list().retain(|(_, t)| !TryArc::ptr_eq(t, taken));
+--- new
+        let _ = taken;
+
+=== a server-named file closed is the one held, and every other is let go
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::takes_back_and_releases_only_the_file_named
+--- old
+        self.list().retain(|(_, t)| !TryArc::ptr_eq(t, taken));
+--- new
+        self.list().retain(|(_, t)| TryArc::ptr_eq(t, taken));

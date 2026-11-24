@@ -95,6 +95,31 @@ fn a_session_made_wired_says_nothing_on_its_socket() {
     assert!(heard.is_empty(), "{heard:?}");
 }
 
+/// A session whose layer cannot go on forgets its socket: it holds none
+/// after, its copy is closed, and its unbind as it is freed reaches no
+/// socket at all.
+#[test]
+fn a_session_that_forgets_its_socket_closes_it_and_says_nothing() {
+    let (ours, mut theirs) = UnixStream::pair().unwrap();
+    let mut made = Libsession::new(
+        Transport::Bare(Some(ours.as_fd())),
+        b"ldap",
+        b"ldap://h:389",
+    )
+    .unwrap();
+    drop(ours);
+    assert!(made.socket().is_some());
+    made.forget_socket();
+    assert_eq!(made.socket(), None);
+    drop(made);
+    theirs
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut heard = Vec::new();
+    theirs.read_to_end(&mut heard).unwrap();
+    assert!(heard.is_empty(), "{heard:?}");
+}
+
 /// A session over the connection's layers sends and reads through the
 /// wire each call is handed, and nothing through its socket: a bind is
 /// answered, a search's entries are read with their attributes and its

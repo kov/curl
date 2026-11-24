@@ -51,6 +51,62 @@ impl Ldap for Libldap {
         scheme: &[u8],
         url: &[u8],
     ) -> Result<Box<dyn Session>, SessionFailed> {
+        let made = Libsession::new(transport, scheme, url)?;
+        // A box that cannot be made drops the session, which frees it.
+        match curl_alloc::try_box(made) {
+            Ok(b) => {
+                let b: Box<dyn Session> = b;
+                Ok(b)
+            }
+            Err(OutOfMemory) => Err(SessionFailed::Library(Code::NO_MEMORY)),
+        }
+    }
+}
+
+/// Where a session over the connection's layers finds the wire of the
+/// call it is in: set for that call only, none between calls. Boxed, so
+/// its address, the layer's private pointer, stays put.
+struct Slot {
+    wire: Cell<Option<*mut (dyn Wire + 'static)>>,
+    /// The layer's last send would have blocked: the TLS below must be
+    /// given those bytes again, whole, before any other
+    /// (`li->send_blocked`).
+    send_blocked: Cell<bool>,
+}
+
+/// A session: C's `ldapconninfo`'s `ld`.
+struct Libsession {
+    ld: *mut sys::LDAP,
+    slot: Box<Slot>,
+    /// Its layer over the connection's is on (C's `ssl_installed`).
+    wired: bool,
+    /// It unbound, and is freed.
+    unbound: bool,
+}
+
+impl core::fmt::Debug for Libsession {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Libsession")
+            .field("wired", &self.wired)
+            .field("unbound", &self.unbound)
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: a session is tied to no thread: it is used by one thread at a
+// time, whoever owns this, as C's connection uses it from whichever
+// thread runs its transfer. Its slot holds a wire only during a call.
+unsafe impl Send for Libsession {}
+
+impl Libsession {
+    /// A session over a copy of `transport`'s socket, for `url` of
+    /// `scheme`, with its layer on if the socket's bytes are not the
+    /// connection's.
+    fn new(
+        transport: Transport<'_>,
+        scheme: &[u8],
+        url: &[u8],
+    ) -> Result<Libsession, SessionFailed> {
         let nomem = Err(SessionFailed::Library(Code::NO_MEMORY));
         let (Ok(Some(scheme)), Ok(Some(url))) = (terminated(scheme), terminated(url)) else {
             return nomem;
@@ -98,53 +154,9 @@ impl Ldap for Libldap {
             made.forget_socket();
             return Err(SessionFailed::NoWire);
         }
-        // A box that cannot be made drops the session, which frees it.
-        match curl_alloc::try_box(made) {
-            Ok(b) => {
-                let b: Box<dyn Session> = b;
-                Ok(b)
-            }
-            Err(OutOfMemory) => nomem,
-        }
+        Ok(made)
     }
-}
 
-/// Where a session over the connection's layers finds the wire of the
-/// call it is in: set for that call only, none between calls. Boxed, so
-/// its address, the layer's private pointer, stays put.
-struct Slot {
-    wire: Cell<Option<*mut (dyn Wire + 'static)>>,
-    /// The layer's last send would have blocked: the TLS below must be
-    /// given those bytes again, whole, before any other
-    /// (`li->send_blocked`).
-    send_blocked: Cell<bool>,
-}
-
-/// A session: C's `ldapconninfo`'s `ld`.
-struct Libsession {
-    ld: *mut sys::LDAP,
-    slot: Box<Slot>,
-    /// Its layer over the connection's is on (C's `ssl_installed`).
-    wired: bool,
-    /// It unbound, and is freed.
-    unbound: bool,
-}
-
-impl core::fmt::Debug for Libsession {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Libsession")
-            .field("wired", &self.wired)
-            .field("unbound", &self.unbound)
-            .finish_non_exhaustive()
-    }
-}
-
-// SAFETY: a session is tied to no thread: it is used by one thread at a
-// time, whoever owns this, as C's connection uses it from whichever
-// thread runs its transfer. Its slot holds a wire only during a call.
-unsafe impl Send for Libsession {}
-
-impl Libsession {
     /// Run `f` on the session with `wire` in its slot, for the layer over
     /// the connection's to use, and none after.
     fn with<R>(&mut self, wire: &mut dyn Wire, f: impl FnOnce(*mut sys::LDAP) -> R) -> R {
@@ -165,17 +177,9 @@ impl Libsession {
     /// nothing it sends after reaches the connection: its writes to no
     /// socket fail.
     fn forget_socket(&mut self) {
-        let Some(sb) = self.sockbuf() else {
+        let (Some(sb), Some(fd)) = (self.sockbuf(), self.socket()) else {
             return;
         };
-        let mut fd: sys::ber_socket_t = -1;
-        // SAFETY: the session's buffer, and where its socket goes.
-        let rc = unsafe {
-            sys::ber_sockbuf_ctrl(sb, sys::LBER_SB_OPT_GET_FD, (&raw mut fd).cast::<c_void>())
-        };
-        if rc != 1 || fd < 0 {
-            return;
-        }
         let mut none: sys::ber_socket_t = -1;
         // SAFETY: as above, and the socket that is none (`AC_SOCKET_INVALID`).
         let rc = unsafe {
@@ -190,6 +194,17 @@ impl Libsession {
             // holds: ours to close, once.
             drop(unsafe { OwnedFd::from_raw_fd(fd) });
         }
+    }
+
+    /// The socket the session holds, if any.
+    fn socket(&mut self) -> Option<sys::ber_socket_t> {
+        let sb = self.sockbuf()?;
+        let mut fd: sys::ber_socket_t = -1;
+        // SAFETY: the session's buffer, and where its socket goes.
+        let rc = unsafe {
+            sys::ber_sockbuf_ctrl(sb, sys::LBER_SB_OPT_GET_FD, (&raw mut fd).cast::<c_void>())
+        };
+        (rc == 1 && fd >= 0).then_some(fd)
     }
 
     /// The session's socket buffer, which its layers are on.

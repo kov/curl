@@ -192,3 +192,29 @@ witness: curl-ldap openldap::tests::a_session_made_wired_says_nothing_on_its_soc
         if wired && made.use_wire().is_err() {
 --- new
         if false && made.use_wire().is_err() {
+
+=== a session whose layer cannot go on keeps its socket
+file: crates/curl-ldap/src/openldap.rs
+witness: curl-ldap openldap::tests::a_session_that_forgets_its_socket_closes_it_and_says_nothing
+--- old
+        let (Some(sb), Some(fd)) = (self.sockbuf(), self.socket()) else {
+--- new
+        let (Some(sb), Some(fd), true) = (self.sockbuf(), self.socket(), false) else {
+
+=== a socket the session forgot is left open
+file: crates/curl-ldap/src/openldap.rs
+witness: curl-ldap openldap::tests::a_session_that_forgets_its_socket_closes_it_and_says_nothing
+--- old
+        if rc == 1 {
+            // SAFETY: the copy the session was given, which it no longer
+--- new
+        if rc != 1 {
+            // SAFETY: the copy the session was given, which it no longer
+
+=== a session holding a socket is taken for one holding none
+file: crates/curl-ldap/src/openldap.rs
+witness: curl-ldap openldap::tests::a_session_that_forgets_its_socket_closes_it_and_says_nothing
+--- old
+        (rc == 1 && fd >= 0).then_some(fd)
+--- new
+        (rc == 1 && fd < 0).then_some(fd)

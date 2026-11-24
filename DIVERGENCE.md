@@ -534,6 +534,20 @@ so: weaknesses kept because C has them.
   proxy's TLS", where C's fails as its libssh build does above. Pinned by
   `only_an_https_proxy_s_tls_is_read_through_pipes`
   (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`).
+- **LDAP through an HTTPS proxy goes inside the proxy's TLS.** libldap reads and writes the
+  connection's socket itself only while no layer of the rewrite works on its bytes; under the
+  proxy's TLS, or any other layer, its session reads and writes through the connection's layers
+  from the start, as C's does over the connection's own TLS (`ldapsb_tls`). C's build hands
+  libldap a copy of the raw socket whatever filters are over it (`oldap_connect`,
+  `lib/openldap.c`) and installs its layer only once the connection's own TLS is on, so an
+  `ldap:` transfer's bind and search go onto the connection in clear, in the middle of the TLS
+  session, the bind's password among them. Measured 2026-11-24 against a proxy that grants the
+  tunnel and reports what follows: after its 200, C's build sent 25 bytes starting 0x30, an LDAP
+  message, with the password in clear; the rewrite's sent 47 bytes of TLS records. Both exit 7
+  there, as that proxy answers nothing more. Pinned by
+  `through_an_https_proxy_the_session_uses_the_proxy_s_tls`
+  (`crates/curl-core/src/proto/ldap/tests.rs`) and
+  `a_session_made_wired_says_nothing_on_its_socket` (`crates/curl-ldap/src/tests.rs`).
 
 ## Codes C passes through
 

@@ -23,7 +23,7 @@ use crate::deliver::{self, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::ldap::{
     Code, Kind, Ldap, LdapLibrary, Mech, Message, MsgId, Scope, Search, Session, SessionFailed,
-    UrlError, Version, Wire,
+    Transport, UrlError, Version, Wire,
 };
 use crate::multi::Host;
 use crate::multi::state::StepCx;
@@ -448,12 +448,20 @@ impl Request {
             .try_extend_from_slice(port.as_bytes())
             .map_err(oom)?;
         let carrier = lease.get().carrier();
-        let Some(socket) = carrier.stream_socket() else {
-            return Err(ErrorKind::CouldntConnect);
+        // The library reads and writes the socket itself only where
+        // nothing works on its bytes; C hands it the socket whatever is
+        // layered over it, an HTTPS proxy's TLS among them.
+        let transport = match carrier.bare_socket() {
+            Some(socket) => Transport::Bare(socket.descriptor()),
+            None => match carrier.stream_socket() {
+                Some(socket) => Transport::Wired(socket.descriptor()),
+                None => return Err(ErrorKind::CouldntConnect),
+            },
         };
-        let made = library.session(socket.descriptor(), scheme.name().as_bytes(), &hosturl);
+        let made = library.session(transport, scheme.name().as_bytes(), &hosturl);
         let mut session = match made {
             Err(SessionFailed::NoCopy) => return Err(ErrorKind::CouldntConnect),
+            Err(SessionFailed::NoWire) => return Err(ErrorKind::FailedInit),
             Err(SessionFailed::Library(code)) => {
                 return Err(trace::fail_with(
                     cx,
@@ -785,6 +793,9 @@ impl Request {
             };
             // What C reads of the message: its kind, its code, a bind's
             // answer, and the mechanisms an entry offers.
+            // The connection's own TLS is on (`ssl_installed`): what
+            // allows a bind in version 2 where TLS is asked for.
+            let tls_on = wire.carrier.over_tls();
             let read = match lc.session.result(&mut wire, id) {
                 Ok(None) => None,
                 Ok(Some(mut msg)) => {
@@ -826,11 +837,10 @@ impl Request {
                 }
             }
             // A server without version 3 is bound to in version 2.
-            let wired = lc.session.uses_wire();
             let use_ssl = cx.easy().options().line.use_ssl;
             if code == Code::PROTOCOL_ERROR
                 && state != State::BindV2
-                && (wired || use_ssl <= UseSsl::Try)
+                && (tls_on || use_ssl <= UseSsl::Try)
                 && lc.sasl.preferred() == Mechs::NONE
             {
                 lc.session.set_version(Version::V2);

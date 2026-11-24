@@ -479,7 +479,7 @@ impl Ldap for FakeLdap {
 
     fn session(
         &self,
-        _: Option<curl_os::socket::BorrowedSocket<'_>>,
+        transport: crate::ldap::Transport<'_>,
         scheme: &[u8],
         url: &[u8],
     ) -> Result<Box<dyn Session>, SessionFailed> {
@@ -492,11 +492,15 @@ impl Ldap for FakeLdap {
         if let Some(code) = w.refuse {
             return Err(SessionFailed::Library(code));
         }
+        let wired = matches!(transport, crate::ldap::Transport::Wired(_));
+        if wired {
+            w.calls.push("wired from the start".into());
+        }
         Ok(Box::new(FakeSession {
             world: self.0.clone(),
             next: 1,
             answers: VecDeque::new(),
-            wired: false,
+            wired,
         }))
     }
 
@@ -1426,6 +1430,72 @@ fn over_tls_the_session_uses_the_connection_s_layers() {
     assert!(
         sent.contains("bind - simple \nsearch dc=x 2 (cn=*)"),
         "{sent}"
+    );
+}
+
+/// Through an HTTPS proxy the session is on the connection's layers from
+/// the start: its bind and search go inside the proxy's TLS after the
+/// CONNECT, never in clear, and its answers come back out of it. C hands
+/// libldap the socket under the proxy's TLS.
+#[test]
+fn through_an_https_proxy_the_session_uses_the_proxy_s_tls() {
+    use crate::tls::fake::{self, WELCOME};
+    let (backend, tls) = fake_tls();
+    let answer = fake::records(b"HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
+    let answers = fake::records(b"AAA").unwrap();
+    let talk = Conversation::replies(&[WELCOME, &answer, &answers], false).per_send();
+    let ran = run_over(URL, Some(tls), talk.clone(), one_entry, |o| {
+        o.set_proxy_url(Some(format!("https://127.0.0.1:{PORT}").into_bytes()))
+            .unwrap();
+        credentials(o, b"u:secret");
+    });
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    assert_eq!(ran.body, b"DN: cn=a,dc=x\n\tcn: a\n\n\n");
+    assert_eq!(backend.log().handshakes, 1, "the proxy's TLS");
+    assert_eq!(ran.calls[1], "wired from the start", "{:?}", ran.calls);
+    let wire = talk.received();
+    let sent = fake::read_client(&wire).unwrap();
+    let sent = String::from_utf8_lossy(&sent).into_owned();
+    let connect = sent
+        .find("CONNECT 127.0.0.1:8389 HTTP/1.1\r\n")
+        .expect(&sent);
+    let bind = sent
+        .find("bind u simple secret\nsearch dc=x 2 (cn=*)")
+        .expect(&sent);
+    assert!(connect < bind, "{sent}");
+    assert!(!wire.windows(6).any(|w| w == b"secret"), "in clear");
+}
+
+/// Where TLS is required, a server without version 3 is bound to in
+/// version 2 once the connection's own TLS is on (`ssl_installed`), as
+/// after an accepted STARTTLS.
+#[test]
+fn version_2_where_tls_is_required_follows_the_connection_s_tls() {
+    let (_, tls) = fake_tls();
+    let ran = run_over(
+        URL,
+        Some(tls),
+        welcome_then(5),
+        |w| {
+            one_entry(w);
+            w.binds = [Code::PROTOCOL_ERROR].into();
+        },
+        |o| {
+            use_ssl(o, UseSsl::All);
+            credentials(o, b"u:p");
+        },
+    );
+    assert_eq!(ran.result, Ok(()), "{}", ran.said);
+    let binds: Vec<_> = ran
+        .calls
+        .iter()
+        .filter(|c| c.starts_with("bind") || *c == "version 2")
+        .collect();
+    assert_eq!(
+        binds,
+        ["bind u simple p", "version 2", "bind u simple p"],
+        "{:?}",
+        ran.calls
     );
 }
 

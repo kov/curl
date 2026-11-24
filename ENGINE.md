@@ -4584,12 +4584,15 @@ session, C's connect state and the message whose answer it awaits; the request h
 search's message and the URL's parts.
 
 - **The session reads through the connection.** It is made over a copy of the connection's
-  socket (`ldap_init_fd`); until TLS is on, libldap reads and writes that socket itself, as
-  C's does. Once the connection's TLS is made (ldaps) or STARTTLS's handshake is done, an
-  I/O layer goes on the session's stream that reads and writes through the connection's
-  chain (`Wire`, lent for the length of each library call, `ConnWire` over the carrier), as
-  C's `ldapsb_tls` does. Its close leaves the socket to the library's own layer, which closes
-  its copy.
+  socket (`ldap_init_fd`), and told how it reaches the connection (`Transport`): bare, where
+  no layer works on the socket's bytes and none received waits unused, or wired. A bare
+  session reads and writes that socket itself until TLS is on, as C's does. Once the
+  connection's TLS is made (ldaps) or STARTTLS's handshake is done, an I/O layer goes on the
+  session's stream that reads and writes through the connection's chain (`Wire`, lent for the
+  length of each library call, `ConnWire` over the carrier), as C's `ldapsb_tls` does; a
+  wired session has it from the start, under an HTTPS proxy's TLS or a tunnel, where C's
+  reads and writes the raw socket (`DIVERGENCE.md`). Its close leaves the socket to the
+  library's own layer, which closes its copy.
 - **The connect** is C's machine (`oldap_connecting`): version 3 and no referrals, then TLS,
   STARTTLS (refused, the bind goes on only for `--ssl`), and the bind: SASL's where the login
   options or the HTTP methods ask for a mechanism (the mechanisms read from the server's root,

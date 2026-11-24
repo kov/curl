@@ -1,6 +1,6 @@
 use super::*;
 use crate::ber::*;
-use curl_core::ldap::Scope;
+use curl_core::ldap::{Scope, Transport};
 use std::io::{Read as _, Write as _};
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
@@ -19,7 +19,7 @@ fn the_version_is_the_vendor_and_its_number() {
 /// A socket with no descriptor is one libldap cannot be given a copy of.
 #[test]
 fn a_socket_without_a_descriptor_makes_no_session() {
-    let made = LIBLDAP.session(None, b"ldap", b"ldap://h:389");
+    let made = LIBLDAP.session(Transport::Bare(None), b"ldap", b"ldap://h:389");
     assert_eq!(made.err(), Some(SessionFailed::NoCopy));
 }
 
@@ -61,6 +61,40 @@ impl Wire for Bytes {
     }
 }
 
+/// A session made over a socket under layers is on the wire from the
+/// start: its bind goes out on the wire, none of it on the socket, and
+/// its unbind too as it is dropped.
+#[test]
+fn a_session_made_wired_says_nothing_on_its_socket() {
+    let (ours, mut theirs) = UnixStream::pair().unwrap();
+    let mut session = LIBLDAP
+        .session(
+            Transport::Wired(Some(ours.as_fd())),
+            b"ldap",
+            b"ldap://h:389",
+        )
+        .unwrap();
+    drop(ours);
+    assert!(session.uses_wire());
+    session.set_version(Version::V3);
+    let mut wire = Bytes::default();
+    let id = session
+        .bind(&mut wire, Some(b"cn=me"), Mech::Simple, Some(b"pw"))
+        .unwrap();
+    let mut bind = ber(0x02, &[3]);
+    bind.extend_from_slice(&ber(0x04, b"cn=me"));
+    bind.extend_from_slice(&ber(0x80, b"pw"));
+    assert_eq!(wire.sent, ldap_message(id.0 as u8, &ber(0x60, &bind)));
+    wire.sent.clear();
+    session.unbind(&mut wire);
+    assert!(!wire.sent.is_empty(), "the unbind goes on the wire");
+    drop(session);
+    // The session's copy closed with it, the socket said nothing.
+    let mut heard = Vec::new();
+    theirs.read_to_end(&mut heard).unwrap();
+    assert!(heard.is_empty(), "{heard:?}");
+}
+
 /// A session over the connection's layers sends and reads through the
 /// wire each call is handed, and nothing through its socket: a bind is
 /// answered, a search's entries are read with their attributes and its
@@ -69,7 +103,11 @@ impl Wire for Bytes {
 fn a_session_over_a_wire_reads_and_writes_through_it() {
     let (ours, mut theirs) = UnixStream::pair().unwrap();
     let mut session = LIBLDAP
-        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
+        .session(
+            Transport::Bare(Some(ours.as_fd())),
+            b"ldap",
+            b"ldap://h:389",
+        )
         .unwrap();
     drop(ours);
     session.set_version(Version::V3);
@@ -167,7 +205,11 @@ fn an_unbind_after_a_blocked_send_is_not_sent() {
     for blocked in [true, false] {
         let (ours, _theirs) = UnixStream::pair().unwrap();
         let mut session = LIBLDAP
-            .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
+            .session(
+                Transport::Bare(Some(ours.as_fd())),
+                b"ldap",
+                b"ldap://h:389",
+            )
             .unwrap();
         drop(ours);
         session.set_version(Version::V3);
@@ -202,7 +244,11 @@ fn an_unbind_after_a_blocked_send_is_not_sent() {
 fn a_session_over_its_socket_uses_it() {
     let (ours, mut theirs) = UnixStream::pair().unwrap();
     let mut session = LIBLDAP
-        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
+        .session(
+            Transport::Bare(Some(ours.as_fd())),
+            b"ldap",
+            b"ldap://h:389",
+        )
         .unwrap();
     let mut unused = Bytes::default();
     let id = session
@@ -282,7 +328,11 @@ fn notices_sent_unasked_are_let_go() {
 fn wired() -> Box<dyn Session> {
     let (ours, _theirs) = UnixStream::pair().unwrap();
     let mut session = LIBLDAP
-        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
+        .session(
+            Transport::Bare(Some(ours.as_fd())),
+            b"ldap",
+            b"ldap://h:389",
+        )
         .unwrap();
     drop(ours);
     session.set_version(Version::V3);
@@ -340,7 +390,11 @@ fn a_wired_session_s_limits_and_answers_are_the_library_s() {
 fn a_session_dropped_says_goodbye_and_closes() {
     let (ours, mut theirs) = UnixStream::pair().unwrap();
     let session = LIBLDAP
-        .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
+        .session(
+            Transport::Bare(Some(ours.as_fd())),
+            b"ldap",
+            b"ldap://h:389",
+        )
         .unwrap();
     drop(ours);
     drop(session);
@@ -389,7 +443,7 @@ proptest::proptest! {
     ) {
         let (ours, _theirs) = UnixStream::pair().unwrap();
         let mut session = LIBLDAP
-            .session(Some(ours.as_fd()), b"ldap", b"ldap://h:389")
+            .session(Transport::Bare(Some(ours.as_fd())), b"ldap", b"ldap://h:389")
             .unwrap();
         drop(ours);
         session.set_version(Version::V3);

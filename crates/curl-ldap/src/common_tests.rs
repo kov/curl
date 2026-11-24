@@ -25,6 +25,8 @@ fn the_declarations_are_the_headers() {
         LDAP_RES_UNSOLICITED.into(),
         LBER_SB_OPT_DATA_READY.into(),
         LBER_SB_OPT_SET_MAX_INCOMING.into(),
+        LBER_SB_OPT_GET_FD.into(),
+        LBER_SB_OPT_SET_FD.into(),
         LBER_SBIOD_LEVEL_TRANSPORT.into(),
         LDAP_URL_SUCCESS.into(),
         LDAP_URL_ERR_MEM.into(),

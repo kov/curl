@@ -106,7 +106,7 @@ witness: curl-ldap openldap::tests::a_session_dropped_says_goodbye_and_closes
 file: crates/curl-ldap/src/openldap.rs
 witness: curl-ldap openldap::tests::a_socket_without_a_descriptor_makes_no_session
 --- old
-        let socket = socket.ok_or(SessionFailed::NoCopy)?;
+        let socket: BorrowedFd<'_> = socket.ok_or(SessionFailed::NoCopy)?;
 --- new
         let Some(socket) = socket else {
             return Err(SessionFailed::Library(Code::NO_MEMORY));
@@ -176,3 +176,27 @@ witness: curl-core proto::ldap::tests::a_connection_only_made_over_tls_is_refuse
         if done && cx.easy().options().connect_only != ConnectOnly::No {
 --- new
         if false && done && cx.easy().options().connect_only != ConnectOnly::No {
+
+=== a session under the connection's layers reads and writes the socket itself
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::through_an_https_proxy_the_session_uses_the_proxy_s_tls
+--- old
+                Some(socket) => Transport::Wired(socket.descriptor()),
+--- new
+                Some(socket) => Transport::Bare(socket.descriptor()),
+
+=== a server without version 3 is not bound to in version 2 after STARTTLS where TLS is required
+file: crates/curl-core/src/proto/ldap.rs
+witness: curl-core proto::ldap::tests::version_2_where_tls_is_required_follows_the_connection_s_tls
+--- old
+                && (tls_on || use_ssl <= UseSsl::Try)
+--- new
+                && (false || use_ssl <= UseSsl::Try)
+
+=== libldap's session made wired is left on its socket
+file: crates/curl-ldap/src/openldap.rs
+witness: curl-ldap openldap::tests::a_session_made_wired_says_nothing_on_its_socket
+--- old
+        if wired && made.use_wire().is_err() {
+--- new
+        if false && made.use_wire().is_err() {

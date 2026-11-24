@@ -70,8 +70,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   and receive callbacks over an HTTPS proxy's TLS, its SCP channel and SFTP session, and the
   declarations of the functions they call.
 - `crates/curl-ldap/src/openldap.rs` and `src/sys.rs`: libldap's session over the connection's
-  socket, the I/O layer it reads and writes TLS through, its messages, and the declarations of
-  the functions they call.
+  socket, the I/O layer it reads and writes the connection's layers through, its messages, and
+  the declarations of the functions they call.
 - `crates/curl-ldap/src/local.rs`: libldap's session over a connection of its own, as
   `lib/ldap.c` drives it, and the entries of its search.
 - `crates/curl-ldap/src/common.rs`: libldap's URL parser, its words for a code, its version,

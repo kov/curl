@@ -120,6 +120,8 @@ pub(crate) const LDAP_RES_EXTENDED: c_int = 0x78;
 pub(crate) const LDAP_RES_UNSOLICITED: c_int = 0;
 pub(crate) const LBER_SB_OPT_DATA_READY: c_int = 8;
 pub(crate) const LBER_SB_OPT_SET_MAX_INCOMING: c_int = 14;
+pub(crate) const LBER_SB_OPT_GET_FD: c_int = 1;
+pub(crate) const LBER_SB_OPT_SET_FD: c_int = 2;
 pub(crate) const LBER_SBIOD_LEVEL_TRANSPORT: c_int = 20;
 pub(crate) const LDAP_URL_SUCCESS: c_int = 0x00;
 pub(crate) const LDAP_URL_ERR_MEM: c_int = 0x01;
@@ -306,4 +308,4 @@ unsafe extern "C" {
 }
 
 /// How many values and layouts `csrc/layout.c` gives.
-pub(crate) const LAYOUT_LEN: usize = 73;
+pub(crate) const LAYOUT_LEN: usize = 75;

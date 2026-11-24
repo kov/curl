@@ -19,7 +19,7 @@ use crate::common::{self, CSearch, bytes, copied, scope_number, terminated};
 use crate::sys;
 use curl_core::ldap::{
     Attribute, Code, Kind, Ldap, Mech, Message, MsgId, Refused, Search, Session, SessionFailed,
-    UrlError, Version, Wire,
+    Transport, UrlError, Version, Wire,
 };
 
 /// libldap, as C's build uses it.
@@ -47,7 +47,7 @@ impl Ldap for Libldap {
 
     fn session(
         &self,
-        socket: Option<BorrowedFd<'_>>,
+        transport: Transport<'_>,
         scheme: &[u8],
         url: &[u8],
     ) -> Result<Box<dyn Session>, SessionFailed> {
@@ -62,7 +62,11 @@ impl Ldap for Libldap {
             Ok(slot) => slot,
             Err(OutOfMemory) => return nomem,
         };
-        let socket = socket.ok_or(SessionFailed::NoCopy)?;
+        let (socket, wired) = match transport {
+            Transport::Bare(socket) => (socket, false),
+            Transport::Wired(socket) => (socket, true),
+        };
+        let socket: BorrowedFd<'_> = socket.ok_or(SessionFailed::NoCopy)?;
         // A copy of its own, close-on-exec (`F_DUPFD_CLOEXEC`): libldap
         // closes it as the session is freed.
         let copy: OwnedFd = socket
@@ -81,12 +85,19 @@ impl Ldap for Libldap {
             drop(unsafe { OwnedFd::from_raw_fd(raw) });
             return Err(SessionFailed::Library(Code(rc)));
         }
-        let made = Libsession {
+        let mut made = Libsession {
             ld,
             slot,
             wired: false,
             unbound: false,
         };
+        // Its layer on before it says anything, where the socket is not
+        // the connection's bytes. Without it, the session is freed with
+        // no socket, so that its unbind reaches nothing.
+        if wired && made.use_wire().is_err() {
+            made.forget_socket();
+            return Err(SessionFailed::NoWire);
+        }
         // A box that cannot be made drops the session, which frees it.
         match curl_alloc::try_box(made) {
             Ok(b) => {
@@ -148,6 +159,37 @@ impl Libsession {
         let r = f(self.ld);
         self.slot.wire.set(None);
         r
+    }
+
+    /// Close the session's copy of the socket and leave it none, so that
+    /// nothing it sends after reaches the connection: its writes to no
+    /// socket fail.
+    fn forget_socket(&mut self) {
+        let Some(sb) = self.sockbuf() else {
+            return;
+        };
+        let mut fd: sys::ber_socket_t = -1;
+        // SAFETY: the session's buffer, and where its socket goes.
+        let rc = unsafe {
+            sys::ber_sockbuf_ctrl(sb, sys::LBER_SB_OPT_GET_FD, (&raw mut fd).cast::<c_void>())
+        };
+        if rc != 1 || fd < 0 {
+            return;
+        }
+        let mut none: sys::ber_socket_t = -1;
+        // SAFETY: as above, and the socket that is none (`AC_SOCKET_INVALID`).
+        let rc = unsafe {
+            sys::ber_sockbuf_ctrl(
+                sb,
+                sys::LBER_SB_OPT_SET_FD,
+                (&raw mut none).cast::<c_void>(),
+            )
+        };
+        if rc == 1 {
+            // SAFETY: the copy the session was given, which it no longer
+            // holds: ours to close, once.
+            drop(unsafe { OwnedFd::from_raw_fd(fd) });
+        }
     }
 
     /// The session's socket buffer, which its layers are on.

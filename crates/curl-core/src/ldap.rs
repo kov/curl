@@ -7,9 +7,10 @@
 //! [`Ldap`] is OpenLDAP's libldap as `lib/openldap.c` drives it: the
 //! URL's search, a session over a copy of the connected socket, its binds
 //! and searches, and the messages that answer them, none of them waited
-//! for. Over TLS the library's reads and writes go through the
-//! connection's layers, not its socket: each call that may touch the wire
-//! is handed the [`Wire`] to use, for that call only.
+//! for. Over TLS, or under any layer that works on the socket's bytes,
+//! the library's reads and writes go through the connection's layers,
+//! not its socket: each call that may touch the wire is handed the
+//! [`Wire`] to use, for that call only.
 //!
 //! [`Local`] is a library as `lib/ldap.c` drives it, where libldap has no
 //! `ldap_init_fd` (macOS's LDAP.framework) or the library is another
@@ -35,12 +36,12 @@ pub trait Ldap: fmt::Debug + Send + Sync {
     fn parse_url(&self, url: &[u8]) -> Result<Search, UrlError>;
 
     /// A session over a copy of the connected socket, which stays the
-    /// caller's, for `scheme`'s connection to `url`
-    /// (`ldap_pvt_url_scheme2proto`, `ldap_init_fd`). A socket with no
-    /// descriptor is one a library over the system's sockets cannot copy.
+    /// caller's, reaching the connection as `transport` says, for
+    /// `scheme`'s connection to `url` (`ldap_pvt_url_scheme2proto`,
+    /// `ldap_init_fd`).
     fn session(
         &self,
-        socket: Option<BorrowedSocket<'_>>,
+        transport: Transport<'_>,
         scheme: &[u8],
         url: &[u8],
     ) -> Result<Box<dyn Session>, SessionFailed>;
@@ -49,11 +50,28 @@ pub trait Ldap: fmt::Debug + Send + Sync {
     fn describe(&self, code: Code) -> &'static [u8];
 }
 
+/// How a session reaches its connection. A socket with no descriptor is
+/// one a library over the system's sockets cannot copy.
+#[derive(Clone, Copy, Debug)]
+pub enum Transport<'s> {
+    /// The connected socket, which no layer works on and on which no byte
+    /// received waits unused: the session reads and writes it itself,
+    /// until told to use the [`Wire`].
+    Bare(Option<BorrowedSocket<'s>>),
+    /// The socket under layers that work on its bytes (an HTTPS proxy's
+    /// TLS, a tunnel's stream), or with bytes received not yet used: the
+    /// session reads and writes through the [`Wire`] from the start, and
+    /// the socket is the library's to poll alone.
+    Wired(Option<BorrowedSocket<'s>>),
+}
+
 /// Why no session was made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionFailed {
     /// The connected socket could not be copied.
     NoCopy,
+    /// The session made would not read and write through the [`Wire`].
+    NoWire,
     /// The library's code for it.
     Library(Code),
 }
@@ -147,8 +165,8 @@ pub enum Kind {
     Other(i32),
 }
 
-/// The connection a session reads and writes through over TLS: the
-/// connection's layers, as C's `ldapsb_tls` calls them.
+/// The connection a session reads and writes through over TLS or other
+/// layers: the connection's layers, as C's `ldapsb_tls` calls them.
 pub trait Wire {
     /// Read into `buf`: how much, none at the connection's end; a read
     /// that would wait fails as [`io::ErrorKind::WouldBlock`].

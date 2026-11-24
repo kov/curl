@@ -6,6 +6,7 @@ use core::ffi::CStr;
 use curl_alloc::Lock;
 use std::fs::File;
 use std::io::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 use curl_core::handler::{Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler};
@@ -80,7 +81,61 @@ pub(crate) struct Stream {
     /// for the next to complete (`outs->utf8seq`).
     #[cfg(windows)]
     utf8seq: [u8; 5],
+    /// The files the run's transfers write under a name a server gave.
+    pub(crate) server_named: Option<ServerNamed>,
+    /// The file this transfer opened, if a regular file, kept once it is
+    /// closed: what `--remove-on-error` may remove.
+    opened: Option<fs::FileId>,
+    /// Set once a transfer writing under a name the user gave has opened
+    /// this one's file, a server having named it: it writes no more.
+    taken: Option<TryArc<AtomicBool>>,
     msgs: Messages,
+}
+
+/// The files a run's transfers have open under a name a server gave
+/// (`--remote-header-name`), each with the flag that takes it back from
+/// its transfer: a transfer of the same run that opens one under a name
+/// the user gave sets it, and the file is that transfer's. Parallel
+/// transfers write at once, and a server could otherwise name the file
+/// another of them writes, writing over it. C's tool keeps no such list.
+#[derive(Clone)]
+pub(crate) struct ServerNamed(TryArc<Lock<Held>>);
+
+/// Each file held, with its transfer's flag.
+type Held = Vec<(fs::FileId, TryArc<AtomicBool>)>;
+
+impl ServerNamed {
+    pub(crate) fn new() -> Result<ServerNamed, OutOfMemory> {
+        Ok(ServerNamed(TryArc::try_new(Lock::new(Vec::new()))?))
+    }
+
+    fn list(&self) -> curl_alloc::LockGuard<'_, Held> {
+        self.0.lock().expect("no panic holds it")
+    }
+
+    /// `id` is written under a name a server gave: the flag that says it
+    /// was taken back.
+    fn hold(&self, id: fs::FileId) -> Result<TryArc<AtomicBool>, OutOfMemory> {
+        let taken = TryArc::try_new(AtomicBool::new(false))?;
+        self.list().try_push((id, taken.clone()))?;
+        Ok(taken)
+    }
+
+    /// `id` is opened under a name the user gave: any transfer writing it
+    /// under a server's name writes it no more.
+    fn take_back(&self, id: fs::FileId) {
+        self.list().retain(|(held, taken)| {
+            if *held == id {
+                taken.store(true, Ordering::Relaxed);
+            }
+            *held != id
+        });
+    }
+
+    /// The transfer whose flag is `taken` closed its file.
+    fn release(&self, taken: &TryArc<AtomicBool>) {
+        self.list().retain(|(_, t)| !TryArc::ptr_eq(t, taken));
+    }
 }
 
 /// A name the response is to give the output file, while it has not.
@@ -316,6 +371,9 @@ impl Output {
             after_blank: true,
             #[cfg(windows)]
             utf8seq: [0; 5],
+            server_named: None,
+            opened: None,
+            taken: None,
             msgs,
         };
         Ok(Output(TryArc::try_new(Lock::new(stream))?))
@@ -514,7 +572,7 @@ impl Stream {
                 // file's, read just before.
                 self.init = f.metadata().map_or(0, |m| m.len());
                 *file = Some(Stdio::new(f));
-                true
+                self.opened_now()
             }
             Err(_) => {
                 let shown = &name[..name.len() - 1];
@@ -528,7 +586,7 @@ impl Stream {
     /// (`tool_create_output_file`). Asked before each write of the body,
     /// so the check is inlined and the opening is not.
     #[inline]
-    pub(crate) fn create(&mut self) -> bool {
+    fn create(&mut self) -> bool {
         match &self.target {
             Target::File { file: None, .. } => self.open_created(),
             Target::File { .. } | Target::Stdout(_) | Target::Null => true,
@@ -563,7 +621,7 @@ impl Stream {
                 *file = Some(Stdio::new(f));
                 self.bytes = 0;
                 self.init = 0;
-                true
+                self.opened_now()
             }
             Err(e) => {
                 let shown = &name[..name.len() - 1];
@@ -577,6 +635,62 @@ impl Stream {
                 }
                 false
             }
+        }
+    }
+
+    /// The output file was just opened: which file it is, and, under a
+    /// name a server gave, held for the run, or else taken back from any
+    /// transfer that holds it so. False if it could not be held.
+    fn opened_now(&mut self) -> bool {
+        let Target::File {
+            name,
+            file: Some(file),
+        } = &self.target
+        else {
+            unreachable!("only a file opened");
+        };
+        let from_server = matches!(name, FileName::FromServer(_));
+        self.opened = fs::status_of(file.get_ref()).ok().and_then(|s| s.id());
+        self.taken = None;
+        let (Some(id), Some(run)) = (self.opened, &self.server_named) else {
+            return true;
+        };
+        if !from_server {
+            run.take_back(id);
+            return true;
+        }
+        match run.hold(id) {
+            Ok(taken) => {
+                self.taken = Some(taken);
+                true
+            }
+            Err(OutOfMemory) => false,
+        }
+    }
+
+    /// Another transfer of the run opened this one's file under a name the
+    /// user gave: it is that one's to write.
+    fn taken_back(&self) -> bool {
+        self.taken
+            .as_ref()
+            .is_some_and(|t| t.load(Ordering::Relaxed))
+    }
+
+    /// Whether `--remove-on-error` may remove the output file: it is the
+    /// file this transfer opened, still by its name, and no other
+    /// transfer of the run took it back. C removes whatever the name
+    /// names by then.
+    pub(crate) fn removable(&self) -> bool {
+        let Some(name) = self.file_name() else {
+            return false;
+        };
+        if self.taken_back() {
+            return false;
+        }
+        match self.opened {
+            Some(id) => fs::with_c_name(name, fs::stat).is_ok_and(|s| s.id() == Some(id)),
+            // Not a regular file: removal is skipped, and said, by name.
+            None => true,
         }
     }
 
@@ -713,6 +827,9 @@ impl Stream {
     /// Close the output file, if one is open (`fclose`): whether what it
     /// held could be written.
     pub(crate) fn close(&mut self) -> Result<(), stdio::Failed> {
+        if let (Some(run), Some(taken)) = (&self.server_named, &self.taken) {
+            run.release(taken);
+        }
         match &mut self.target {
             Target::File { file, .. } => file.take().map_or(Ok(()), stdio::close),
             Target::Stdout(_) | Target::Null => Ok(()),
@@ -725,6 +842,15 @@ impl Stream {
             return Write::Accepted;
         }
         if !self.create() {
+            return Write::Fail;
+        }
+        if self.taken.is_some() && self.taken_back() {
+            let name = self.file_name().unwrap_or_default();
+            self.msgs.warn(&[
+                b"Failed writing to ",
+                name,
+                b": another transfer opened it under the name given for it",
+            ]);
             return Write::Fail;
         }
         if self.terminal && self.bytes < BINARY_CHECK && !self.binary_ok && body.contains(&0) {
@@ -1700,6 +1826,28 @@ mod tests {
     /// after it, a newline added, the file emptied of the last one; a
     /// value of spaces alone, or a line without its newline, saves
     /// nothing and leaves the file as it is (`save_etag`).
+    /// `--remove-on-error` may remove only the file the transfer opened,
+    /// still by its name: once another file has taken the name, or none
+    /// has, it is not the transfer's to remove.
+    #[test]
+    fn removes_only_the_file_it_opened() {
+        let dir = scratch("removable");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("out");
+        let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+        let mut s = out.stream();
+        assert!(matches!(s.body(b"part"), Write::Accepted));
+        s.close().unwrap();
+        assert!(s.removable());
+        std::fs::write(dir.join("other"), b"x").unwrap();
+        std::fs::rename(dir.join("other"), &path).unwrap();
+        assert!(!s.removable());
+        std::fs::remove_file(&path).unwrap();
+        assert!(!s.removable());
+        drop(s);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn saves_an_etag_as_c_does() {
         let path = scratch("etag-save");

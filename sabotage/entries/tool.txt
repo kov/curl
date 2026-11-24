@@ -1945,3 +1945,50 @@ witness: curl-tool operate::tests::resumes_only_what_c_resumes
 --- old
             && !op.compressed
 --- new
+
+=== a file opened under the user's name leaves a server-named transfer writing it
+file: crates/curl-tool/src/output.rs
+witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for
+--- old
+                taken.store(true, Ordering::Relaxed);
+--- new
+
+=== a server-named file taken back is written all the same
+file: crates/curl-tool/src/output.rs
+witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for
+--- old
+        if self.taken.is_some() && self.taken_back() {
+--- new
+        if false && self.taken_back() {
+
+=== a server-named file taken back is removed by its transfer's failure
+file: crates/curl-tool/src/output.rs
+witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for
+--- old
+        if self.taken_back() {
+            return false;
+        }
+--- new
+
+=== a file named by the server is held as one the user named
+file: crates/curl-tool/src/output.rs
+witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for
+--- old
+        let from_server = matches!(name, FileName::FromServer(_));
+--- new
+        let from_server = false;
+
+=== the removal on error removes whatever file the name names
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::removes_only_the_file_it_opened
+--- old
+            Some(id) => fs::with_c_name(name, fs::stat).is_ok_and(|s| s.id() == Some(id)),
+--- new
+            Some(_) => true,
+
+=== the removal on error does not ask whether the file is the transfer's
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for
+--- old
+                && stream.removable()
+--- new

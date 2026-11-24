@@ -809,6 +809,80 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// A server answering `-J` in a parallel run that names the file another
+/// transfer of the run writes under the name the user gave loses it:
+/// once that transfer opens the file, the server's writes to it fail
+/// (23), and with `--remove-on-error` its failure removes nothing. C's
+/// tool writes the server's body over the other transfer's file, or
+/// removes it. A deliberate difference from C (DIVERGENCE.md), so this
+/// test fails on its tool.
+#[test]
+fn a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for() {
+    for drop_body in [false, true] {
+        let dir = scratch(if drop_body { "taken-rm" } else { "taken" });
+        let honest = TcpListener::bind("127.0.0.1:0").unwrap();
+        let other = TcpListener::bind("127.0.0.1:0").unwrap();
+        let urls = [
+            format!(
+                "http://127.0.0.1:{}/report.txt",
+                honest.local_addr().unwrap().port()
+            ),
+            format!(
+                "http://127.0.0.1:{}/update",
+                other.local_addr().unwrap().port()
+            ),
+        ];
+        let file = dir.join("report.txt");
+        let (sent, honest_done) = std::sync::mpsc::channel();
+        let honest = {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                let (mut peer, _) = curl_core::test_server::accept(&honest);
+                let mut buf = [0; 4096];
+                let _ = peer.read(&mut buf).unwrap();
+                // The other server's name is opened before this body comes.
+                while !file.exists() {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nhonest\n")
+                    .unwrap();
+                sent.send(()).unwrap();
+            })
+        };
+        let other = {
+            let file = file.clone();
+            std::thread::spawn(move || {
+                let (mut peer, _) = curl_core::test_server::accept(&other);
+                let mut buf = [0; 4096];
+                let _ = peer.read(&mut buf).unwrap();
+                peer.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=report.txt\r\n\
+                      Content-Length: 30\r\n\r\n",
+                )
+                .unwrap();
+                honest_done.recv().unwrap();
+                while std::fs::read(&file).unwrap() != b"honest\n" {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                if !drop_body {
+                    let _ = peer.write_all(b"MALICIOUS CONTENT, quite long\n");
+                }
+            })
+        };
+        let mut args = vec!["-s", "--parallel", "--remote-name-all", "-J"];
+        if drop_body {
+            args.push("--remove-on-error");
+        }
+        args.extend(["--output-dir", dir.to_str().unwrap(), &urls[0], &urls[1]]);
+        let run = curl(&args);
+        honest.join().unwrap();
+        other.join().unwrap();
+        assert_eq!(run.code, if drop_body { 18 } else { 23 }, "{}", run.stderr);
+        assert_eq!(std::fs::read(&file).unwrap(), b"honest\n", "{drop_body}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
 /// `--remove-on-error` removes a partial output whatever its name. In
 /// Windows' Unicode build the name is UTF-8, which every other call on it
 /// takes; C's tool removes it with `unlink`, which reads it in the ANSI

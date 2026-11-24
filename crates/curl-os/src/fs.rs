@@ -254,6 +254,15 @@ pub fn with_c_name<T>(name: &[u8], f: impl FnOnce(&CStr) -> io::Result<T>) -> io
     f(c)
 }
 
+/// Which file a file is: its volume and its number there (`st_dev` and
+/// `st_ino`; on Windows the volume's serial number and the file's index),
+/// the same whatever name it is reached by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileId {
+    volume: u64,
+    index: u64,
+}
+
 #[cfg(unix)]
 /// What `stat(2)` says of a file, as much as is asked of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,6 +270,7 @@ pub struct Status {
     mode: libc::mode_t,
     len: u64,
     modified: i64,
+    id: FileId,
 }
 
 #[cfg(unix)]
@@ -289,6 +299,29 @@ impl Status {
     pub fn modified(&self) -> i64 {
         self.modified
     }
+
+    /// Which file it is, on its device; none for what is not a regular
+    /// file.
+    pub fn id(&self) -> Option<FileId> {
+        self.is_file().then_some(self.id)
+    }
+}
+
+#[cfg(unix)]
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "`dev_t` and `ino_t` are u64 on Linux, `dev_t` i32 on macOS"
+)]
+fn status(st: &libc::stat) -> Status {
+    Status {
+        mode: st.st_mode,
+        len: u64::try_from(st.st_size).expect("the system reports no negative size"),
+        modified: st.st_mtime,
+        id: FileId {
+            volume: st.st_dev as u64,
+            index: st.st_ino as u64,
+        },
+    }
 }
 
 #[cfg(unix)]
@@ -301,12 +334,20 @@ pub fn stat(path: &CStr) -> io::Result<Status> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `stat` returned 0, so it filled `st` in.
-    let st = unsafe { st.assume_init() };
-    Ok(Status {
-        mode: st.st_mode,
-        len: u64::try_from(st.st_size).expect("the system reports no negative size"),
-        modified: st.st_mtime,
-    })
+    Ok(status(&unsafe { st.assume_init() }))
+}
+
+#[cfg(unix)]
+/// The status of the open `file`, whatever its name names by now.
+pub fn status_of(file: &File) -> io::Result<Status> {
+    let mut st = core::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `file` is open for the call and `st` room for a `stat`,
+    // which the call fills in when it returns 0.
+    if unsafe { libc::fstat(file.as_raw_fd(), st.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fstat` returned 0, so it filled `st` in.
+    Ok(status(&unsafe { st.assume_init() }))
 }
 
 #[cfg(unix)]
@@ -844,6 +885,7 @@ pub struct Status {
     kind: Kind,
     len: u64,
     modified: i64,
+    id: FileId,
 }
 
 #[cfg(windows)]
@@ -872,6 +914,12 @@ impl Status {
     pub fn modified(&self) -> i64 {
         self.modified
     }
+
+    /// Which file it is, on its volume; none for what is not a regular
+    /// file.
+    pub fn id(&self) -> Option<FileId> {
+        self.is_file().then_some(self.id)
+    }
 }
 
 /// 100-nanosecond intervals from 1601 to 1970, where a `FILETIME` counts
@@ -890,6 +938,12 @@ pub fn stat(path: &CStr) -> io::Result<Status> {
         wfs::OPEN_EXISTING,
         wfs::FILE_FLAG_BACKUP_SEMANTICS,
     )?;
+    status_of(&File::from(file))
+}
+
+/// The status of the open `file`, whatever its name names by now.
+#[cfg(windows)]
+pub fn status_of(file: &File) -> io::Result<Status> {
     let handle = file.as_raw_handle();
     // SAFETY: `handle` is open while `file` lives.
     if unsafe { wfs::GetFileType(handle) } != wfs::FILE_TYPE_DISK {
@@ -897,6 +951,10 @@ pub fn stat(path: &CStr) -> io::Result<Status> {
             kind: Kind::Other,
             len: 0,
             modified: 0,
+            id: FileId {
+                volume: 0,
+                index: 0,
+            },
         });
     }
     // SAFETY: all zeros is a value of the plain record the call fills.
@@ -917,6 +975,10 @@ pub fn stat(path: &CStr) -> io::Result<Status> {
             (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow)
         },
         modified: (written - EPOCH_IN_FILETIME).div_euclid(10_000_000),
+        id: FileId {
+            volume: u64::from(info.dwVolumeSerialNumber),
+            index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        },
     })
 }
 
@@ -1644,6 +1706,22 @@ mod tests {
         drop(other);
     }
 
+    /// A file's id is the same by its handle and by any name for it, and
+    /// another file's differs; what is no regular file has none.
+    #[test]
+    fn a_file_is_known_by_its_id() {
+        let s = Scratch::new("ids");
+        let file = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        let id = status_of(&file).unwrap().id().expect("a regular file");
+        assert_eq!(stat(&s.c("f")).unwrap().id(), Some(id));
+        rename(&s.c("f"), &s.c("g")).unwrap();
+        assert_eq!(stat(&s.c("g")).unwrap().id(), Some(id));
+        let other = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        assert_ne!(status_of(&other).unwrap().id(), Some(id));
+        make_dir(&s.c("d"), 0o700).unwrap();
+        assert_eq!(stat(&s.c("d")).unwrap().id(), None);
+    }
+
     #[test]
     fn opens_files_to_read_and_write() {
         let s = Scratch::new("open");
@@ -1977,6 +2055,22 @@ mod windows_tests {
         }
         let past = set_times(&file, i64::MIN).unwrap_err();
         assert_eq!(past.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A file's id is the same by its handle and by any name for it, and
+    /// another file's differs; what is no regular file has none.
+    #[test]
+    fn a_file_is_known_by_its_id() {
+        let s = Scratch::new("ids");
+        let file = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        let id = status_of(&file).unwrap().id().expect("a regular file");
+        assert_eq!(stat(&s.c("f")).unwrap().id(), Some(id));
+        rename(&s.c("f"), &s.c("g")).unwrap();
+        assert_eq!(stat(&s.c("g")).unwrap().id(), Some(id));
+        let other = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        assert_ne!(status_of(&other).unwrap().id(), Some(id));
+        make_dir(&s.c("d"), 0o700).unwrap();
+        assert_eq!(stat(&s.c("d")).unwrap().id(), None);
     }
 
     /// `_fullpath`'s: absolute, its dots resolved, whether or not the file

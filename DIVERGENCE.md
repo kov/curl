@@ -853,6 +853,26 @@ so: weaknesses kept because C has them.
   `the_remote_time_dates_only_a_file_the_transfer_opened`
   (`crates/curl-tool/tests/transfers.rs`).
 
+## Files C lets two transfers write
+
+- **A file a server names for `-J` is given up to a transfer of the same run that opens it
+  under a name the user gave.** Each file a transfer opens is known by its device and number
+  (`st_dev` and `st_ino`; the volume's serial number and the file's index on Windows), and the
+  run keeps those opened under a name a server gave. A transfer that opens one of them under
+  its own name (`-o`, `-O`) takes it back: the server-named transfer's next write fails, 23,
+  and its failure removes nothing under `--remove-on-error`. C's tool checks a server's name
+  only by creating it with `O_EXCL`, so in a parallel run a server that names the file another
+  transfer is yet to open writes its own body over that transfer's, or removes it, both
+  transfers exiting 0. Two transfers writing names the user gave share a file as on both.
+  `--remove-on-error` also removes only the file the transfer opened, still under its name:
+  C's `unlink` removes whatever the name names by then. Measured 2026-11-24: `--parallel
+  --remote-name-all -J` of an honest `/report.txt` and a server naming `report.txt` that
+  sends its body last leaves C's file holding the server's body, both transfers exiting 0;
+  the rewrite's holds the honest body and the server's transfer exits 23. Upstream: #23761.
+  Pinned by `a_server_named_file_is_given_up_to_the_transfer_the_user_named_it_for`
+  (`crates/curl-tool/tests/http.rs`) and `removes_only_the_file_it_opened`
+  (`crates/curl-tool/src/output.rs`).
+
 ## Credentials C lets go past their party
 
 - **GSS-API delegation is the origin's alone.** `CURLOPT_GSSAPI_DELEGATION` sets the

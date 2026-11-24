@@ -154,7 +154,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   thread's last error (`errno`, `SetLastError`) for a C library to read.
 - `crates/curl-os/src/fnmatch.rs`: matching a name against a shell pattern, the system's
   `fnmatch`; on Windows C's own matcher, in `fnmatch/own.rs`, which forbids unsafe.
-- `crates/curl-os/src/fs.rs`: opening, cutting and closing files, a file's status, removing
+- `crates/curl-os/src/fs.rs`: opening, cutting and closing files, a file's status and identity, by name or open, removing
   and renaming files by name, setting an open file's times, resolving a name to its absolute path, making
   and listing directories, reading standard input unbuffered, making a file's reads nonblocking,
   and pointing standard error at a file; on Windows through the Win32 file calls, with the C

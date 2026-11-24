@@ -117,6 +117,9 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         Ok(program) => program.map(RefCell::new),
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
+    let Ok(server_named) = output::ServerNamed::new() else {
+        return Err(ErrorKind::OutOfMemory);
+    };
     let run = Shared {
         libcurl: program.as_ref(),
         global: &line.global,
@@ -126,6 +129,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages, linked: &Linked) -
         share: &share,
         linked,
         claims: Claims::of_build(),
+        server_named,
         started: Cell::new(None),
         stdin_relay: nonblocking::Relay::default(),
         stdin: OnceCell::new(),
@@ -722,6 +726,8 @@ struct Shared<'a, 'l> {
     share: &'a Share,
     linked: &'a Linked,
     claims: Claims,
+    /// The files the run's transfers write under a name a server gave.
+    server_named: output::ServerNamed,
     /// When the last transfer, or its last attempt, started, for
     /// `--rate`.
     started: Cell<Option<Instant>>,
@@ -1302,6 +1308,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         stream.no_buffer = op.no_buffer;
         stream.clobber = op.clobber;
         stream.etag_save = etag_save;
+        stream.server_named = Some(run.server_named.clone());
         // `--remote-header-name` names only a file `--remote-name` names
         // (`setup_header_cb`).
         if op.remote_header_name && output_is_remote {
@@ -3708,10 +3715,13 @@ fn finish(
                 }
                 result = Err(kind);
             }
-            // A file this transfer opened goes if it failed.
+            // A file this transfer opened goes if it failed, unless its
+            // name names another file by now or another transfer of the
+            // run took it back.
             if opened
                 && result.is_err()
                 && op.remove_on_error
+                && stream.removable()
                 && let Some(name) = stream.file_name()
             {
                 remove_partial(name, msgs);
@@ -4740,6 +4750,7 @@ mod tests {
             share: &share,
             linked: &linked,
             claims,
+            server_named: output::ServerNamed::new().unwrap(),
             started: Cell::new(None),
             stdin_relay: nonblocking::Relay::default(),
             stdin: OnceCell::new(),
@@ -5553,6 +5564,7 @@ mod tests {
             share: &share,
             linked: &linked,
             claims: Claims::of_build(),
+            server_named: output::ServerNamed::new().unwrap(),
             started: Cell::new(None),
             stdin_relay: nonblocking::Relay::default(),
             stdin: OnceCell::new(),
@@ -5592,6 +5604,7 @@ mod tests {
             share: &share,
             linked: &linked,
             claims: Claims::of_build(),
+            server_named: output::ServerNamed::new().unwrap(),
             started: Cell::new(None),
             stdin_relay: nonblocking::Relay::default(),
             stdin: OnceCell::new(),

@@ -81,6 +81,13 @@ impl Stdout {
         ))))?))
     }
 
+    /// Standard output as `file`, for a test that writes it without
+    /// writing the test harness's own.
+    #[cfg(test)]
+    pub(crate) fn to(file: File) -> Stdout {
+        Stdout(TryArc::try_new(Lock::new(Stdio::new(Descriptor(Some(file))))).unwrap())
+    }
+
     /// Write `bytes`, held as stdio holds them: how many were taken
     /// (`fwrite`).
     pub(crate) fn fwrite(&self, bytes: &[u8]) -> usize {

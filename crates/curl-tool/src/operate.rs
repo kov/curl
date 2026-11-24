@@ -5493,8 +5493,10 @@ mod tests {
         op.resume = Some(Resume::At(4));
         assert!(!resumable(&op, &retrying, &get()), "-C 4");
         op.resume = Some(Resume::FromOutput);
-        // Standard output is no file to resume.
-        let stdout = Stdout::new().unwrap();
+        // Standard output is no file to resume; here a file of its own,
+        // so the harness's output gets none of it.
+        let out_file = Removed(path.with_extension("out"));
+        let stdout = Stdout::to(std::fs::File::create(&out_file.0).unwrap());
         let to_stdout = output::Output::stdout(&stdout, Messages::new()).unwrap();
         assert_eq!(
             to_stdout.stream().body(b"x"),

@@ -867,6 +867,9 @@ so: weaknesses kept because C has them.
   and the rewrite's the one it held. Upstream: #23781. Pinned by
   `saves_the_etag_only_of_a_transfer_that_succeeded` (`crates/curl-tool/tests/http.rs`) and
   `an_etag_is_written_only_once_the_transfer_succeeds` (`crates/curl-tool/src/output.rs`).
+  Upstream's test 3038 also checked that its transfer, failing with 23 as `-J` refuses to
+  overwrite a file, saved the ETag; it no longer checks the ETag's file, and test 3705 checks
+  the same header order on a transfer that succeeds, the ETag saved on both.
 
 ## Credentials C lets go past their party
 

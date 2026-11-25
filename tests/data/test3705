@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+ETag
+--etag-save
+-J
+--show-headers
+</keywords>
+</info>
+
+<reply>
+<data nocheck="yes">
+HTTP/1.1 200 OK
+ETag: "tag%TESTNUMBER"
+Content-Length: 6
+Content-Disposition: attachment; filename="name%TESTNUMBER"
+Connection: close
+
+12345
+</data>
+</reply>
+
+<client>
+<server>
+http
+</server>
+<features>
+http
+</features>
+<name>
+ETag before Content-Disposition with -J, --show-headers, --etag-save
+</name>
+<command option="no-output,no-include">
+http://%HOSTIP:%HTTPPORT/url%TESTNUMBER -O -J -i --etag-save %LOGDIR/etag%TESTNUMBER --output-dir %LOGDIR
+</command>
+</client>
+
+<verify>
+<protocol crlf="headers">
+GET /url%TESTNUMBER HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+</protocol>
+<file name="%LOGDIR/name%TESTNUMBER">
+HTTP/1.1 200 OK
+ETag: "tag%TESTNUMBER"
+Content-Length: 6
+Content-Disposition: attachment; filename="name%TESTNUMBER"
+Connection: close
+
+12345
+</file>
+<file2 name="%LOGDIR/etag%TESTNUMBER">
+"tag%TESTNUMBER"
+</file2>
+<notexists>
+%LOGDIR/url%TESTNUMBER
+</notexists>
+</verify>
+</testcase>

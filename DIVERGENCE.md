@@ -873,6 +873,24 @@ so: weaknesses kept because C has them.
   (`crates/curl-tool/tests/http.rs`) and `removes_only_the_file_it_opened`
   (`crates/curl-tool/src/output.rs`).
 
+## Records C keeps of a transfer that failed
+
+- **`--etag-save` writes its file only once the transfer has succeeded.** The last ETag of a 2xx
+  or 3xx response is kept, and written to the file, emptied of the one it held, as the
+  transfer ends well; a transfer that fails leaves the file as it was, and a retried attempt's
+  ETag is forgotten, the next attempt's response saying its own. C writes the file as the
+  `ETag:` line comes (`save_etag`), so a transfer cut short in its body leaves the ETag of the
+  whole document beside the part it wrote, and `--etag-compare` then gets a 304 for it.
+  `--etag-save -` writes standard output as the line comes, on both. A file that cannot be
+  emptied fails the transfer with 23, as on both, but once its body is written. Measured
+  2026-11-24: a 200 whose body is cut short exits 18 on both, C's file holding the new ETag
+  and the rewrite's the one it held. Upstream: #23781. Pinned by
+  `saves_the_etag_only_of_a_transfer_that_succeeded` (`crates/curl-tool/tests/http.rs`) and
+  `an_etag_is_written_only_once_the_transfer_succeeds` (`crates/curl-tool/src/output.rs`).
+  Upstream's test 3038 also checked that its transfer, failing with 23 as `-J` refuses to
+  overwrite a file, saved the ETag; it no longer checks the ETag's file, and test 3705 checks
+  the same header order on a transfer that succeeds, the ETag saved on both.
+
 ## Credentials C lets go past their party
 
 - **GSS-API delegation is the origin's alone.** `CURLOPT_GSSAPI_DELEGATION` sets the

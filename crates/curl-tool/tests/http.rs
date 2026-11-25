@@ -926,6 +926,50 @@ fn removes_a_partial_output_by_its_name() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `--etag-save` gives its file the response's ETag only once the
+/// transfer has succeeded: one whose body is cut short leaves the ETag
+/// the file held, where C's tool has already written the new one.
+#[test]
+fn saves_the_etag_only_of_a_transfer_that_succeeded() {
+    let dir = scratch("etag-save");
+    let etag = dir.join("etag");
+    std::fs::write(&etag, b"\"old\"\n").unwrap();
+    let out = dir.join("out");
+    let cut =
+        Server::new(b"HTTP/1.1 200 OK\r\nETag: \"full\"\r\nContent-Length: 100\r\n\r\n0123456789");
+    let args = |url: &str| {
+        let mut a = vec!["-s", "--etag-save", etag.to_str().unwrap()];
+        a.extend(["-o", out.to_str().unwrap()]);
+        a.push(url);
+        a.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let a = args(&cut.url());
+    let run = curl(&a.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(run.code, 18, "{}", run.stderr);
+    assert_eq!(std::fs::read(&etag).unwrap(), b"\"old\"\n");
+    let whole =
+        Server::new(b"HTTP/1.1 200 OK\r\nETag: \"full\"\r\nContent-Length: 10\r\n\r\n0123456789");
+    let a = args(&whole.url());
+    let run = curl(&a.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(std::fs::read(&etag).unwrap(), b"\"full\"\n");
+    // A retried attempt's ETag is forgotten: the attempt that succeeds
+    // says none, and the file keeps the one it held.
+    let retried = Server::script(vec![
+        vec![b"HTTP/1.1 200 OK\r\nETag: \"a\"\r\nContent-Length: 100\r\n\r\n0123456789".to_vec()],
+        vec![b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789".to_vec()],
+    ]);
+    let mut a = args(&retried.url());
+    a.splice(
+        0..0,
+        ["--retry", "1", "--retry-all-errors", "--retry-delay", "0"].map(String::from),
+    );
+    let run = curl(&a.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(std::fs::read(&etag).unwrap(), b"\"full\"\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `-c` saves the cookies the server set once the transfer is done; a
 /// jar that cannot be written goes unsaid, as C traces nothing after its
 /// transfer is cleaned up.

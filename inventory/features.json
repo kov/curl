@@ -1,5 +1,5 @@
 {
- "c-commit": "2e0ca8e120af6c977c27a6ba74b902bc395d2e51",
+ "c-commit": "a3630a386ee94e8643b666b57bc71c8a63990d09",
  "data": {
   "backends": {
    "all": [
@@ -8015,7 +8015,7 @@
    },
    "runtests-regexes-matching-no-printed-feature": [],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1038,
+   "test-feature-blocks": 1039,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8479,7 +8479,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 107
+     "tests": 108
     },
     {
      "name": "http/2",
@@ -8872,7 +8872,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1038,
+   "test-files-with-features": 1039,
    "tool-added-features": [
     {
      "bit": null,

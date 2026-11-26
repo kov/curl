@@ -39,6 +39,8 @@ pub(crate) struct Faults {
     pub(crate) read_fails_at: Option<u64>,
     /// The opened file cannot be stat'ed.
     pub(crate) stat_fails: bool,
+    /// Closing the file an upload wrote to fails.
+    pub(crate) close_fails: bool,
 }
 
 /// A request for one path.
@@ -83,8 +85,12 @@ enum Doing {
     /// skipped.
     Writing { upload: Body, skip: u64 },
     /// The body is over: the last progress pass is left, after a look at
-    /// the last piece if `check`.
-    Ending { check: bool },
+    /// the last piece if `check`, and of an upload, the file it wrote to
+    /// closed after it.
+    Ending {
+        check: bool,
+        written: Option<std::fs::File>,
+    },
 }
 
 /// `file:` opens its file before a connection is leased (`file_connect`,
@@ -185,11 +191,25 @@ impl Request {
                 progress::check(cx, false)?;
                 self.write_piece(cx, upload, skip)
             }
-            Doing::Ending { check } => {
+            Doing::Ending { check, written } => {
                 if check {
                     progress::check(cx, false)?;
                 }
-                progress::update(cx, false).map(|()| DoStep::Did)
+                progress::update(cx, false)?;
+                let closed = written.map(fs::close);
+                #[cfg(test)]
+                let closed = match closed {
+                    Some(_) if cx.easy().options().file_faults.close_fails => {
+                        Some(Err(std::io::Error::other("injected")))
+                    }
+                    closed => closed,
+                };
+                // A close that fails fails the upload, unless it failed
+                // before (`file_upload`).
+                match closed {
+                    Some(Err(_)) => Err(ErrorKind::WriteError),
+                    _ => Ok(DoStep::Did),
+                }
             }
         }
     }
@@ -418,7 +438,10 @@ impl Request {
                     format_args!("File ended before the expected size"),
                 ));
             }
-            self.doing = Doing::Ending { check: false };
+            self.doing = Doing::Ending {
+                check: false,
+                written: None,
+            };
             return Ok(DoStep::Piece);
         }
         if let Some(left) = &mut left {
@@ -514,7 +537,10 @@ impl Request {
         upload::client_read(cx, self.buf.len(), &got);
         let got = got?;
         if got.n == 0 {
-            self.doing = Doing::Ending { check: false };
+            self.doing = Doing::Ending {
+                check: false,
+                written: self.file.take(),
+            };
             return Ok(DoStep::Piece);
         }
         let skipped = usize::try_from(skip).map_or(got.n, |s| s.min(got.n));
@@ -525,7 +551,10 @@ impl Request {
         cx.report_mut().sizes_mut().upload += body.len() as u64;
         // Not read again past its end (`file_upload`'s `eos`).
         self.doing = if got.eos {
-            Doing::Ending { check: true }
+            Doing::Ending {
+                check: true,
+                written: self.file.take(),
+            }
         } else {
             Doing::Writing { upload, skip }
         };

@@ -758,6 +758,25 @@ fn an_upload_is_read_as_c_reads_it() {
     );
 }
 
+/// An upload whose file fails to close fails as a write error, after the
+/// body is written and the last progress pass (`file_upload`); a download
+/// whose file fails to close is not one.
+#[test]
+fn an_upload_s_failed_close_fails_it() {
+    let s = Scratch::new("closefail");
+    let (mut e, _) = upload(&s.url("new"), bytes(b"body"));
+    e.options_mut().file_faults.close_fails = true;
+    let (r, e) = run(e);
+    assert_eq!(r, Err(ErrorKind::WriteError));
+    assert_eq!(s.read("new"), b"body");
+    assert_eq!(e.report().sizes().upload(), 4);
+    s.file("f", b"down", Y2K_NOON);
+    let (mut e, seen) = easy(&s.url("f"));
+    e.options_mut().file_faults.close_fails = true;
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(seen.body(), b"down");
+}
+
 /// An upload writes the body to the file, created or emptied, in pieces of
 /// the upload buffer; progress after each piece written and at the end.
 #[test]

@@ -192,10 +192,15 @@ mod tests {
     }
 
     /// Every sabotage entry's text must still be in the tree, once, or the
-    /// sweep plants nothing (format in `sabotage/sweep.py`).
+    /// sweep plants nothing; and its witness's name must still be in its
+    /// package's sources, or the sweep runs a test that is not there
+    /// (format in `sabotage/sweep.py`).
     #[test]
     fn sabotage_entries_are_current() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // The words of each package's sources, read once.
+        let mut words: std::collections::HashMap<String, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
         let mut checked = 0;
         for entry in std::fs::read_dir(root.join("sabotage/entries")).unwrap() {
             let path = entry.unwrap().path();
@@ -220,6 +225,36 @@ mod tests {
                     source.matches(old.trim_end_matches('\n')).count(),
                     1,
                     "{}: the text '{name}' changes is not in {file} exactly once",
+                    path.display()
+                );
+                let witness = block
+                    .lines()
+                    .find_map(|l| l.strip_prefix("witness: "))
+                    .unwrap_or_else(|| panic!("{}: '{name}' has no witness:", path.display()));
+                let (package, test) = witness
+                    .split_once(' ')
+                    .unwrap_or_else(|| panic!("{}: '{name}' names no test", path.display()));
+                let test = test.rsplit("::").next().expect("split gives one part");
+                let named = words
+                    .entry(package.to_owned())
+                    .or_insert_with(|| {
+                        let mut files = Vec::new();
+                        rust_files(&root.join("crates").join(package), &mut files);
+                        assert!(!files.is_empty(), "no package {package}");
+                        let mut all = std::collections::HashSet::new();
+                        for file in files {
+                            let text = std::fs::read_to_string(file).unwrap();
+                            all.extend(
+                                text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                    .map(str::to_owned),
+                            );
+                        }
+                        all
+                    })
+                    .contains(test);
+                assert!(
+                    named,
+                    "{}: '{name}' is witnessed by {test}, which is not in {package}",
                     path.display()
                 );
                 checked += 1;

@@ -1,0 +1,7 @@
+=== an entry whose witness is gone from the tree passes the entry check
+file: sabotage/entries/dns.txt
+witness: curl-sys-abi tests::sabotage_entries_are_current
+--- old
+witness: curl-core conn::connect::tests::a_name_dropped_leaves_nothing_in_the_resolver
+--- new
+witness: curl-core conn::connect::tests::a_race_dropped_leaves_nothing_in_the_resolver

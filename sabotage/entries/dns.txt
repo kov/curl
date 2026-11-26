@@ -194,7 +194,7 @@ impl Drop for FakeResolve {
 
 === a race dropped with its late resolve leaves it among the fake's resolves
 file: crates/curl-core/src/conn/io.rs
-witness: curl-core conn::connect::tests::a_race_dropped_leaves_nothing_in_the_resolver
+witness: curl-core conn::connect::tests::a_name_dropped_leaves_nothing_in_the_resolver
 --- old
 impl Drop for FakeResolve {
     fn drop(&mut self) {

@@ -79,7 +79,7 @@ openssl-fork: quiche
 
 === the peer of a connection over quiche is taken as checked
 file: crates/curl-quiche/src/lib.rs
-witness: curl-quiche an_untrusted_peer_fails_its_check_once_established
+witness: curl-quiche an_untrusted_peer_fails_the_handshake_inside_quiche
 openssl-fork: quiche
 --- old
         let checked = call.handshake_done();

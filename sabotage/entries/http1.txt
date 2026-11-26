@@ -463,3 +463,11 @@ witness: curl-core proto::http::tests::a_416_saying_another_size_fails_the_resum
 --- old
                 && matches!(after.first(), None | Some(b'\r' | b'\n'))
 --- new
+
+=== an application's header whose name is only blanks is sent
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::lines_with_an_empty_name_go_as_in_c
+--- old
+    let asks = if start == stop { Asks::Nothing } else { asks };
+--- new
+    let asks = if false { Asks::Nothing } else { asks };

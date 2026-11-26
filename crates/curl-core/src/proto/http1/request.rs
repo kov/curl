@@ -362,6 +362,9 @@ fn classify(line: Vec<u8>) -> UserHeader {
         .iter()
         .rposition(|&b| !is_blank(b))
         .map_or(start, |p| p + 1);
+    // A name of blanks alone, trimmed to nothing, is never sent
+    // (`Curl_dynhds_add_slist`).
+    let asks = if start == stop { Asks::Nothing } else { asks };
     UserHeader {
         line,
         name: (start, stop),
@@ -1254,16 +1257,16 @@ mod tests {
     }
 
     /// A line whose name is empty before its `;` or `:` is not sent, as
-    /// C's `curlx_str_until` finds no name in it; one whose name is only
-    /// blanks still is. The C tool's request for `-H ':foo' -H ';' -H '  ;'
-    /// -H ' :v' -H 'X-A;'`.
+    /// C's `curlx_str_until` finds no name in it, nor one whose name is
+    /// only blanks, trimmed to nothing (upstream b0a551befc). The C tool's
+    /// request for `-H ':foo' -H ';' -H '  ;' -H ' :v' -H '\t:t' -H 'X-A;'`.
     #[test]
     fn lines_with_an_empty_name_go_as_in_c() {
         let got = render(
             b"GET",
             b"/",
             SentIn::Http11,
-            &[b":foo", b";", b"  ;", b" :v", b"X-A;"],
+            &[b":foo", b";", b"  ;", b" :v", b"\t:t", b"X-A;"],
         );
         assert_eq!(
             String::from_utf8_lossy(&got),
@@ -1271,8 +1274,6 @@ mod tests {
              Host: 127.0.0.1:8990\r\n\
              User-Agent: curl/8.99.0-test\r\n\
              Accept: */*\r\n\
-             :\r\n \
-             :v\r\n\
              X-A:\r\n\
              \r\n"
         );

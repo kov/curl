@@ -387,6 +387,29 @@ fn a_session_named_is_kept_and_checked() {
     );
 }
 
+/// A copy of the handle takes the session the application set, and not
+/// one a server named: that one is the transfer's, and the copy, which
+/// knows no origin for it, would send it anywhere (#23861).
+#[test]
+fn a_copy_of_the_handle_leaves_a_server_s_session() {
+    let first: &[u8] = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nSession: abc\r\n\r\n";
+    let (ran, _) = rtsp(&[first], |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let session = |e: &Easy| {
+        e.options()
+            .small
+            .rtsp_session
+            .as_ref()
+            .map(|s| s.id().to_vec())
+    };
+    assert_eq!(session(&ran.easy), Some(b"abc".to_vec()));
+    assert_eq!(session(&ran.easy.try_clone().unwrap()), None);
+    let mut given = Easy::new();
+    given.options_mut().small.make_mut().unwrap().rtsp_session =
+        Some(RtspSession::given(b"mine".to_vec()));
+    assert_eq!(session(&given.try_clone().unwrap()), Some(b"mine".to_vec()));
+}
+
 /// A session a server named goes back only to its origin, unless
 /// credentials may go anywhere; one the application set goes to any.
 #[test]

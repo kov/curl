@@ -2912,10 +2912,14 @@ impl RtspSession {
         &self.id
     }
 
-    /// A copy for a copy of the handle: the id alone, as C copies the
-    /// string but not the origin (`curl_easy_duphandle`).
-    fn copied(&self) -> Result<RtspSession, OutOfMemory> {
-        Ok(RtspSession::given(copy(&self.id)?))
+    /// A copy for a copy of the handle: the application's id, and none a
+    /// server named, which is the transfer's and not an option
+    /// (`curl_easy_duphandle` copies the option, not `state.session_id`).
+    fn copied(&self) -> Option<Result<RtspSession, OutOfMemory>> {
+        match self.from {
+            SessionFrom::Application => Some(copy(&self.id).map(RtspSession::given)),
+            SessionFrom::Server(_) => None,
+        }
     }
 }
 
@@ -3044,7 +3048,7 @@ impl Small {
             rtsp_session: self
                 .rtsp_session
                 .as_ref()
-                .map(RtspSession::copied)
+                .and_then(RtspSession::copied)
                 .transpose()?,
             interleave: self.interleave.clone(),
         })

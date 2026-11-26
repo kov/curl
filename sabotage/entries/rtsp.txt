@@ -152,3 +152,11 @@ witness: curl-core proto::http::tests::rtsp::a_session_goes_only_to_the_origin_t
             SessionFrom::Application => true,
 --- new
             SessionFrom::Application => false,
+
+=== a copy of the handle takes a server's RTSP session as the application's
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::rtsp::a_copy_of_the_handle_leaves_a_server_s_session
+--- old
+            SessionFrom::Server(_) => None,
+--- new
+            SessionFrom::Server(_) => Some(copy(&self.id).map(RtspSession::given)),

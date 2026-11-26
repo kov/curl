@@ -234,6 +234,9 @@ pub(crate) struct Decoder {
     /// The data message under way, fragmented (`cont_flags` with
     /// `CURLWS_CONT`): carried from frame to frame.
     ongoing: Option<FrameKind>,
+    /// A CLOSE frame was read whole, its payload handed on
+    /// (`seen_close`).
+    pub(crate) seen_close: bool,
 }
 
 impl Decoder {
@@ -431,8 +434,7 @@ impl Decoder {
             if self.len == 0 {
                 // A frame with no payload is handed on once.
                 taker.take(&[], self.current(), 0, 0)?;
-                self.state = DecState::Init;
-                return Ok(Passed::Frame);
+                return Ok(self.frame_passed());
             }
         }
         let passed = self.pass_payload(input, taker);
@@ -442,8 +444,18 @@ impl Decoder {
             Ok(Passed::Again) | Err(Stop::Again) => return Ok(Passed::Again),
             Err(stop) => return Err(stop),
         }
+        Ok(self.frame_passed())
+    }
+
+    /// The frame is read whole and handed on: the next one starts, and a
+    /// CLOSE is seen only now, its payload all passed, however many reads
+    /// brought it (upstream 4e8000279c).
+    fn frame_passed(&mut self) -> Passed {
         self.state = DecState::Init;
-        Ok(Passed::Frame)
+        if self.current().kind == FrameKind::Close {
+            self.seen_close = true;
+        }
+        Passed::Frame
     }
 }
 

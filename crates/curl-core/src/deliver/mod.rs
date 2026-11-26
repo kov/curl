@@ -209,6 +209,16 @@ impl Pipeline {
         Ok(())
     }
 
+    /// The WebSocket's server closed it and nothing is left either way:
+    /// the transfer receives no more (`ws_cw_write`'s
+    /// `CURL_REQ_CLEAR_RECV`).
+    pub(crate) fn websocket_recv_over(&self) -> bool {
+        self.codings
+            .as_ref()
+            .and_then(|c| c.ws.as_ref())
+            .is_some_and(ws::WsStage::recv_over)
+    }
+
     /// Whether the body is a WebSocket's frames, which its output is
     /// delivered with the connection lent for.
     pub(crate) fn decodes_websocket(&self) -> bool {

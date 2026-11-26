@@ -229,3 +229,30 @@ features: test-util
         let Some(limit) = self.connect.map(TimeLimit::duration) else {
             return [total, None];
         };
+
+=== a WebSocket keeps receiving after the server's CLOSE
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::ws::the_server_s_close_ends_the_receiving
+features: test-util
+--- old
+                    if self.base.pipeline.websocket_recv_over() {
+                        self.stage = Stage::Done;
+                    }
+--- new
+                    if false && self.base.pipeline.websocket_recv_over() {
+                        self.stage = Stage::Done;
+                    }
+
+=== a WebSocket's CLOSE is seen as its head is read, before its payload
+file: crates/curl-core/src/proto/ws/frame.rs
+witness: curl-core proto::http::tests::ws::the_server_s_close_ends_the_receiving
+features: test-util
+--- old
+            self.state = DecState::Payload;
+            if self.len == 0 {
+--- new
+            self.state = DecState::Payload;
+            if self.current().kind == FrameKind::Close {
+                self.seen_close = true;
+            }
+            if self.len == 0 {

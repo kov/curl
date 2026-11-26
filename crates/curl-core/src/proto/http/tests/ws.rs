@@ -422,6 +422,47 @@ fn wss_needs_a_tls_library() {
     assert_eq!(ws(b"", |_| {}).result, Err(ErrorKind::GotNothing));
 }
 
+/// The server's CLOSE, read whole, ends what the transfer receives,
+/// though the server keeps the connection open: said once its payload
+/// is all in, however many reads brought it (`ws_cw_write`'s
+/// `CURL_REQ_CLEAR_RECV`, upstream ed24670321 and 4e8000279c, test
+/// 2312).
+#[test]
+fn the_server_s_close_ends_the_receiving() {
+    let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"ws");
+    e.set_components(Some(components));
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x81\x01x\x88\x02\x03\xe8");
+    let talk = Conversation::replies(&[&reply], false).giving(std::num::NonZeroUsize::MIN);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let ws: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[WS] "))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let at = ws
+        .iter()
+        .position(|l| l == "[WS] seen CLOSE from server, stop receiving")
+        .unwrap_or_else(|| panic!("{ws:#?}"));
+    assert_eq!(
+        ws[at - 1],
+        "[WS] decoded passing [CLOSE payload=2/2]",
+        "{ws:#?}"
+    );
+    let said = ws.iter().filter(|l| l.contains("seen CLOSE")).count();
+    assert_eq!(said, 1, "{ws:#?}");
+}
+
 /// In callback mode the WebSocket traces as it does connect-only, in
 /// C's words: the switch, the frames decoded and passed to the writer,
 /// the pong answering a ping and its flush.
@@ -532,9 +573,15 @@ fn a_started_frame_takes_the_reads_after_it() {
     let (ran, reads) = upload(vec![(Some(10), b"hello"), (None, b"world")]);
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(unmasked(frames_sent(&ran)), (0x81, b"helloworld".to_vec()));
-    // Each read, with payload still to come, says no end.
-    assert_eq!(reads.len(), 2, "{reads:#?}");
-    assert!(reads.iter().all(|l| l.ends_with("eos=0")), "{reads:#?}");
+    // Each read, with payload still to come, says no end. The server's
+    // CLOSE stops the receiving alone (`CURL_REQ_CLEAR_RECV`), so the
+    // upload is read once more, to its end.
+    assert_eq!(reads.len(), 3, "{reads:#?}");
+    assert!(
+        reads[..2].iter().all(|l| l.ends_with("eos=0")),
+        "{reads:#?}"
+    );
+    assert!(reads[2].ends_with("nread=0, eos=1"), "{reads:#?}");
     // The second read asks no more than the frame still owes.
     assert!(
         reads[1].starts_with("[READ] cr_ws_read(len=5) "),

@@ -2623,6 +2623,9 @@ impl Request {
                         .expect("a WebSocket's connection speaks it");
                     cx.lending_ws(conn, |cx| self.base.pipeline.body(cx, input))?;
                     input = &[];
+                    if self.base.pipeline.websocket_recv_over() {
+                        self.stage = Stage::Done;
+                    }
                 }
                 Stage::Body(Body::Length | Body::UntilClose | Body::Stream) => {
                     self.base.pipeline.body(cx, input)?;

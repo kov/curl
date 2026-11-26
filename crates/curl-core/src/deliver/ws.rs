@@ -27,6 +27,9 @@ use crate::ws::{FrameKind, FrameType};
 pub(crate) struct WsStage {
     buf: Result<ChunkQueue, ErrorKind>,
     raw: bool,
+    /// The server's CLOSE came whole, nothing left to decode or send:
+    /// the transfer receives no more (`CURL_REQ_CLEAR_RECV`).
+    recv_over: bool,
 }
 
 impl WsStage {
@@ -34,6 +37,7 @@ impl WsStage {
         WsStage {
             buf: Ok(ChunkQueue::new(CHUNK_SIZE, 1)),
             raw,
+            recv_over: false,
         }
     }
 
@@ -124,7 +128,23 @@ impl WsStage {
                 format_args!("[WS] decode ended with incomplete frame"),
             ));
         }
+        if result.is_ok()
+            && self.buf.as_ref().is_ok_and(ChunkQueue::is_empty)
+            && ws_of(cx).closed_quiet()
+        {
+            trace::of(
+                cx,
+                Component::Ws,
+                format_args!("seen CLOSE from server, stop receiving"),
+            );
+            self.recv_over = true;
+        }
         result
+    }
+
+    /// The server's CLOSE ended what the transfer receives.
+    pub(super) fn recv_over(&self) -> bool {
+        self.recv_over
     }
 
     /// Hand on what was held back while the handler paused, once it lets

@@ -180,6 +180,13 @@ impl WsConn {
         })
     }
 
+    /// The server's CLOSE was read whole and nothing waits to be sent
+    /// either way, a pong or the encoder's own: what the transfer
+    /// receives is over (`ws_cw_write`'s "stop receiving").
+    pub(crate) fn closed_quiet(&self) -> bool {
+        self.dec.seen_close && self.pending.is_none() && self.sendbuf.is_empty()
+    }
+
     /// The frame the bytes last received are of, if any came.
     pub(crate) fn meta(&self) -> crate::ws::Meta {
         match self.meta {

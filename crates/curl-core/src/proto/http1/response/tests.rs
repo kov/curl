@@ -700,8 +700,9 @@ fn a_length_is_one_number() {
 }
 
 /// A response points one place: a second `Location` that says something
-/// else is refused, an empty one or the same again passed over, across
-/// the request's interim heads too (test 772, `http_header_l`).
+/// else is refused, an empty one or the same again passed over (test 772,
+/// `http_header_l`). An interim head's is not read, so it is not a first
+/// one the final head's could differ from (test 1816).
 #[test]
 fn a_response_has_one_location() {
     let got = outcome(&fixture::reply(772), PLAIN);
@@ -730,10 +731,7 @@ fn a_response_has_one_location() {
         b"HTTP/1.1 100 Continue\r\nLocation: a\r\n\r\nHTTP/1.1 200 OK\r\nLocation: b\r\n\r\n",
         PLAIN,
     );
-    assert_eq!(
-        got.error,
-        Some(HeadError::Framing(FramingError::MultipleLocations))
-    );
+    assert_eq!(got.error, None);
 }
 
 /// Failing on errors fails a final code of 400 or more, but not a 416 to

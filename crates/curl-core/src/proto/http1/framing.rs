@@ -200,6 +200,9 @@ pub(crate) enum FramingError {
     RefusedWebSocket(u16),
     /// The response to a resumed GET starts elsewhere than asked.
     CannotResume,
+    /// A 416 to a resumed GET says the document's size, and it is not
+    /// where the GET resumes.
+    SizeNotOffset,
     OutOfMemory,
 }
 
@@ -252,6 +255,9 @@ impl fmt::Display for FramingError {
             }
             FramingError::CannotResume => {
                 f.write_str("HTTP server does not seem to support byte ranges. Cannot resume.")
+            }
+            FramingError::SizeNotOffset => {
+                f.write_str("Cannot resume: remote file size differs from offset")
             }
             FramingError::OutOfMemory => Ok(()),
         }
@@ -498,7 +504,7 @@ impl Meta {
         if !self.bodyless
             && let Some(v) = value_of(line, b"Content-Range:")
         {
-            self.range(v, status, asked);
+            self.range(v, status, asked)?;
         }
         Ok(None)
     }
@@ -578,8 +584,10 @@ impl Meta {
     }
 
     /// `Content-Range`: `bytes N-`, `bytes: N-`, `N-`, or `*/total` for
-    /// a range not satisfied. Only where it starts is read.
-    fn range(&mut self, v: &[u8], status: Status, asked: &Asked) {
+    /// a range not satisfied. Only where it starts is read, and for a 416
+    /// to a resumed GET, the size it says, which must be where the GET
+    /// resumes: a file of another size is not the one being resumed.
+    fn range(&mut self, v: &[u8], status: Status, asked: &Asked) -> Result<(), FramingError> {
         let at = v
             .iter()
             .position(|&b| b.is_ascii_digit() || b == b'*')
@@ -595,9 +603,30 @@ impl Meta {
             {
                 self.content_range = true;
             }
+        } else if let (Some(b"*/"), 416, Some(resume)) =
+            (v.get(..2), status.code, asked.resume_from)
+        {
+            let total = &v[2..];
+            let digits = total.iter().take_while(|b| b.is_ascii_digit()).count();
+            let size = std::str::from_utf8(&total[..digits])
+                .ok()
+                .and_then(|d| d.parse::<i64>().ok());
+            let after = skip_blanks(&total[digits..]);
+            // C's offset: the end is -1, which no size is.
+            let offset = match resume {
+                Resume::At(n) => i64::try_from(n.get()).ok(),
+                Resume::AtEnd => Some(-1),
+            };
+            if let Some(size) = size
+                && matches!(after.first(), None | Some(b'\r' | b'\n'))
+                && Some(size) != offset
+            {
+                return Err(FramingError::SizeNotOffset);
+            }
         } else if status.code < 300 {
             self.whole = true;
         }
+        Ok(())
     }
 
     /// `Content-Length`: a number, or a list of the same number, or the

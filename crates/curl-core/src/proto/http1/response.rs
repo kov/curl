@@ -147,7 +147,9 @@ impl HeadError {
                 ErrorKind::HttpReturnedError
             }
             HeadError::Framing(FramingError::FileTooLarge) => ErrorKind::FilesizeExceeded,
-            HeadError::Framing(FramingError::CannotResume) => ErrorKind::RangeError,
+            HeadError::Framing(FramingError::CannotResume | FramingError::SizeNotOffset) => {
+                ErrorKind::RangeError
+            }
             HeadError::Framing(
                 FramingError::Unsolicited(_)
                 | FramingError::ListedAfterChunked(_)

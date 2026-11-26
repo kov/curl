@@ -1110,6 +1110,43 @@ fn a_416_to_a_resumed_get_is_read_and_dropped() {
     assert_eq!(ran.easy.report().sizes().download(), 4);
 }
 
+/// A 416 to a resumed GET whose `Content-Range` says the document is of
+/// another size than where it resumes fails, the file not the one being
+/// resumed; one saying that size, or none C reads as a size, is whole
+/// already (test 1156).
+#[test]
+fn a_416_saying_another_size_fails_the_resume() {
+    let resumed = |range: &str| {
+        let reply = format!(
+            "HTTP/1.1 416 No\r\nContent-Length: 4\r\nContent-Range: bytes {range}\r\n\r\nnope"
+        );
+        run("/", reply.as_bytes(), false, |o| {
+            o.resume = Some(Resume::At(crate::options::ResumeOffset::new(2).unwrap()));
+        })
+    };
+    for other in ["*/3", "*/4", "*/1", "*/3 "] {
+        let ran = resumed(other);
+        assert_eq!(ran.result, Err(ErrorKind::RangeError), "{other}");
+        let text = ran.seen.text();
+        assert!(
+            text.contains(&"Cannot resume: remote file size differs from offset\n".to_string()),
+            "{other}: {text:?}"
+        );
+    }
+    for whole in [
+        "*/2",
+        "*/unknown",
+        "*/999999999999999999999999",
+        "*/2junk",
+        "*/3junk",
+        "*/",
+    ] {
+        let ran = resumed(whole);
+        assert_eq!(ran.result, Ok(()), "{whole}");
+        assert_eq!(ran.seen.body(), b"", "{whole}");
+    }
+}
+
 /// What a header handler sees of the report at each line: the code and
 /// version once the status line is read, the body's size by the blank
 /// line (`http_size` runs before the last header is written, as test

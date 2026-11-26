@@ -234,7 +234,7 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [TIMER] [QUIC] set for 5000us
         [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
         [HAPPY-EYEBALLS] next HAPPY_EYEBALLS timeout in 200ms
-        [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [UDP] adjust_pollset, sub-chain, POLLIN fd=1000
         [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
         [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [HAPPY-EYEBALLS] attempt [CHAIN]...[!HTTP/3][UDP]<fd=1000>
@@ -2553,7 +2553,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
         [0-0] [HTTPS-CONNECT] connect -> 0, done=0
         [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=0
-        [0-0] [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [0-0] [UDP] adjust_pollset, sub-chain, POLLIN fd=1000
         [0-0] [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
         [0-0] [TCP] adjust_pollset, !connected, POLLOUT fd=1001
         [0-0] [HAPPY-EYEBALLS] adjust_pollset -> 0, 2 socks
@@ -2663,10 +2663,10 @@ fn a_tcp_second_leading_answers_for_the_connection() {
         [0-0] [SSL] cf_connect() -> 0, done=0
         [0-0] [HTTPS-CONNECT] connect -> 0, done=0
         [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=0
-        [0-0] [UDP] adjust_pollset, !active, POLLIN fd=1000
+        [0-0] [UDP] adjust_pollset, sub-chain, POLLIN fd=1000
         [0-0] [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
         [0-0] [SSL] adjust_pollset, POLLIN fd=1001
-        [0-0] [TCP] adjust_pollset, !active, POLLIN fd=1001
+        [0-0] [TCP] adjust_pollset, sub-chain, POLLIN fd=1001
         [0-0] [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
         [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 IN], timeouts=2
         ",
@@ -6212,7 +6212,7 @@ fn ech_h3_easy(ares: &'static super::https_trace::EchAres) -> (&'static FakeTls,
 
 /// While a QUIC attempt waits for the origin's record, its socket is
 /// polled to read alone, as the UDP socket's filter asks of a socket not
-/// yet the connection's (`adjust_pollset, !active, POLLIN`): its
+/// yet the connection's (`adjust_pollset, sub-chain, POLLIN`): its
 /// connection, not made, has nothing to write, and a datagram socket is
 /// always writable.
 #[test]
@@ -6277,7 +6277,7 @@ fn a_quic_attempt_waits_for_the_origin_s_record() {
             assert!(
                 lines[pair[0]..pair[1]]
                     .iter()
-                    .any(|l| l.starts_with("[UDP] adjust_pollset, !active, POLLIN fd=")),
+                    .any(|l| l.starts_with("[UDP] adjust_pollset, sub-chain, POLLIN fd=")),
                 "{mode:?} {lines:#?}"
             );
         }

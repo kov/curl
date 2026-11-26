@@ -923,7 +923,7 @@ impl Link {
     /// What its socket waits for: a TCP connect to write, a QUIC
     /// connection what it says (`cf_ngtcp2_adjust_pollset`); one not made
     /// yet, what the UDP socket's filter asks of a socket that is not
-    /// the connection's yet (`adjust_pollset, !active, POLLIN`).
+    /// the connection's yet (`adjust_pollset, sub-chain, POLLIN`).
     fn wants(&self) -> Events {
         match self {
             Link::Connect => Events::OUT,

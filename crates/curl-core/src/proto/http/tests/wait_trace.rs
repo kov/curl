@@ -381,7 +381,7 @@ fn a_tunnel_s_waits_are_traced_as_c() {
             [TIMER] [CONNECTTIMEOUT] expires in 300000000us
             [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms
             [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=300000
-            [TCP] adjust_pollset, !active, POLLIN fd=1000
+            [TCP] adjust_pollset, sub-chain, POLLIN fd=1000
             [MULTI] [CONNECTING] pollset[fd=1000 IN], timeouts=1
             [TIMER] [CONNECTTIMEOUT] expires in 300000000us
             [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms

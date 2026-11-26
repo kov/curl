@@ -593,8 +593,9 @@ its filter goes: after the failure's `connect to … failed` for a failed attemp
 race's losers and its oldest attempt pruned, and a 407's redial). A connection that leaves the
 pool traces no `destroy`, as C closes it on its internal handle. With a pollset made while the
 connection is set up, the socket's part in it: `adjust_pollset, !connected, POLLOUT fd=N` for
-each attempt, and `adjust_pollset, !active, POLLIN fd=N` for the socket a handshake runs over,
-which waits to read throughout as C's filter, connected but not in use, adds. A socket whose
+each attempt, and `adjust_pollset, sub-chain, POLLIN fd=N` for the socket a handshake runs over,
+which waits to read throughout as C's filter adds it, connected while still in its attempt's
+part of the chain. A socket whose
 connect fails at once traces its opening, `Immediate connect fail`, its close and the failure,
 as C does. The health check's `is_alive` lines are the multi's internal trace's, as C makes
 that check on its internal handle. Not traced: the receive
@@ -3210,7 +3211,7 @@ C's `doh_probe_run`). The message and its checks are `curl_core::doh`, free of t
   `Curl_conn_dns_get_https`. The origin's attempt whose ECH needs the record, the record still
   coming, connects its UDP socket and holds it as `Link::Record`, a `RecordWait` of the ends it
   connects, with no QUIC connection: it traces C's "need HTTPS-RR, delaying connect" there and
-  at each check of the race, its socket polled to read (C's UDP filter's `!active, POLLIN`),
+  at each check of the race, its socket polled to read (C's UDP filter's `sub-chain, POLLIN`),
   and is made, its session with the record's list and its first flight sent, at the first
   check that finds the record known; it goes, unmade, as C's filter does (`destroy`). Where no
   HTTPS connect filter heads the setup (`wss`, `https` without ALPN), the origin's TLS asks for

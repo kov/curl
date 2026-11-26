@@ -1506,7 +1506,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
         let udp = |cx: &mut StepCx<'_, H>, sockets: &[(SocketKey, Events)], n: usize| {
             for &(key, _) in sockets.iter().filter(|(k, _)| own(*k)) {
                 let fd = key.get();
-                let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
+                let line = format_args!("adjust_pollset, sub-chain, POLLIN fd={fd}");
                 trace::of(cx, Component::Udp, line);
             }
             if !sockets.is_empty() {
@@ -1562,7 +1562,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
             for &(key, _) in wants.iter().filter(|(k, _)| own(*k)) {
                 let fd = key.get();
                 if dialed {
-                    let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
+                    let line = format_args!("adjust_pollset, sub-chain, POLLIN fd={fd}");
                     trace::of(cx, component, line);
                 } else {
                     let line = format_args!("adjust_pollset, !connected, POLLOUT fd={fd}");

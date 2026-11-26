@@ -1242,7 +1242,7 @@ fn the_race_s_pollset_counts_the_first_s_resolve_among_its_sockets() {
     let udp = at(
         &said,
         second,
-        "[UDP] adjust_pollset, !active, POLLIN fd=1000",
+        "[UDP] adjust_pollset, sub-chain, POLLIN fd=1000",
     );
     assert_eq!(
         said[udp + 1..udp + 4],

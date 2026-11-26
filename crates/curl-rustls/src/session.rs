@@ -622,10 +622,24 @@ impl<G: Rustls> Session<G> {
         Ok(Flushed::Done)
     }
 
+    /// Write out the library's records alone, for the handshake and the
+    /// goodbye (`cr_send` with no data, upstream 35bb30a835): no retry of
+    /// the application's send, so what a send that blocked left with the
+    /// library stays counted for its retry.
+    fn flush_records(&mut self, io: &mut TlsIo<'_>) -> Result<Flushed, ErrorKind> {
+        io.trace(format_args!("cf_send(len=0)"));
+        let r = self.flush_out(io);
+        let code = match &r {
+            Ok(Flushed::Again) => crate::library::AGAIN,
+            r => number(r),
+        };
+        io.trace(format_args!("rustls_send(len=0) -> {code}, 0"));
+        r
+    }
+
     /// Hand `plain` to the library, after counting what it took of a send
     /// that blocked, and write out its records (`cr_send`): how many of
-    /// `plain`'s bytes are sent, or none yet. `plain` may be empty, to
-    /// write out the records alone.
+    /// `plain`'s bytes are sent, or none yet.
     fn send_plain(
         &mut self,
         io: &mut TlsIo<'_>,
@@ -790,7 +804,7 @@ impl<G: Rustls> Session<G> {
                 // The library says it is done before it has sent its
                 // Finished: it is let write once more.
                 self.set_negotiated_alpn(io);
-                if self.send_plain(io, &[])?.0 == Flushed::Again {
+                if self.flush_records(io)? == Flushed::Again {
                     self.waits = TlsWait::Send;
                     return Ok(Shaken::Waiting);
                 }
@@ -801,14 +815,14 @@ impl<G: Rustls> Session<G> {
             }
             let conn = self.conn();
             let wants_read = conn.wants_read();
-            let wants_write = conn.wants_write() || self.plain_out_buffered > 0;
+            let wants_write = conn.wants_write();
             assert!(
                 wants_read || wants_write,
                 "a handshake under way wants to read or to write"
             );
             if wants_write {
                 io.trace(format_args!("rustls_connection wants us to write_tls."));
-                if self.send_plain(io, &[])?.0 == Flushed::Again {
+                if self.flush_records(io)? == Flushed::Again {
                     io.trace(format_args!("writing would block"));
                     self.waits = TlsWait::Send;
                     return Ok(Shaken::Waiting);
@@ -845,12 +859,12 @@ impl<G: Rustls> Session<G> {
                 self.conn().send_close_notify();
             }
         }
-        match self.send_plain(io, &[]) {
-            Ok((Flushed::Again, _)) => {
+        match self.flush_records(io) {
+            Ok(Flushed::Again) => {
                 self.waits = TlsWait::Send;
                 return Ok(false);
             }
-            Ok((Flushed::Done, _)) => {}
+            Ok(Flushed::Done) => {}
             Err(kind) => {
                 io.trace(format_args!("shutdown send failed: {}", kind.number()));
                 return Err(kind);

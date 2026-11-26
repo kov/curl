@@ -1047,6 +1047,47 @@ fn a_shorter_send_after_a_block_is_refused() {
     assert_eq!(sent.unwrap(), Sent::Bytes(6.try_into().unwrap()));
 }
 
+/// The goodbye's flush is no retry of a send that blocked: it writes the
+/// records out without refusing, and the bytes the library took stay
+/// counted, so the send's retry is not handed them twice (`cr_send`'s
+/// flush with no data).
+#[test]
+fn a_goodbye_after_a_blocked_send_flushes_alone() {
+    let lib = Fake::new(World::one_round());
+    let id = plain();
+    let mut s = session(lib, &id, Alpn::None);
+    let mut kept = Kept::new();
+    let wire = Wire::with(b"x");
+    with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.handshake(io).map(|shaken| shaken.as_handshake())
+    })
+    .unwrap();
+    let blocked = Wire {
+        room: Some(0),
+        ..Wire::default()
+    };
+    let sent = with_io(&mut s, &id, &mut kept, &blocked, |s, io| {
+        s.send(io, b"abcdef")
+    });
+    assert_eq!(sent.unwrap(), Sent::WouldBlock);
+    // The goodbye's flush blocks too, and forgets nothing.
+    let r = with_io(&mut s, &id, &mut kept, &blocked, |s, io| {
+        s.shutdown(io, Goodbye::Mutual)
+    });
+    assert_eq!(r, Ok(Handshake::Waiting));
+    assert!(has(&kept.notes.0, "trace: rustls_send(len=0) -> 81, 0"));
+    let wire = Wire::default();
+    let r = with_io(&mut s, &id, &mut kept, &wire, |s, io| {
+        s.shutdown(io, Goodbye::Mutual)
+    });
+    assert_eq!(r, Ok(Handshake::Waiting), "{:#?}", kept.notes.0);
+    assert!(!has(&kept.notes.0, "fail: BadFunctionArgument"));
+    // The send's retry counts what the library took, and adds none.
+    let sent = with_io(&mut s, &id, &mut kept, &wire, |s, io| s.send(io, b"abcdef"));
+    assert_eq!(sent.unwrap(), Sent::Bytes(6.try_into().unwrap()));
+    assert_eq!(lib.w().made("write(").len(), 1);
+}
+
 /// The goodbye sends the close_notify once, unless only the peer's is
 /// waited for, and reads until the peer's.
 #[test]

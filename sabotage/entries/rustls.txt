@@ -101,3 +101,13 @@ witness: curl-rustls tests::a_shorter_send_after_a_block_is_refused
             if len < buffered {
 --- new
             if len < buffered && false {
+
+=== a rustls goodbye after a blocked send flushes as the send's retry
+file: crates/curl-rustls/src/session.rs
+witness: curl-rustls tests::a_goodbye_after_a_blocked_send_flushes_alone
+--- old
+        match self.flush_records(io) {
+            Ok(Flushed::Again) => {
+--- new
+        match self.send_plain(io, &[]).map(|r| r.0) {
+            Ok(Flushed::Again) => {

@@ -1003,7 +1003,7 @@ impl Stream {
     fn write_console(&mut self, body: &[u8]) -> Option<Result<(), Failed>> {
         use std::os::windows::io::AsHandle as _;
         let seq = &mut self.utf8seq;
-        let mut write = |file: &File| {
+        let write = |file: &File| {
             let handle = file.as_handle();
             if !curl_os::terminal::is_character_device(handle) {
                 return None;

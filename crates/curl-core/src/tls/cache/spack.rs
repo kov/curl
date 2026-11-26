@@ -78,7 +78,8 @@ impl Packer {
 }
 
 /// The session `blob` holds (`Curl_ssl_session_unpack`). A blob not of this
-/// version, cut short or with a tag unknown cannot be read.
+/// version, cut short, with a tag unknown, a date past what 63 bits hold,
+/// or no ticket or an empty one cannot be read.
 pub(crate) fn unpack(blob: &[u8]) -> Result<TlsTicket, ErrorKind> {
     let mut r = Reader(blob);
     if r.array::<1>()? != [VERSION] {
@@ -104,12 +105,16 @@ pub(crate) fn unpack(blob: &[u8]) -> Result<TlsTicket, ErrorKind> {
             IETF_ID => s.version = u16::from_be_bytes(r.array()?),
             QUICTP => s.quic_params = copy(r.data16()?).map_err(oom)?,
             TICKET => s.data = copy(r.data16()?).map_err(oom)?,
-            // A date past what 63 bits hold reads as before 1970, as C's
-            // cast has it; `pack` refuses it on the way out.
-            VALID_UNTIL => s.valid_until = i64::from_be_bytes(r.array()?),
+            VALID_UNTIL => {
+                s.valid_until = i64::try_from(u64::from_be_bytes(r.array()?))
+                    .map_err(|_| ErrorKind::ReadError)?;
+            }
             SECTRUST => s.sectrust = true,
             _ => return Err(ErrorKind::ReadError),
         }
+    }
+    if s.data.is_empty() {
+        return Err(ErrorKind::ReadError);
     }
     Ok(s)
 }

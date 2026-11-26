@@ -763,15 +763,6 @@ so: weaknesses kept because C has them.
   `CURLE_OUT_OF_MEMORY`. Reaching it takes a user name, password, token or message of 4 GiB.
   No test: a buffer of that size cannot be made in a test run.
 
-## TLS sessions from outside
-
-- **A session of no ticket is exported, not an abort.** A file or blob holding a version byte and
-  no ticket imports in both, and resumes nothing in both. C's debug build then aborts on its
-  `DEBUGASSERT(s->sdata)` as it exports (`Curl_ssl_session_pack`), measured with `--ssl-sessions`;
-  by its source its release build writes an empty ticket, as the rewrite does: what is imported is
-  not trusted to be anything. Pinned by `a_blob_may_say_nothing`
-  (`crates/curl-core/src/tls/cache/spack/tests.rs`).
-
 ## Names C reads two ways
 
 - **`--remove-on-error` removes a partial output with a name outside ASCII on Windows' Unicode

@@ -886,7 +886,7 @@ fn what_is_confidential_or_local_stays() {
 #[test]
 fn an_export_stops_at_what_will_not_pack() {
     let mut cache = SessionCache::new(5);
-    let before_1970 = spack::unpack(&[1, 3, 255, 255, 255, 255, 255, 255, 255, 255]).unwrap();
+    let before_1970 = TlsTicket::new(vec![1], TLS1_3, None, 0, -1);
     import_by_key(&mut cache, b"a:G", imported(TLS1_3, 0));
     import_by_key(&mut cache, b"b:G", before_1970);
     import_by_key(&mut cache, b"c:G", imported(TLS1_3, 0));

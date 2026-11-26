@@ -15,8 +15,9 @@ const WHOLE: &[u8] = &[
     7, 0, 2, b't', b'p', // QUIC's transport parameters
 ];
 
-/// The offsets at which `WHOLE` may be cut and still be a session.
-const FIELD_ENDS: &[usize] = &[1, 7, 10, 19, 24, 29, 30, 35];
+/// The offsets at which `WHOLE` may be cut and still be a session: each
+/// end of a field from its ticket's on.
+const FIELD_ENDS: &[usize] = &[7, 10, 19, 24, 29, 30, 35];
 
 /// What C's build exported goes out again as it came.
 #[test]
@@ -79,25 +80,32 @@ fn an_alpn_is_kept_whatever_it_says() {
     assert_eq!((s.chosen(), s.alpn_name()), (None, Some(&b"foo"[..])));
     let packed = pack(&s).unwrap();
     assert!(packed.ends_with(&[5, 0, 3, b'f', b'o', b'o']), "{packed:?}");
-    let cut = unpack(&[1, 5, 0, 4, b'h', b'2', 0, b'x']).unwrap();
+    let cut = unpack(&[1, 4, 0, 1, b'T', 5, 0, 4, b'h', b'2', 0, b'x']).unwrap();
     assert_eq!(cut.chosen(), Some(Chosen::H2));
     assert!(pack(&cut).unwrap().ends_with(&[5, 0, 2, b'h', b'2']));
-    let empty = unpack(&[1, 5, 0, 0]).unwrap();
+    let empty = unpack(&[1, 4, 0, 1, b'T', 5, 0, 0]).unwrap();
     assert_eq!(empty.alpn_name(), Some(&b""[..]));
     assert!(pack(&empty).unwrap().ends_with(&[5, 0, 0]));
 }
 
-/// A blob of a version alone is a session of nothing, C's as much as ours:
-/// no ticket, and packed with an empty one.
+/// A blob without a ticket, or with an empty one, is no session, nor is
+/// one good until a date past what 63 bits hold (lib1678): each cannot be
+/// read. The latest date that fits is one.
 #[test]
-fn a_blob_may_say_nothing() {
-    let s = unpack(&[1]).unwrap();
-    assert!(s.data.is_empty());
-    assert_eq!(s.alpn_name(), None);
-    assert_eq!(
-        pack(&s).unwrap(),
-        [1, 4, 0, 0, 2, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0]
-    );
+fn a_session_without_a_ticket_or_a_date_is_refused() {
+    for blob in [&[1][..], &[1, 4, 0, 0], &[1, 2, 0x03, 0x04, 4, 0, 0]] {
+        assert_eq!(unpack(blob).unwrap_err(), ErrorKind::ReadError, "{blob:?}");
+    }
+    let dated = |until: u64| {
+        let mut blob = vec![1, 4, 0, 1, b'T', 3];
+        blob.extend_from_slice(&until.to_be_bytes());
+        unpack(&blob)
+    };
+    assert_eq!(dated(1 << 63).unwrap_err(), ErrorKind::ReadError);
+    assert_eq!(dated(u64::MAX).unwrap_err(), ErrorKind::ReadError);
+    let latest = dated(i64::MAX as u64).unwrap();
+    assert_eq!(latest.valid_until, i64::MAX);
+    assert!(pack(&latest).is_ok());
 }
 
 /// Cut anywhere but at the end of a field, a blob cannot be read.
@@ -182,13 +190,6 @@ fn a_corrupt_blob_is_only_ever_an_answer() {
             drop(pack(&s));
         }
     }
-}
-
-/// A date past what 63 bits hold reads, as C's cast has it, as before 1970.
-#[test]
-fn a_date_past_63_bits_reads_as_before_1970() {
-    let s = unpack(&[1, 3, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]).unwrap();
-    assert_eq!(s.valid_until, -1);
 }
 
 /// What fits C's buffer packs; a ticket that does not is too large, one

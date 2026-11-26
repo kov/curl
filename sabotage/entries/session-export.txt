@@ -97,9 +97,9 @@ witness: curl-core tls::cache::spack::tests::fields_read_in_any_order_and_pack_i
 file: crates/curl-core/src/tls/cache/spack.rs
 witness: curl-core tls::cache::spack::tests::fields_read_in_any_order_and_pack_in_c_s
 --- old
-            VALID_UNTIL => s.valid_until = i64::from_be_bytes(r.array()?),
+                s.valid_until = i64::try_from(u64::from_be_bytes(r.array()?))
 --- new
-            VALID_UNTIL => s.valid_until = i64::from_le_bytes(r.array()?),
+                s.valid_until = i64::try_from(u64::from_le_bytes(r.array()?))
 
 === a length past the end is read as far as there is, not refused
 file: crates/curl-core/src/tls/cache/spack.rs
@@ -312,3 +312,21 @@ witness: curl-core multi::ssls::tests::a_multi_marks_its_cache_only_for_an_expor
         if kept_share(easy).is_none() && self.caches.sessions_out.is_none() {
 --- new
         if kept_share(easy).is_none() || self.caches.sessions_out.is_none() {
+
+=== a session without a ticket is imported
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::a_session_without_a_ticket_or_a_date_is_refused
+--- old
+    if s.data.is_empty() {
+        return Err(ErrorKind::ReadError);
+    }
+--- new
+
+=== a session good until past 63 bits is imported as good until before 1970
+file: crates/curl-core/src/tls/cache/spack.rs
+witness: curl-core tls::cache::spack::tests::a_session_without_a_ticket_or_a_date_is_refused
+--- old
+                s.valid_until = i64::try_from(u64::from_be_bytes(r.array()?))
+                    .map_err(|_| ErrorKind::ReadError)?;
+--- new
+                s.valid_until = u64::from_be_bytes(r.array()?) as i64;

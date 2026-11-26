@@ -1,7 +1,7 @@
 //! HTTP Negotiate through the core with the debug build's stub standing in
 //! for a KDC, over the core's fake network: the bytes and the lines C's
 //! build sends and says for the same exchanges (C's captures with
-//! `CURL_STUB_GSS_CREDS`, tests 2056, 2057, 2097 to 2099 and 2121). The stub
+//! `CURL_STUB_GSS_CREDS`, tests 2056, 2057, 2097 to 2099 and 3707). The stub
 //! reads `CURL_STUB_GSS_CREDS` each time it is asked, so each case runs in
 //! a child process of this binary with the variable set.
 
@@ -271,7 +271,7 @@ fn ntlm_alone_in_a_child() {
     );
 }
 
-/// Test 2121, C's capture with `--anyauth -u :`: a 401 offering
+/// Test 3707, C's capture with `--anyauth -u :`: a 401 offering
 /// Negotiate has it picked and the request made again with the stub's
 /// token, and the 200's `Persistent-Auth` read.
 #[test]

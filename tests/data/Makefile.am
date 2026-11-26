@@ -1899,8 +1899,6 @@ TESTCASES = \
   test2117 \
   test2118 \
   test2119 \
-  test2120 \
-  test2121 \
   test2122 \
   \
   test2173 \
@@ -2168,6 +2166,8 @@ TESTCASES = \
   test3703 \
   test3704 \
   test3705 \
+  test3706 \
+  test3707 \
   test3980 \
   test3990 \
   test3991 \

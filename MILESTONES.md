@@ -712,7 +712,7 @@ milestone 2's review.
       the socket blocking for the exchange; here it is states of the SOCKS handshake.
     - **g. The flip.** **Done.** `GSS-API`, `Kerberos` and `SPNEGO` claimed, `mit-krb5/` and
       the library's version in `curl_version`; `crypto` opens. The stub cases 2097–2099, 2112,
-      2121 and 2122 run on the Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method
+      2122 and 3707 run on the Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method
       1 offered; of the 107 tests needing `crypto`, the 86 that run pass, the other 21 skipping
       for POP3, SMTP and IMAP.
     - **h. Closing the step.** **Done.** The sabotage sweep catches every entry; the two
@@ -1456,7 +1456,7 @@ it there, Windows.
      HTTP/3 over ngtcp2's GnuTLS crypto (104). Scored with `score.py --gnutls` against C's
      GnuTLS build (`baseline.py --gnutls`, `build/c-gnutls`, with HTTP/3 and without the HTTP/3
      proxy): measured 2026-11-07, runtests.pl passes all 1982 tests C's passes and pytest all
-     799, the h3 cases and the 7 of early data among them; 2120 and the 51 cases of
+     799, the h3 cases and the 7 of early data among them; 3706 and the 51 cases of
      `test_17_09_ssl_min_max`, refused by the system's crypto policy, fail on both. `curl -V` is
      C's, and what the tool says of the options GnuTLS lacks is C's
      tool's. The session's logic is tested through a scripted fake of the library; every
@@ -1465,7 +1465,7 @@ it there, Windows.
      feature, with neither HTTP/3 nor message signatures, as C's mbedTLS build. Scored with
      `score.py --mbedtls` against C's mbedTLS build (`baseline.py --mbedtls`,
      `build/c-mbedtls`): measured 2026-11-07, runtests.pl passes all 1955 tests C's passes
-     and pytest all 749; 2120 fails on both, with the same message. Its session's logic is
+     and pytest all 749; 3706 fails on both, with the same message. Its session's logic is
      tested through a scripted fake of the library, and `lib/vtls/cipher_suite.c`'s table by
      unit3205. wolfSSL is **done** too: `curl-wolfssl` as `lib/vtls/wolfssl.c` drives it,
      chosen by the `wolfssl` feature, with Ed25519 from its wolfCrypt and HTTP/3 over ngtcp2's
@@ -1474,7 +1474,7 @@ it there, Windows.
      --wolfssl` against C's wolfSSL build (`baseline.py --wolfssl`, `build/c-wolfssl`, with
      HTTP/3 and without the HTTP/3 proxy): measured 2026-11-07, runtests.pl passes all 1979
      tests C's passes and pytest all 906, the h3 cases and the h3 early-data cases among them;
-     2120 fails on both. `curl -V` is C's. Encrypted Client Hello is step 112. Its session's logic is tested through a scripted fake of the library. Rustls is
+     3706 fails on both. `curl -V` is C's. Encrypted Client Hello is step 112. Its session's logic is tested through a scripted fake of the library. Rustls is
      **done** too: `curl-rustls` as `lib/vtls/rustls.c` drives rustls-ffi, made of the rustls
      crate itself at the version rustls-ffi 0.15.5 pins (no rustls-ffi, no unsafe code), chosen
      by the `rustls` feature, with neither HTTP/3 nor message signatures, as C's Rustls build.
@@ -1483,7 +1483,7 @@ it there, Windows.
      pytest passes 645 of the 701 C's passes, the other 56 the libtest clients that call
      rustls-ffi on `CURLINFO_TLS_SSL_PTR`'s `internals`, NULL here (`DIVERGENCE.md`), which
      abort at that call, so what they go on to check (parallel and serial downloads, resumes,
-     aborts, connection limits, shutdown, session reuse) is unchecked on this leg; 2120
+     aborts, connection limits, shutdown, session reuse) is unchecked on this leg; 3706
      fails on both, with the same message. `curl -V` is C's. Its session's logic is tested
      through a scripted fake of the library and against a rustls server. LibreSSL is a
      variant of the OpenSSL backend already (102). AWS-LC and BoringSSL are **done** as

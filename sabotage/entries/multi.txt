@@ -639,7 +639,8 @@ witness: curl-sys-abi handle_tests::proxy_header_lines_appended_after_the_option
 
 === the resolve list is read as it was set, not as the transfer starts
 file: crates/curl-core/src/options/mod.rs
-witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used
+witness: curl-core options::tests::a_source_s_lines_are_read_again_as_refilled
+features: test-util
 --- old
         self.entries = Entries::Read(source);
 --- new
@@ -718,7 +719,7 @@ features: test-util
 
 === the connect-to list is read only when it is set
 file: crates/curl-core/src/multi/state/leg.rs
-witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used
+witness: curl-core proto::http::tests::a_connect_to_source_is_read_again_as_the_transfer_starts
 --- old
     if let Err(OutOfMemory) = cx.easy_mut().options_mut().connect_to.refill() {
 --- new
@@ -1176,3 +1177,19 @@ witness: curl-core multi::tests::a_transfer_its_layer_marks_dirty_is_due_at_once
     }
 --- new
     fn mark_dirty(&mut self) {}
+
+=== the shim's connect-to list is the application's, read as each transfer starts
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_wait_for_it_set_again
+--- old
+            Some(lines) => options.connect_to.set(lines.iter().map(|l| &l[..]))?,
+--- new
+            Some(_) => options.connect_to.set_source(slist(p)?.expect("a list"))?,
+
+=== the shim's resolve list is the application's, read as each transfer starts
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_wait_for_it_set_again
+--- old
+            Some(lines) => options.resolve.set(lines.iter().map(|l| &l[..]))?,
+--- new
+            Some(_) => options.resolve.set_source(slist(p)?.expect("a list")),

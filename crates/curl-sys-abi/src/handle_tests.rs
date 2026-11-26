@@ -6865,13 +6865,13 @@ fn proxy_header_lines_appended_after_the_option_are_sent() {
     }
 }
 
-/// `CURLOPT_CONNECT_TO` and `CURLOPT_RESOLVE` read the application's
-/// list when it is used, not when it is set: an entry appended after the
-/// option is taken. RESOLVE's is read once for each time it is set, as
-/// the next transfer starts, so an entry appended after that transfer is
-/// not, as in C.
+/// `CURLOPT_CONNECT_TO` and `CURLOPT_RESOLVE` copy the application's
+/// list as they are set: an entry appended after the option is not
+/// taken, until the option is set again (C's frozen lists, upstream
+/// 8208f4b1ba). Measured on the C build: the appended entry's transfer
+/// fails to resolve, and succeeds once the list is set again.
 #[test]
-fn connect_to_and_resolve_entries_appended_after_the_option_are_used() {
+fn connect_to_and_resolve_entries_appended_after_the_option_wait_for_it_set_again() {
     let (port, server) = serve(vec![OK, OK]);
     let c = curl_easy_init();
     function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
@@ -6885,10 +6885,16 @@ fn connect_to_and_resolve_entries_appended_after_the_option_are_used() {
     let list = append(ptr::null_mut(), &[c"nothere:9::"]);
     pointer(c, ffi::CURLOPT_CONNECT_TO, list);
     append(list, &[&to]);
-    // SAFETY: a live handle, whose list lives through the transfer.
+    // SAFETY: a live handle.
+    let code = unsafe { curl_easy_perform(c) };
+    // The name is left to the system's resolver, which may answer it;
+    // what counts is that the entry was not read.
+    assert_ne!(code, CURLE_OK, "copied as it was set");
+    pointer(c, ffi::CURLOPT_CONNECT_TO, list);
+    // SAFETY: as above.
     assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
     pointer(c, ffi::CURLOPT_CONNECT_TO, ptr::null_mut::<c_char>());
-    // SAFETY: the list made above, which the handle no longer keeps.
+    // SAFETY: the list made above.
     unsafe { crate::strings::curl_slist_free_all(list) };
 
     let url = std::ffi::CString::new(format!("http://fake.invalid:{port}/rs")).unwrap();
@@ -6897,48 +6903,54 @@ fn connect_to_and_resolve_entries_appended_after_the_option_are_used() {
     let list = append(ptr::null_mut(), &[c"nothere:9:127.0.0.1"]);
     pointer(c, ffi::CURLOPT_RESOLVE, list);
     append(list, &[&entry]);
-    // SAFETY: as above.
-    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
-    let url = std::ffi::CString::new(format!("http://fake2.invalid:{port}/rs2")).unwrap();
-    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
-    let entry = std::ffi::CString::new(format!("fake2.invalid:{port}:127.0.0.1")).unwrap();
-    append(list, &[&entry]);
     let code = {
         // SAFETY: as above.
         unsafe { curl_easy_perform(c) }
     };
-    // The name is left to the system's resolver, which may answer it;
-    // what counts is that the entry was not read.
-    assert_ne!(code, CURLE_OK, "read once per setting");
+    assert_ne!(code, CURLE_OK, "copied as it was set");
+    pointer(c, ffi::CURLOPT_RESOLVE, list);
+    // SAFETY: as above.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
     let requests = server.join().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with(b"GET /ct HTTP/1.1\r\nHost: unreach.invalid:1\r\n"));
     assert!(requests[1].starts_with(b"GET /rs HTTP/1.1\r\n"));
-    // SAFETY: a live handle, not used again; then the list it kept.
+    // SAFETY: a live handle, not used again; then the list.
     unsafe {
         curl_easy_cleanup(c);
         crate::strings::curl_slist_free_all(list);
     }
 }
 
-/// `CURLOPT_RESOLVE` keeps the application's list, as C keeps its
-/// pointer, and reads it only as the next transfer starts: setting it
-/// costs the handle the handler that walks the list, its count with it,
-/// and no copy of it.
-#[cfg(feature = "debug-hooks")]
+/// The lists those options copy are the handle's: the application may
+/// free its own as soon as the option is set, and the transfer still
+/// takes the entries.
 #[test]
-fn a_resolve_list_is_kept_not_copied() {
+fn a_resolve_or_connect_to_list_may_go_once_set() {
+    let (port, server) = serve(vec![OK]);
     let c = curl_easy_init();
-    let list = append(ptr::null_mut(), &[c"a:1:127.0.0.1", c"-b:2"]);
-    let (set, made) =
-        curl_alloc::track::count_allocations(|| pointer(c, ffi::CURLOPT_RESOLVE, list));
-    assert_eq!(set, CURLE_OK);
-    assert_eq!(made, 1, "the source's handler and its count");
-    // SAFETY: a live handle, not used again; then the list it kept.
-    unsafe {
-        curl_easy_cleanup(c);
-        crate::strings::curl_slist_free_all(list);
-    }
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"http://gone.invalid:1/g".as_ptr().cast_mut(),
+    );
+    let to = std::ffi::CString::new(format!("gone.invalid:1:other.invalid:{port}")).unwrap();
+    let resolve = std::ffi::CString::new(format!("other.invalid:{port}:127.0.0.1")).unwrap();
+    let list = append(ptr::null_mut(), &[&to]);
+    pointer(c, ffi::CURLOPT_CONNECT_TO, list);
+    // SAFETY: the list made above, which the handle has copied.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    let list = append(ptr::null_mut(), &[&resolve]);
+    pointer(c, ffi::CURLOPT_RESOLVE, list);
+    // SAFETY: as above.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(server.join().unwrap().len(), 1);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
 }
 
 /// The trailer function's lines end a chunked body, and its abort ends

@@ -5067,6 +5067,34 @@ fn a_connect_to_entry_tunnels_through_a_proxy() {
     assert!(sent.contains("\r\n\r\nGET /a HTTP/1.1\r\n"), "{sent}");
 }
 
+/// Gives its line once `on` is set, none before.
+struct LateLine(Arc<std::sync::atomic::AtomicBool>, String);
+
+impl crate::handler::LineSource for LateLine {
+    fn lines(&self, line: &mut dyn FnMut(&[u8]) -> std::ops::ControlFlow<()>) {
+        if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = line(self.1.as_bytes());
+        }
+    }
+}
+
+/// A connect-to list a source gives is read again as the transfer
+/// starts: an entry the source gives only after it was set is used.
+#[test]
+fn a_connect_to_source_is_read_again_as_the_transfer_starts() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let entry = format!("origin.example:80:127.0.0.1:{PORT}");
+    let source = Handler::lines(LateLine(on.clone(), entry)).unwrap();
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.connect_to.set_source(source).unwrap();
+        assert_eq!(o.connect_to.iter().count(), 0, "none as it is set");
+        on.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+}
+
 const PROXY_CHALLENGE: &[u8] = b"HTTP/1.1 407 Who\r\n\
     Proxy-Authenticate: Basic realm=\"p\"\r\nContent-Length: 0\r\n\r\n";
 

@@ -267,6 +267,22 @@ impl LineSource for Slist {
 }
 
 /// A source of the list at `p`, or none for NULL.
+/// The lines of the application's list at `p`, copied now: what the
+/// handle keeps of it, no longer the application's after the call
+/// returns (`Curl_frzn_strs_from_slist`); none for NULL.
+fn slist_copied(p: *mut c_void) -> Result<Option<Vec<Vec<u8>>>, OutOfMemory> {
+    let Some(list) = NonNull::new(p.cast::<ffi::curl_slist>()) else {
+        return Ok(None);
+    };
+    let mut lines = Vec::new();
+    (&Slist(list) as &dyn LineSource).try_lines(|line| {
+        let mut copy = Vec::new();
+        copy.try_extend_from_slice(line)?;
+        lines.try_push(copy)
+    })?;
+    Ok(Some(lines))
+}
+
 fn slist(p: *mut c_void) -> Result<Option<Handler<dyn LineSource>>, OutOfMemory> {
     NonNull::new(p.cast::<ffi::curl_slist>())
         .map(|list| Handler::lines(Slist(list)))
@@ -1505,8 +1521,9 @@ fn apply(
                 n & ffi::CURLHEADER_SEPARATE == 0,
             )?;
         }
-        (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => match slist(p)? {
-            Some(source) => options.connect_to.set_source(source)?,
+        // Copied as it is set, as C's frozen list is.
+        (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => match slist_copied(p)? {
+            Some(lines) => options.connect_to.set(lines.iter().map(|l| &l[..]))?,
             None => options.connect_to.set([])?,
         },
         (ffi::CURLOPT_HTTP200ALIASES, Ptr(p)) => match slist(p)? {
@@ -1520,8 +1537,8 @@ fn apply(
                 }
             }
         },
-        (ffi::CURLOPT_RESOLVE, Ptr(p)) => match slist(p)? {
-            Some(source) => options.resolve.set_source(source),
+        (ffi::CURLOPT_RESOLVE, Ptr(p)) => match slist_copied(p)? {
+            Some(lines) => options.resolve.set(lines.iter().map(|l| &l[..]))?,
             None => options.resolve.set([])?,
         },
         (ffi::CURLOPT_DEFAULT_PROTOCOL, Ptr(p)) => {

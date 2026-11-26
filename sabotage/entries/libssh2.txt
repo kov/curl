@@ -204,3 +204,30 @@ witness: curl-core proto::ssh::libssh2::tests::scp_s_channel_as_c_drives_it
 --- new
                             let _ = session_failure(rc);
                         }
+
+=== an SFTP file whose close fails is a transfer that succeeded
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::an_sftp_file_whose_close_fails_fails_the_transfer
+--- old
+                if let Some(rc) = failed {
+                    sc.next = None;
+--- new
+                if let Some(rc) = failed.filter(|_| false) {
+                    sc.next = None;
+
+=== a failed SFTP close still runs the commands after the transfer
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::an_sftp_file_whose_close_fails_fails_the_transfer
+--- old
+                if let Some(rc) = failed {
+                    sc.next = None;
+                    sc.to(cx, State::Stop);
+                    return session_failure(rc);
+                }
+--- new
+                if let Some(rc) = failed
+                    && sc.next.is_none()
+                {
+                    sc.to(cx, State::Stop);
+                    return session_failure(rc);
+                }

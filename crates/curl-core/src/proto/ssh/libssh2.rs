@@ -560,6 +560,7 @@ impl Ssh2Conn {
     /// `SSH_SFTP_SHUTDOWN`: what a broken transfer left open closed, then
     /// the SFTP session.
     fn sftp_shutdown(&mut self, says: &mut dyn Says) -> Ran {
+        // A broken transfer's close failing is said, and goes on.
         self.close_handle(says)?;
         let s = self.session();
         if s.has_sftp() {
@@ -574,8 +575,9 @@ impl Ssh2Conn {
         Ok(())
     }
 
-    /// The file or directory open closed, a failure said.
-    fn close_handle(&mut self, says: &mut dyn Says) -> Ran {
+    /// The file or directory open closed, a failure said: the code it
+    /// failed with, if it did.
+    fn close_handle(&mut self, says: &mut dyn Says) -> Result<Option<Code>, Halt> {
         let s = self.session();
         if s.has_handle() {
             match s.sftp_close(Let::Wait) {
@@ -588,11 +590,12 @@ impl Ssh2Conn {
                         b" ",
                         &text,
                     ]);
+                    return Ok(Some(rc));
                 }
                 Ok(()) => {}
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// `SSH_SESSION_DISCONNECT`: a channel still open freed first, then
@@ -1318,9 +1321,16 @@ impl Request {
                 ran
             }
             State::SftpClose => {
-                sc.close_handle(cx)?;
+                let failed = sc.close_handle(cx)?;
                 self.path = None;
                 cx.ssh(format_args!("SFTP DONE done"));
+                // A close that fails fails the transfer, and nothing
+                // after it runs (`ssh_state_sftp_close`).
+                if let Some(rc) = failed {
+                    sc.next = None;
+                    sc.to(cx, State::Stop);
+                    return session_failure(rc);
+                }
                 match sc.next {
                     Some(next) if next != State::SftpClose => {
                         sc.to(cx, next);

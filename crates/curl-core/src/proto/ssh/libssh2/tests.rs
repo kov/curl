@@ -3539,7 +3539,8 @@ fn the_session_s_settings_and_its_closing() {
         |w| w.fails = vec![("sftp_close", Code(-5))],
         |_| {},
     );
-    assert_eq!(r, Ok(()), "{said}");
+    // The close's failure fails the transfer (`ssh_state_sftp_close`).
+    assert_eq!(r, Err(ErrorKind::Ssh), "{said}");
     says(&said, &["Failed to close libssh2 file: -5 fake failure"]);
     // The goodbye goes on past each failure, to the session's freeing.
     for fail in ["sftp_shutdown", "disconnect"] {
@@ -3824,6 +3825,31 @@ fn a_late_date_is_refused_only_where_a_long_cannot_hold_it() {
     } else {
         assert_eq!(r, Ok(()), "{said}");
     }
+}
+
+/// A file whose close fails fails the transfer with the session's
+/// failure, after the body, and the commands to send after it are not
+/// sent (`ssh_state_sftp_close`).
+#[test]
+fn an_sftp_file_whose_close_fails_fails_the_transfer() {
+    let w = world_with(&[("/home/u/f", "x")], |w| {
+        w.fails = vec![("sftp_close", Code::SOCKET_SEND)];
+    });
+    let (result, body, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        o.line
+            .make_mut()
+            .unwrap()
+            .postquote
+            .set([&b"rm /home/u/f"[..]])
+            .unwrap();
+    });
+    assert_eq!(result, Err(ErrorKind::SendError), "{said}");
+    assert_eq!(body, b"x");
+    assert!(said.contains("Failed to close libssh2 file: "), "{said}");
+    assert!(
+        !calls.iter().any(|c| c.starts_with("sftp_unlink")),
+        "{calls:?}"
+    );
 }
 
 /// An upload's write failing fails it with the session's failure, as C's

@@ -928,7 +928,7 @@ fn enter_setup<H: Host>(
 /// (`cf_setup_connect`, `http_proxy_cf_connect`'s `CONNECT`, `CONNECT-UDP`
 /// for a tunnel of datagrams).
 fn setup_entered<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain, udp: bool) {
-    mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+    side::setup_connect(cx, &chain);
     if chain.connects(Component::HttpProxy) {
         let what = if udp { "CONNECT-UDP" } else { "CONNECT" };
         trace::of(cx, Component::HttpProxy, format_args!("{what}"));
@@ -989,13 +989,13 @@ pub(super) fn enter_chain<H: Host>(
             *entered = true;
             return racing;
         }
-        SetupPoint::Racing { started: true } | SetupPoint::Dialed(_) => {}
+        SetupPoint::Racing { started: true } | SetupPoint::Dialed(..) => {}
     }
     if !*entered {
         entry(cx, chain(head, reached, under_way, true));
         *entered = true;
     }
-    let (SetupPoint::Dialed(made), None) = (reached, under_way) else {
+    let (SetupPoint::Dialed(made, _), None) = (reached, under_way) else {
         return chain(head, reached, under_way, true);
     };
     let Some(due) = handshake_due(plan, setup, made) else {
@@ -1104,7 +1104,7 @@ fn connect_once<H: Host>(
         };
         return c.shook(a, shook, cx);
     }
-    if let Some(SetupPoint::Dialed(_)) = c.attempt(a).map(ConnectMachine::reached) {
+    if let Some(SetupPoint::Dialed(..)) = c.attempt(a).map(ConnectMachine::reached) {
         return handshake_next(c, cx, a);
     }
     let setup = drive_options(cx);
@@ -1297,7 +1297,7 @@ pub(super) fn attempt_failed<H: Host>(
     // kept until the race ends.
     if let Some(mut lost) = c.fail_attempt(a) {
         match (&mut c.race, lost.reached()) {
-            (Some(race), SetupPoint::Dialed(_)) => {
+            (Some(race), SetupPoint::Dialed(..)) => {
                 // No one drives it again: what its handshake held goes now.
                 lost.handshake = None;
                 match a {
@@ -1404,7 +1404,7 @@ fn drive_other<H: Host>(run: &mut Run, mut c: Connecting, cx: &mut StepCx<'_, H>
         // Its chain is traced as SETUP's connect enters it: while it
         // races, its own; dialed, with the handshake it adds.
         let mut entered = false;
-        if let SetupPoint::Dialed(_) = other.reached() {
+        if let SetupPoint::Dialed(..) = other.reached() {
             enter_setup(&mut c, cx, &mut entered, a);
         } else {
             let chain = Chain::of(other.dialing(), head_of(&c), other.reached(), None, true);
@@ -2100,10 +2100,9 @@ pub(super) fn up<H: Host>(
             LayerAnswer::Tunnel(filter) => filter,
             _ => unreachable!("an answer of another question"),
         });
-    // The route the winner dialed, which a race's second dials
+    // Over the route the winner dialed, which a race's second dials
     // otherwise than the plan's.
-    let route = c.lease.conn().dialing().expect("set up over the network");
-    let connected = Chain::connected(route, head, preface, tunnel);
+    let connected = Chain::connected(c.lease.conn(), head, preface, tunnel);
     mstate::trace(cx, format_args!("connected {connected}"));
     // The race's loser goes with the HTTPS connect filter, its chain from
     // its setup filter down (`cf_hc_ctx_destroy`).

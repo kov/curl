@@ -67,12 +67,9 @@ fn a_request_is_traced_through_c_s_states() {
     assert_eq!(ran.result, Ok(()));
     let mut want = expect(WHOLE_START);
     want.extend(expect(
-        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] [PGRS-CONNECT] added Nus
-        [MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]
-        [MULTI] [CONNECTING] reduced to [0][TCP]
+        "[MULTI] [CONNECTING] [PGRS-CONNECT] added Nus
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [MULTI] [CONNECTING] reduced to [CHAIN][TCP]<fd=1000>
         [MULTI] [CONNECTING] -> [PROTOCONNECT]
         [MULTI] [PROTOCONNECT] -> [DO]
         [MULTI] [DO] xfer_setup: recv_idx=0, send_idx=0
@@ -151,11 +148,8 @@ fn a_refused_connect_is_done_with_where_it_failed() {
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     let mut want = expect(WHOLE_START);
     want.extend(expect(&format!(
-        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
-        [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
+        "[MULTI] [CONNECTING] Curl_multi_will_close fd=1000
+        [MULTI] [CONNECTING] failed to connect [CHAIN][!DNS][!SETUP][!HAPPY-EYEBALLS]
         [MULTI] [CONNECTING] connect failed -> 7
         [MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0
         [MULTI] [CONNECTING] multi_done_locked, in use=0

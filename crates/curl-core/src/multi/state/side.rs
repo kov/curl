@@ -109,14 +109,24 @@ pub(crate) fn tls_added<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain) {
             Component::Setup,
             format_args!("added SSL filter for origin"),
         );
-        mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+        setup_connect(cx, &chain);
     }
 }
 
 /// SETUP's connect is entered as the chain's TLS is made: `chain`.
 pub(crate) fn entered_tls<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain) {
     if chain.dns_filters() > 0 {
-        mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+        setup_connect(cx, &chain);
+    }
+}
+
+/// SETUP's connect is entered over `chain`, which it says from its own
+/// filter down (`cf_setup_connect`'s `Curl_cfchain_trc`), as the
+/// transfer's trace of the multi says chains.
+pub(crate) fn setup_connect<H: Host>(cx: &mut StepCx<'_, H>, chain: &Chain) {
+    if trace::traces(cx, Component::Multi) {
+        let view = chain.setup_view();
+        trace::of(cx, Component::Setup, format_args!("connect {view}"));
     }
 }
 
@@ -167,7 +177,7 @@ impl SideSetup {
     ) -> Result<Shaken, ErrorKind> {
         let route = machine.route().clone();
         loop {
-            let SetupPoint::Dialed(made) = machine.reached() else {
+            let SetupPoint::Dialed(made, _) = machine.reached() else {
                 return Ok(Shaken::Redialed);
             };
             let mut s = SetupMut::of(&mut *machine);

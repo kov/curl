@@ -1258,7 +1258,7 @@ impl ConnectMachine {
         match &self.stage {
             Stage::Resolving(_) => SetupPoint::Resolving,
             Stage::Racing(r) => SetupPoint::Racing { started: r.ran },
-            Stage::Dialed(d) => SetupPoint::Dialed(d.made),
+            Stage::Dialed(d) => SetupPoint::Dialed(d.made, d.stream.socket().key()),
         }
     }
 

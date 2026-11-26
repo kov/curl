@@ -305,7 +305,7 @@ witness: curl-core proto::http::tests::wait_trace::a_tunnel_s_waits_are_traced_a
 --- old
                 dialed: matches!(
                     c.lead().map(ConnectMachine::reached),
-                    Some(SetupPoint::Dialed(_))
+                    Some(SetupPoint::Dialed(..))
                 ) || c
 --- new
                 dialed: false || c

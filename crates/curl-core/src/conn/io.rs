@@ -48,7 +48,7 @@ impl SocketKey {
     pub(crate) const BAD: SocketKey = SocketKey(RawSocket::MAX);
 
     /// The socket C calls `n`, as the application names it back.
-    pub fn new(n: RawSocket) -> SocketKey {
+    pub const fn new(n: RawSocket) -> SocketKey {
         SocketKey(n)
     }
 

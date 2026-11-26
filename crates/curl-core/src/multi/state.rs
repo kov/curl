@@ -470,7 +470,7 @@ impl TransferState {
         let waits = self.waits(LayerQuery::ProxyTlsWaits, pool)?;
         let tunneled = match self {
             TransferState::Connecting(c) => {
-                matches!(c.lead().map(ConnectMachine::reached), Some(SetupPoint::Dialed(m)) if m.tunnel.is_some())
+                matches!(c.lead().map(ConnectMachine::reached), Some(SetupPoint::Dialed(m, _)) if m.tunnel.is_some())
             }
             state => state
                 .slot(pool)
@@ -1393,7 +1393,7 @@ impl Run {
                 other_leads: https::other_leads(c),
                 dialed: matches!(
                     c.lead().map(ConnectMachine::reached),
-                    Some(SetupPoint::Dialed(_))
+                    Some(SetupPoint::Dialed(..))
                 ) || c.lead().is_some_and(|m| m.dial() == Dial::Quic),
                 component: c.socket_component(),
                 eyeballs: matches!(

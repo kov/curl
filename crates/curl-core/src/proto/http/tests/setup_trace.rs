@@ -23,12 +23,7 @@ fn setup_lines(ran: &Ran) -> Vec<String> {
         .into_iter()
         .map(|l| l.trim_end().to_owned())
         .filter(|l| {
-            let chain = [
-                "cf_setup_connect ",
-                "connected [",
-                "reduced to ",
-                "failed to connect ",
-            ];
+            let chain = ["connected [", "reduced to ", "failed to connect "];
             l.starts_with("[SETUP] ")
                 || l.ends_with("] query ALPN")
                 || l.contains("] query ALPN: returning ")
@@ -55,10 +50,10 @@ fn expect(lines: &str) -> Vec<String> {
 fn raced(to: &str, first: &str) -> String {
     format!(
         "[SETUP] added
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP]
+        [SETUP] connect [CHAIN][!DNS][!SETUP]
         [SETUP] happy eyeballing to {to} {first}
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]"
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!HAPPY-EYEBALLS]"
     )
 }
 
@@ -71,10 +66,10 @@ fn a_direct_setup_is_traced_as_c() {
     assert_eq!(ran.result, Ok(()));
     let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
     want.extend(expect(
-        "[MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]
+        "[MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][HAPPY-EYEBALLS][TCP]<fd=1000>
         [SETUP] removing connected setup filter
         [SETUP] destroy
-        [MULTI] [CONNECTING] reduced to [0][TCP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][TCP]<fd=1000>
         [TCP] query ALPN",
     ));
     assert_eq!(setup_lines(&ran), want);
@@ -89,7 +84,7 @@ fn a_refused_setup_names_the_chain_that_failed() {
     assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
     let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
     want.extend(expect(
-        "[MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]",
+        "[MULTI] [CONNECTING] failed to connect [CHAIN][!DNS][!SETUP][!HAPPY-EYEBALLS]",
     ));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -106,13 +101,13 @@ fn the_proxy_protocol_s_filter_is_added_and_goes() {
     let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
     want.extend(expect(
         "[SETUP] added HAPROXY filter
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPROXY][HAPPY-EYEBALLS][TCP]
-        [MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPROXY][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!HAPROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][HAPROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         [SETUP] removing connected setup filter
         [SETUP] destroy
         [HAPROXY] removing connected setup filter
         [HAPROXY] destroy
-        [MULTI] [CONNECTING] reduced to [0][TCP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][TCP]<fd=1000>
         [TCP] query ALPN",
     ));
     assert_eq!(setup_lines(&ran), want);
@@ -121,21 +116,21 @@ fn the_proxy_protocol_s_filter_is_added_and_goes() {
 /// The tunnel's filters: the HTTP proxy's, its HTTP/1.1 one installed as
 /// it first connects; the first goes with the setup, the second stays.
 const TUNNEL: &str = "[SETUP] added HTTP proxy tunnel filter
-    [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+    [SETUP] connect [CHAIN][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
     [HTTP-PROXY] CONNECT
     [HAPPY-EYEBALLS] query ALPN
     CONNECT: no ALPN negotiated
     [HTTP-PROXY] installing subfilter for HTTP/1.1
-    [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]
+    [SETUP] connect [CHAIN][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
     [HTTP-PROXY] CONNECT";
 
 const TUNNEL_UP_TRACE: &str =
-    "[MULTI] [CONNECTING] connected [0][DNS][SETUP][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+    "[MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
     [SETUP] removing connected setup filter
     [SETUP] destroy
     [HTTP-PROXY] removing connected setup filter
     [HTTP-PROXY] destroy
-    [MULTI] [CONNECTING] reduced to [0][H1-PROXY][TCP]
+    [MULTI] [CONNECTING] reduced to [CHAIN][H1-PROXY][TCP]<fd=1000>
     [H1-PROXY] query ALPN";
 
 /// Through an HTTP proxy's tunnel, its answer read in the call after the
@@ -167,15 +162,15 @@ fn the_proxy_line_after_a_tunnel_is_traced_as_c() {
     want.extend(expect(TUNNEL));
     want.extend(expect(
         "[SETUP] added HAPROXY filter
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPROXY][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
-        [MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPROXY][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!HAPROXY][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][HAPROXY][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         [SETUP] removing connected setup filter
         [SETUP] destroy
         [HAPROXY] removing connected setup filter
         [HAPROXY] destroy
         [HTTP-PROXY] removing connected setup filter
         [HTTP-PROXY] destroy
-        [MULTI] [CONNECTING] reduced to [0][H1-PROXY][TCP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][H1-PROXY][TCP]<fd=1000>
         [H1-PROXY] query ALPN",
     ));
     assert_eq!(setup_lines(&ran), want);
@@ -204,10 +199,10 @@ fn a_redial_starts_the_chain_over() {
     want.extend(expect(&format!(
         "[SETUP] retrying connect, 1. time
         [HTTP-PROXY] destroy
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP]
+        [SETUP] connect [CHAIN][!DNS][!SETUP]
         [SETUP] happy eyeballing to proxy {proxy}
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]"
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!HAPPY-EYEBALLS]"
     )));
     want.extend(expect(TUNNEL));
     want.extend(expect(TUNNEL_UP_TRACE));
@@ -228,17 +223,16 @@ fn a_socks_proxy_s_setup_is_traced_as_c() {
     });
     assert_eq!(ran.result, Ok(()));
     let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
-    let socks =
-        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]";
+    let socks = "[SETUP] connect [CHAIN][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>";
     want.extend(expect(&format!(
         "[SETUP] added SOCKS filter to origin.example:80
         {socks}
         {socks}
         {socks}
-        [MULTI] [CONNECTING] connected [0][DNS][SETUP][SOCKS][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>
         [SETUP] removing connected setup filter
         [SETUP] destroy
-        [MULTI] [CONNECTING] reduced to [0][SOCKS][TCP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][SOCKS][TCP]<fd=1000>
         [SOCKS] query ALPN"
     )));
     assert_eq!(setup_lines(&ran), want);
@@ -267,26 +261,26 @@ fn a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c() {
     // C's DNS filter for the proxy's address makes a call of its own
     // before the SOCKS handshake's second, which is not made here: its
     // lookup is not traced (ENGINE.md 2.5).
-    let socks = "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]";
+    let socks = "[SETUP] connect [CHAIN][!DNS][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>";
     want.extend(expect(&format!(
         "[SETUP] added SOCKS filter to 127.0.0.2:3128
         {socks}
         {socks}
         {socks}
         [SETUP] added HTTP proxy tunnel filter
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!HTTP-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN][!DNS][!DNS][!SETUP][!HTTP-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTP-PROXY] CONNECT
         [SOCKS] query ALPN
         CONNECT: no ALPN negotiated
         [HTTP-PROXY] installing subfilter for HTTP/1.1
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN][!DNS][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTP-PROXY] CONNECT
-        [MULTI] [CONNECTING] connected [0][DNS][DNS][SETUP][HTTP-PROXY][H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][SETUP][HTTP-PROXY][H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>
         [SETUP] removing connected setup filter
         [SETUP] destroy
         [HTTP-PROXY] removing connected setup filter
         [HTTP-PROXY] destroy
-        [MULTI] [CONNECTING] reduced to [0][H1-PROXY][SOCKS][TCP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][H1-PROXY][SOCKS][TCP]<fd=1000>
         [H1-PROXY] query ALPN"
     )));
     assert_eq!(setup_lines(&ran), want);
@@ -340,7 +334,7 @@ fn a_refused_tunnel_names_the_chain_that_failed() {
     let mut want = expect(&raced("proxy", &format!("127.0.0.1:{PORT}")));
     want.extend(expect(TUNNEL));
     want.extend(expect(
-        "[MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]",
+        "[MULTI] [CONNECTING] failed to connect [CHAIN][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>",
     ));
     assert_eq!(setup_lines(&ran), want);
     // The chain that failed, then the connect time of the proxy's
@@ -368,12 +362,12 @@ fn a_tunnel_failing_as_it_starts_names_its_filter() {
     let mut want = expect(&raced("proxy", &format!("127.0.0.1:{PORT}")));
     want.extend(expect(
         "[SETUP] added HTTP proxy tunnel filter
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTP-PROXY] CONNECT
         [HAPPY-EYEBALLS] query ALPN
         CONNECT: no ALPN negotiated
         [HTTP-PROXY] installing subfilter for HTTP/1.1
-        [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]",
+        [MULTI] [CONNECTING] failed to connect [CHAIN][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>",
     ));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -393,8 +387,8 @@ fn a_socks_handshake_refused_as_it_starts_names_its_filter() {
     let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
     want.extend(expect(&format!(
         "[SETUP] added SOCKS filter to {name}:80
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]
-        [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]"
+        [SETUP] connect [CHAIN][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [MULTI] [CONNECTING] failed to connect [CHAIN][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]<fd=1000>"
     )));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -418,18 +412,18 @@ fn an_https_setup_is_traced_as_c() {
     });
     assert_eq!(ran.result, Ok(()));
     let want = expect(&format!(
-        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP]
+        "[SETUP] connect [CHAIN]...[!SETUP]
         [SETUP] happy eyeballing to origin 127.0.0.1:{PORT}
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [SETUP] added SSL filter for origin
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN]...[!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
         [SETUP] query ALPN
         [SSL] query ALPN: returning '(nil)'
-        [MULTI] [CONNECTING] connected [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
         [SETUP] removing connected setup filter
         [SETUP] destroy
-        [MULTI] [CONNECTING] reduced to [0][SSL][TCP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][SSL][TCP]<fd=1000>
         [SSL] query ALPN
         [SSL] query ALPN: returning '(nil)'"
     ));

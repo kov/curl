@@ -77,7 +77,12 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
     assert_eq!(ran.result, Ok(()));
     let got = lines(
         &ran,
-        &["[HTTPS-CONNECT]", "[TIMER] [ALPN", "[MULTI] [CONNECTING] c"],
+        &[
+            "[HTTPS-CONNECT]",
+            "[TIMER] [ALPN",
+            "[SETUP] connect",
+            "[MULTI] [CONNECTING] c",
+        ],
     );
     // The fake's handshake is answered whole as the connect is seen.
     let want = expect(
@@ -86,18 +91,42 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
         [HTTPS-CONNECT] HTTPS-RR not available
         [HTTPS-CONNECT] 1st attempt uses h1 from wanted versions
         [HTTPS-CONNECT] HTTPS-RR not available
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [HTTPS-CONNECT] connect -> 0, done=0
         [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTPS-CONNECT] connect -> 0, done=1
-        [MULTI] [CONNECTING] connected [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTPS-CONNECT] removing connected setup filter
         [HTTPS-CONNECT] destroy",
     );
     assert_eq!(got, want);
+}
+
+/// SETUP says the chain it connects only while the multi's trace is on,
+/// as C's `Curl_cfchain_trc` asks `CURL_TRC_M_is_verbose`, though the
+/// line is SETUP's.
+#[test]
+fn the_setup_s_chain_is_said_only_with_the_multi_s_trace() {
+    let said = |components: &[u8]| {
+        let mut m = tls_server(1);
+        let e = tracing(components);
+        let ran = https_get(&mut m, e, &format!("https://127.0.0.1:{PORT}/"), |_| {});
+        assert_eq!(ran.result, Ok(()));
+        let setup = lines(&ran, &["[SETUP] "]);
+        let connects = setup
+            .iter()
+            .filter(|l| l.starts_with("[SETUP] connect "))
+            .count();
+        (setup.len(), connects)
+    };
+    let (setup, connects) = said(b"setup,https-connect");
+    assert!(setup > 0, "SETUP's other lines are said");
+    assert_eq!(connects, 0);
+    let (_, connects) = said(b"multi,setup,https-connect");
+    assert_eq!(connects, 4);
 }
 
 /// A resolve of the library [`Ares`] stands for: a name's addresses,
@@ -269,7 +298,7 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
     let chain = text.iter().find(|l| l.contains("connected [")).unwrap();
     assert_eq!(
         chain,
-        "[MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]\n"
+        "[MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>\n"
     );
     assert!(
         text.iter()
@@ -783,7 +812,7 @@ fn a_failed_https_setup_names_the_chain_to_its_filter() {
             [HTTPS-CONNECT] connect -> 0, done=0
             [HTTPS-CONNECT] connect, all attempts failed
             [HTTPS-CONNECT] connect -> 7, done=0
-            [MULTI] [CONNECTING] failed to connect [0][!DNS][!DNS][!HTTPS-CONNECT]"
+            [MULTI] [CONNECTING] failed to connect [CHAIN][!DNS][!DNS][!HTTPS-CONNECT]"
         )
     );
 }
@@ -1054,7 +1083,7 @@ fn an_https_proxy_sent_requests_whole_adds_its_tls_as_the_origin_s() {
         picked,
         [
             "[SETUP] added SSL filter for origin",
-            "[MULTI] [CONNECTING] reduced to [0][SSL-PROXY][TCP]",
+            "[MULTI] [CONNECTING] reduced to [CHAIN][SSL-PROXY][TCP]<fd=1000>",
         ],
         "{got:#?}"
     );
@@ -1539,7 +1568,7 @@ fn ech_without_https_connect(
         "[SSL] cf_connect",
         "[SSL] adjust_pollset",
         "[SSL] need",
-        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS]",
+        "[SETUP] connect [CHAIN][!DNS][!DNS]",
         "[MULTI] [CONNECTING] connected",
     ];
     (configs, lines(&ran, &starts))
@@ -1575,7 +1604,7 @@ fn without_the_https_connect_filter_the_tls_asks_for_the_record_too_late() {
             "[DNS] Curl_conn_connect(block=0) -> 0, done=0
             [DNS] [HTTPS] created DNS filter for localhost:{PORT}, transport=3
             [SETUP] added SSL filter for origin
-            [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+            [SETUP] connect [CHAIN][!DNS][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
             [SSL] cf_connect()
             [SSL] cf_connect() -> 0, done=0
             [DNS] Curl_conn_connect(block=0) -> 0, done=0
@@ -1589,7 +1618,7 @@ fn without_the_https_connect_filter_the_tls_asks_for_the_record_too_late() {
             [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
             [DNS] [HTTPS] ares_take_result, result=0, ares_result=0, ares_status=0, dns=found
             [DNS] [HTTPS] resolve complete for localhost:{PORT}
-            [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]"
+            [SETUP] connect [CHAIN][!DNS][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1000>"
         ));
         let at = got
             .iter()
@@ -1606,7 +1635,7 @@ fn without_the_https_connect_filter_the_tls_asks_for_the_record_too_late() {
             [DNS] [1] destroy async
             [DNS] connected filter chain below
             [DNS] Curl_conn_connect(block=0) -> 0, done=1
-            [MULTI] [CONNECTING] connected [0][DNS][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]",
+            [MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>",
         );
         let end = got
             .iter()
@@ -1665,7 +1694,8 @@ fn the_tls_asks_for_no_record_it_would_not_take() {
                 .any(|l| l.contains("[HTTPS]") || l.contains("adjust_pollset, starting")),
             "{mode:?} {url} {got:#?}"
         );
-        let connected = "[MULTI] [CONNECTING] connected [0][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]";
+        let connected =
+            "[MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>";
         assert!(
             got.iter().any(|l| l == connected),
             "{mode:?} {url} {got:#?}"

@@ -233,7 +233,7 @@ impl DataConn {
             {
                 Phase::Connecting(mut machine, mut setup) => {
                     *chain = Some(setup.enter(&machine, cx, entered));
-                    if let SetupPoint::Dialed(_) = machine.reached() {
+                    if let SetupPoint::Dialed(..) = machine.reached() {
                         match setup.shake(&mut machine, request, cx) {
                             Ok(Shaken::Waiting) => {
                                 self.phase = Some(Phase::Connecting(machine, setup));
@@ -362,7 +362,8 @@ impl DataConn {
                         }
                     }
                     let stream = Stream::new(sock);
-                    self.up_with(cx, host, stream, peer, Chain::accepted())?;
+                    let chain = Chain::accepted(stream.socket().key());
+                    self.up_with(cx, host, stream, peer, chain)?;
                 }
                 up @ Phase::Up { shaken: true, .. } => {
                     self.phase = Some(up);
@@ -750,7 +751,7 @@ mod tests {
                     stream: Box::new(stream),
                     shaken: true,
                     peer: None,
-                    chain: Chain::accepted(),
+                    chain: Chain::accepted(crate::conn::io::SocketKey::new(5)),
                 }),
                 name: DataName::default(),
                 tls: None,

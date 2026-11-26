@@ -716,7 +716,7 @@ features: test-util
         .name
 --- new
 ) -> Result<(), ErrorKind> {
-    if c.lead().is_some_and(|m| matches!(m.reached(), SetupPoint::Dialed(_))) {
+    if c.lead().is_some_and(|m| matches!(m.reached(), SetupPoint::Dialed(..))) {
         return Ok(());
     }
     let polled = c

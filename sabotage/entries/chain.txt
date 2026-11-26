@@ -106,3 +106,51 @@ witness: curl-core conn::chain::tests::a_handshake_is_made_once
         assert!(fresh, "{which:?} is made once");
 --- new
         let _ = fresh;
+
+=== SETUP says its chain without the multi's trace on
+file: crates/curl-core/src/multi/state/side.rs
+witness: curl-core proto::http::tests::https_trace::the_setup_s_chain_is_said_only_with_the_multi_s_trace
+features: test-util
+--- old
+    if trace::traces(cx, Component::Multi) {
+        let view = chain.setup_view();
+--- new
+    if true {
+        let view = chain.setup_view();
+
+=== SETUP says the whole chain, not its attempt's below the HTTPS connect filter
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_an_address_asks_for_no_record
+features: test-util
+--- old
+            from: below_https.unwrap_or(0),
+--- new
+            from: 0,
+
+=== a dialed chain does not name its socket
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core conn::chain::tests::a_handshake_made_shows_connected
+--- old
+        let mut chain = Chain::dialed(route, head, added, (installed, tunnel), connected);
+        chain.sock = Some(sock);
+--- new
+        let mut chain = Chain::dialed(route, head, added, (installed, tunnel), connected);
+        let _ = sock;
+
+=== a chain failed at its HTTPS connect filter names the attempt's socket
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core conn::chain::tests::an_attempt_below_the_https_connect_filter_keeps_its_socket
+--- old
+                // socket with it.
+                left.sock = None;
+--- new
+                // socket with it.
+
+=== a connection's second chain is tagged as its first
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_socket
+features: test-util
+--- old
+            ConnRank::Second => ("-1", 1),
+--- new
+            ConnRank::Second => ("", 1),

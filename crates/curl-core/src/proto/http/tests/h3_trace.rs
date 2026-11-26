@@ -196,6 +196,7 @@ fn a_quic_attempt_is_won_by_its_handshake() {
             "[HTTP/3]",
             "[HTTPS-CONNECT] 1st",
             "[TIMER] [QUIC]",
+            "[SETUP] connect",
             "[MULTI] [CONNECTING] c",
             "[MULTI] [CONNECTING] reduced",
             "[MULTI] [CONNECTING] [PGRS-CONNECT]",
@@ -215,8 +216,8 @@ fn a_quic_attempt_is_won_by_its_handshake() {
     let got = got[..end].to_vec();
     let want = expect(&format!(
         "[HTTPS-CONNECT] 1st attempt uses h3 from wanted versions
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [HAPPY-EYEBALLS] init ip ballers for transport 5
         [HAPPY-EYEBALLS] want to do more
         [HAPPY-EYEBALLS] check for next AAAA address: found
@@ -234,7 +235,7 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [HAPPY-EYEBALLS] next HAPPY_EYEBALLS timeout in 200ms
         [UDP] adjust_pollset, !active, POLLIN fd=1000
         [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [HTTP/3] fake QUIC session 1 trusts
         [HTTP/3] progress_ingress(socket)
         fake QUIC peer verified
@@ -251,10 +252,10 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [MULTI] [CONNECTING] [PGRS-CONNECT] added 1us
         [MULTI] [CONNECTING] [PGRS-APPCONNECT] added 1us
         Established connection to localhost (::1 port {PORT}) from ::1 port 40000
-        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HAPPY-EYEBALLS][HTTP/3][UDP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][HTTPS-CONNECT][SETUP][HAPPY-EYEBALLS][HTTP/3][UDP]<fd=1000>
         [HAPPY-EYEBALLS] removing connected setup filter
         [HAPPY-EYEBALLS] destroy
-        [MULTI] [CONNECTING] reduced to [0][HTTP/3][UDP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][HTTP/3][UDP]<fd=1000>
         [HTTP/3] query ALPN
         using HTTP/3"
     ));
@@ -2524,9 +2525,9 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
     let want = expect(
         "
         [0-0] [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
-        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP]
+        [0-0] [SETUP] connect [CHAIN]...[!SETUP]
         [0-0] [SETUP] happy eyeballing to origin 127.0.0.1:8990
-        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [0-0] [HAPPY-EYEBALLS] init ip ballers for transport 3
         [0-0] [HAPPY-EYEBALLS] want to do more
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
@@ -2554,7 +2555,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [TIMER] [CONNECTTIMEOUT] expires in 299900000us
         [0-0] [TIMER] [TIMEOUT] gives multi timeout in 9900ms
         [0-0] [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=9900
-        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [0-0] [HTTP/3] progress_ingress(socket)
         [0-0] [HTTP/3] ingress, recvmmsg -> EAGAIN
         [0-0] [HTTP/3] egress, collect and send packets, quantum=12000
@@ -2563,13 +2564,13 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
         [0-0] [DNS] get 1th result for 127.0.0.1:8990, family=2, dns=1
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
-        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [0-0] [TCP] connected on fd=1001
         [0-0] [HAPPY-EYEBALLS] connect attempt #0 successful
         [0-0] [HAPPY-EYEBALLS] Connected to 127.0.0.1 (127.0.0.1) port 8990
         [0-0] [TIMER] [HAPPY_EYEBALLS] cleared
         [0-0] [SETUP] added SSL filter for origin
-        [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+        [0-0] [SETUP] connect [CHAIN]...[!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1001>
         [0-0] [SSL] cf_connect()
         [0-0] [TCP] send(len=17) -> 0, 17
         [0-0] [TCP] recv(len=19) -> 0, 19
@@ -2583,7 +2584,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [MULTI] [CONNECTING] [PGRS-APPCONNECT] added 150000us
         [0-0] [MULTI] [CONNECTING] [PGRS-CONNECT] added 150000us
         [0-0] Established connection to 127.0.0.1 (127.0.0.1 port 8990) from 127.0.0.1 port 40001
-        [0-0] [MULTI] [CONNECTING] connected [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+        [0-0] [MULTI] [CONNECTING] connected [CHAIN][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1001>
         [0-0] [DNS] removing connected setup filter
         [0-0] [DNS] destroy
         [0-0] [HTTPS-CONNECT] removing connected setup filter
@@ -2598,7 +2599,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [SETUP] destroy
         [0-0] [HAPPY-EYEBALLS] removing connected setup filter
         [0-0] [HAPPY-EYEBALLS] destroy
-        [0-0] [MULTI] [CONNECTING] reduced to [0][SSL][TCP]
+        [0-0] [MULTI] [CONNECTING] reduced to [CHAIN][SSL][TCP]<fd=1001>
         [0-0] [MULTI] [CONNECTING] -> [PROTOCONNECT]
         [0-0] [MULTI] [PROTOCONNECT] -> [DO]
         [0-0] [SSL] query ALPN
@@ -3882,7 +3883,7 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
     let chain = lines(
         &ran,
         &[
-            "[MULTI] [CONNECTING] cf_setup_connect",
+            "[SETUP] connect [",
             "[MULTI] [CONNECTING] connected [",
             "[MULTI] [CONNECTING] reduced",
             "[HAPPY-EYEBALLS] removing",
@@ -3890,15 +3891,15 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
     );
     let chain: Vec<&str> = chain.iter().map(String::as_str).collect();
     assert!(
-        chain.contains(&"[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]"),
+        chain.contains(&"[SETUP] connect [CHAIN][!DNS][!SETUP][!HAPPY-EYEBALLS]"),
         "{chain:#?}"
     );
     assert_eq!(
         chain[chain.len() - 3..],
         [
-            "[MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPPY-EYEBALLS][H3-PROXY][UDP]",
+            "[MULTI] [CONNECTING] connected [CHAIN][DNS][SETUP][HAPPY-EYEBALLS][H3-PROXY][UDP]<fd=1000>",
             "[HAPPY-EYEBALLS] removing connected setup filter",
-            "[MULTI] [CONNECTING] reduced to [0][H3-PROXY][UDP]",
+            "[MULTI] [CONNECTING] reduced to [CHAIN][H3-PROXY][UDP]<fd=1000>",
         ]
     );
 }
@@ -4384,7 +4385,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
         [HTTPS-CONNECT] h3 baller failed, starting h1
         [SETUP] happy eyeballing to proxy 127.0.0.1:3128
         CONNECT tunnel established, response 200
-        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][SSL][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][HTTPS-CONNECT][SETUP][SSL][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1001>
         [HTTPS-CONNECT] destroy
         [SETUP] destroy
         [HTTP-PROXY] destroy
@@ -4395,7 +4396,7 @@ fn http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect() {
         [SETUP] destroy
         [HTTP-PROXY] destroy
         [HAPPY-EYEBALLS] destroy
-        [MULTI] [CONNECTING] reduced to [0][SSL][H1-PROXY][TCP]
+        [MULTI] [CONNECTING] reduced to [CHAIN][SSL][H1-PROXY][TCP]<fd=1001>
         ",
     );
     assert_eq!(got, want, "{got:#?}");
@@ -4728,7 +4729,7 @@ fn http3_through_a_proxy_refusing_both_tunnels_fails() {
             "[0-0] [HTTPS-CONNECT] connect -> 7, done=0\n",
             "[0-0] [DNS] Curl_conn_connect(block=0) -> 7, done=0\n",
             "[0-0] [DNS] Curl_conn_connect(), filter returned 7\n",
-            "[0-0] [MULTI] [CONNECTING] failed to connect [0][!DNS][!DNS][!HTTPS-CONNECT]\n",
+            "[0-0] [MULTI] [CONNECTING] failed to connect [CHAIN][!DNS][!DNS][!HTTPS-CONNECT]\n",
             "[0-0] [MULTI] [CONNECTING] [PGRS-CONNECT] added Nus\n",
             "[0-0] [MULTI] [CONNECTING] connect failed -> 7\n",
             "[0-0] [MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0\n",
@@ -4808,7 +4809,7 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
             "Establishing",
             "CONNECT-UDP",
             "[SETUP] added",
-            "[MULTI] [CONNECTING] cf_setup_connect",
+            "[SETUP] connect [",
             "[MULTI] [CONNECTING] connected [",
             "[MULTI] [CONNECTING] reduced",
             "[HTTP/3] handshake complete",
@@ -4824,21 +4825,21 @@ fn http3_through_an_http_proxy_goes_over_connect_udp() {
     // (`cf_h1_proxy_connect`'s `Curl_client_reset`).
     let want = expect(&format!(
         "[READ] client_reset, clear readers
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [SETUP] added HTTP proxy tunnel filter
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         CONNECT-UDP: no ALPN negotiated
         Establishing HTTP proxy UDP tunnel to localhost:{PORT}
         CONNECT-UDP phase completed for HTTP proxy
         CONNECT-UDP tunnel established, response 101
         [READ] client_reset, clear readers
         [SETUP] added QUIC filter for origin
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][!CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HTTP/3][!CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [SETUP] connect [CHAIN]...[!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
-        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
-        [MULTI] [CONNECTING] reduced to [0][HTTP/3][CAPSULE][H1-PROXY][TCP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [MULTI] [CONNECTING] reduced to [CHAIN][HTTP/3][CAPSULE][H1-PROXY][TCP]<fd=1000>
         using HTTP/3
         [READ] client_reset, clear readers"
     ));
@@ -5156,7 +5157,7 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
             "[H3-PROXY] created",
             "[H3-PROXY] [0] -> [",
             "[SETUP] added",
-            "[MULTI] [CONNECTING] cf_setup_connect",
+            "[SETUP] connect [",
             "[MULTI] [CONNECTING] connected [",
             "[MULTI] [CONNECTING] reduced",
             "[HTTP/3] handshake complete",
@@ -5170,7 +5171,7 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
     got.dedup();
     let from = got
         .iter()
-        .position(|l| l.starts_with("[MULTI] [CONNECTING]"))
+        .position(|l| l.starts_with("[SETUP] connect "))
         .expect("the setup is traced");
     let to = got
         .iter()
@@ -5182,10 +5183,10 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
     // after the proxy agreed, as C's H3-PROXY filter is
     // (`H3_TUNNEL_ESTABLISHED`), and the race won then.
     let want = expect(
-        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        "[SETUP] connect [CHAIN]...[!SETUP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [H3-PROXY] created, udp_tunnel=1
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         Establishing HTTP/3 proxy UDP tunnel to origin.example:443
         [H3-PROXY] [0] -> [connect]
         [H3-PROXY] [0] -> [response]
@@ -5193,16 +5194,16 @@ fn http3_through_an_http3_proxy_is_quic_in_quic() {
         CONNECT-UDP tunnel established, response 200
         [H3-PROXY] [0] -> [established]
         CONNECT-UDP phase completed for HTTP/3 proxy
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [READ] client_reset, clear readers
         [HAPPY-EYEBALLS] connect attempt #0 successful
         [HAPPY-EYEBALLS] Connected to localhost (::1) port 8990
         [SETUP] added QUIC filter for origin
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][!CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP][!HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
+        [SETUP] connect [CHAIN]...[!SETUP][!HTTP/3][!CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]<fd=1000>
+        [SETUP] connect [CHAIN]...[!SETUP][!HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]<fd=1000>
         [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
-        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
-        [MULTI] [CONNECTING] reduced to [0][HTTP/3][CAPSULE][H3-PROXY][UDP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]<fd=1000>
+        [MULTI] [CONNECTING] reduced to [CHAIN][HTTP/3][CAPSULE][H3-PROXY][UDP]<fd=1000>
         using HTTP/3",
     );
     assert_eq!(got, want);
@@ -5259,7 +5260,7 @@ fn early_data_goes_to_an_origin_through_an_http3_proxy() {
     let want = expect(
         "SSL session allows 16384 bytes of early data, reusing ALPN 'h3'
         [HTTP/3] connect -> 0, done=1
-        [MULTI] [CONNECTING] connected [0][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]
+        [MULTI] [CONNECTING] connected [CHAIN][DNS][DNS][HTTPS-CONNECT][SETUP][HTTP/3][CAPSULE][HAPPY-EYEBALLS][H3-PROXY][UDP]<fd=1000>
         [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
         [HTTP/3] server did accept 75 bytes of early data",
     );

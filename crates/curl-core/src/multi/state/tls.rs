@@ -540,8 +540,8 @@ pub(crate) fn assert_upgraded_in_place(said: &str, block: u8, next: &str) {
         "[SSL] Curl_conn_connect(block={block}) -> 0, done=1\n"
     ));
     let timed = at("[PGRS-APPCONNECT]");
-    let connected = at("connected [0][SSL][TCP]\n");
-    let reduced = at("reduced to [0][SSL][TCP]\n");
+    let connected = at("connected [CHAIN][SSL][TCP]<fd=1000>\n");
+    let reduced = at("reduced to [CHAIN][SSL][TCP]<fd=1000>\n");
     let next = at(next);
     let established: Vec<usize> = said
         .match_indices("Established connection to 127.0.0.1")

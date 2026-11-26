@@ -49,10 +49,10 @@ witness: curl-core proto::http::tests::https_trace::a_failed_https_setup_names_t
 features: test-util
 --- old
             if filter == Component::HttpsConnect {
-                break;
+                // Its winner was never merged into the chain, nor the
 --- new
             if filter == Component::Setup {
-                break;
+                // Its winner was never merged into the chain, nor the
 
 === the HTTPS connect filter heads a setup without ALPN
 file: crates/curl-core/src/multi/state/https.rs
@@ -188,10 +188,10 @@ witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_connect_udp_falls_back_to_connect
 --- old
-            (Some(race), SetupPoint::Dialed(_)) => {
+            (Some(race), SetupPoint::Dialed(..)) => {
                 // No one drives it again: what its handshake held goes now.
 --- new
-            (Some(race), SetupPoint::Dialed(_)) if false => {
+            (Some(race), SetupPoint::Dialed(..)) if false => {
                 // No one drives it again: what its handshake held goes now.
 
 === a leading TCP second does not answer for its connection

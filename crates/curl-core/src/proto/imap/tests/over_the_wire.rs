@@ -685,7 +685,7 @@ fn a_failed_starttls_is_said_as_c_s_connect_says_it() {
     };
     let ended = at("[SSL] Curl_conn_connect(block=0) -> 35, done=0\n");
     let returned = at("[SSL] Curl_conn_connect(), filter returned 35\n");
-    let left = at("[MULTI] [PROTOCONNECTING] failed to connect [0][!SSL][TCP]\n");
+    let left = at("[MULTI] [PROTOCONNECTING] failed to connect [CHAIN][!SSL][TCP]<fd=1000>\n");
     assert!(ended < returned && returned < left, "{said}");
 }
 

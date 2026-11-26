@@ -313,9 +313,9 @@ fn the_data_connection_s_filters_name_its_socket() {
             "Connecting to 127.0.0.1 port 8022\n",
             "cf_dns_start host 127.0.0.1:8022\n",
             "[DNS] cache lookup 127.0.0.1:8022",
-            "cf_setup_connect [1][!DNS][!SETUP]\n",
+            "connect [CHAIN-1][!DNS][!SETUP]\n",
             "[SETUP-1] happy eyeballing to origin 127.0.0.1:8022\n",
-            "cf_setup_connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]\n",
+            "connect [CHAIN-1][!DNS][!SETUP][!HAPPY-EYEBALLS]\n",
             "[HAPPY-EYEBALLS-1] init ip ballers for transport 3\n",
             "[DNS-1] get 0th result for 127.0.0.1:8022",
             "[TCP-1] cf_socket_open() -> 0, fd=",
@@ -325,14 +325,14 @@ fn the_data_connection_s_filters_name_its_socket() {
             "[DNS-1] connected filter chain below\n",
             "[DNS-1] Curl_conn_connect(block=0) -> 0, done=1\n",
             "Established 2nd connection to 127.0.0.1",
-            "connected [1][DNS][SETUP][HAPPY-EYEBALLS][TCP]\n",
+            "connected [CHAIN-1][DNS][SETUP][HAPPY-EYEBALLS][TCP]<fd=1001>\n",
             "[DNS-1] removing connected setup filter\n",
             "[DNS-1] destroy\n",
             "[SETUP-1] removing connected setup filter\n",
             "[SETUP-1] destroy\n",
             "[HAPPY-EYEBALLS-1] removing connected setup filter\n",
             "[HAPPY-EYEBALLS-1] destroy\n",
-            "reduced to [1][TCP]\n",
+            "reduced to [CHAIN-1][TCP]<fd=1001>\n",
             "[TCP] send(len=8) -> 0, 8\n",
             "[TCP-1] recv(len=",
             "shutdown start on secondary connection\n",
@@ -991,11 +991,11 @@ fn a_protected_data_connection_resumes_its_control_connection_s_session() {
         &text.text(),
         &[
             "[SETUP-1] added SSL filter for origin\n",
-            "cf_setup_connect [1][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]\n",
+            "connect [CHAIN-1][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1001>\n",
             "[DNS-1] Curl_conn_connect(block=0) -> 0, done=1\n",
             "Established 2nd connection to 127.0.0.1",
-            "connected [1][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]\n",
-            "reduced to [1][SSL][TCP]\n",
+            "connected [CHAIN-1][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1001>\n",
+            "reduced to [CHAIN-1][SSL][TCP]<fd=1001>\n",
         ],
     );
 }
@@ -1054,11 +1054,11 @@ fn a_data_connection_whose_goodbye_waits_is_not_read_again() {
 /// them, without the transfer's ids.
 fn data_setup_said(said: &str) -> Vec<String> {
     const SAYS: [&str; 8] = [
-        "cf_setup_connect [1]",
+        "[SETUP-1] connect [CHAIN-1]",
         "[DNS-1] Curl_conn_connect",
         "[SETUP-1] added",
-        "connected [1]",
-        "reduced to [1]",
+        "connected [CHAIN-1]",
+        "reduced to [CHAIN-1]",
         "failed to connect",
         "[DNS-1] connected filter",
         "Established 2nd",
@@ -1115,18 +1115,17 @@ fn a_protected_data_connection_says_each_call_of_its_handshake() {
     assert_eq!(result, Ok(()), "{said}");
     assert_eq!(*body.0.lock().unwrap(), b"hello");
     let lines = data_setup_said(&said);
-    let tls_chain =
-        "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]";
+    let tls_chain = "[SETUP-1] connect [CHAIN-1][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1001>";
     let waits = "[DNS-1] Curl_conn_connect(block=0) -> 0, done=0";
     // Dialed, then its TLS added as the call that connected it ends.
     assert_eq!(
         lines[..8],
         [
             "[SETUP-1] added",
-            "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP]",
-            "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]",
+            "[SETUP-1] connect [CHAIN-1][!DNS][!SETUP]",
+            "[SETUP-1] connect [CHAIN-1][!DNS][!SETUP][!HAPPY-EYEBALLS]",
             waits,
-            "[MULTI] [DOING_MORE] cf_setup_connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]",
+            "[SETUP-1] connect [CHAIN-1][!DNS][!SETUP][!HAPPY-EYEBALLS]",
             "[SETUP-1] added SSL filter for origin",
             tls_chain,
             waits,
@@ -1155,8 +1154,8 @@ fn a_protected_data_connection_says_each_call_of_its_handshake() {
     assert_eq!(
         end[4..],
         [
-            "[MULTI] [DOING_MORE] connected [1][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]",
-            "[MULTI] [DOING_MORE] reduced to [1][SSL][TCP]",
+            "[MULTI] [DOING_MORE] connected [CHAIN-1][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1001>",
+            "[MULTI] [DOING_MORE] reduced to [CHAIN-1][SSL][TCP]<fd=1001>",
         ],
         "{said}"
     );
@@ -2320,8 +2319,8 @@ fn an_active_download_accepts_the_server_s_connection() {
             "[TCP-ACCEPT-1] accepted_set(sock=",
             "[TCP-ACCEPT-1] Curl_conn_connect(block=0) -> 0, done=1\n",
             "Established 2nd connection to 127.0.0.1",
-            "connected [1][TCP-ACCEPT]\n",
-            "reduced to [1][TCP-ACCEPT]\n",
+            "connected [CHAIN-1][TCP-ACCEPT]<fd=1002>\n",
+            "reduced to [CHAIN-1][TCP-ACCEPT]<fd=1002>\n",
             "[TCP-ACCEPT-1] recv(len=",
             "[TCP-ACCEPT-1] destroy\n",
         ],
@@ -2424,13 +2423,18 @@ fn an_active_protected_data_connection_waits_for_its_tls() {
     assert_eq!(said.matches("ftp_initiate_transfer()").count(), 1, "{said}");
     // Accepted, it has no setup filter to say its chain as it connects:
     // its TLS goes straight on the accepted socket (the C build's trace
-    // of an active FTPS download says only `connected [1][SSL][TCP-ACCEPT]`).
-    assert!(!said.contains("cf_setup_connect [1]"), "{said}");
+    // of an active FTPS download says only
+    // `connected [CHAIN-1][SSL][TCP-ACCEPT]<fd=N>`).
+    assert!(!said.contains("[SETUP-1] connect "), "{said}");
+    assert!(
+        said.contains("connected [CHAIN-1][SSL][TCP-ACCEPT]"),
+        "{said}"
+    );
     said_in_order(
         &said,
         &[
-            "connected [1][SSL][TCP-ACCEPT]\n",
-            "reduced to [1][SSL][TCP-ACCEPT]\n",
+            "connected [CHAIN-1][SSL][TCP-ACCEPT]<fd=1002>\n",
+            "reduced to [CHAIN-1][SSL][TCP-ACCEPT]<fd=1002>\n",
         ],
     );
 }
@@ -5125,7 +5129,7 @@ fn an_epsv_port_unreached_falls_back_to_pasv() {
         &[
             "[DNS-1] Curl_conn_connect(block=0) -> 7, done=0\n",
             "[DNS-1] Curl_conn_connect(), filter returned 7\n",
-            "[MULTI] [DOING_MORE] failed to connect [1][!DNS][!SETUP][!HAPPY-EYEBALLS]\n",
+            "[MULTI] [DOING_MORE] failed to connect [CHAIN-1][!DNS][!SETUP][!HAPPY-EYEBALLS]\n",
             "Failed EPSV attempt. Disabling EPSV",
         ],
     );

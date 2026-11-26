@@ -573,9 +573,9 @@ witness: curl-core proto::http::tests::h3_trace::a_tunnel_an_http3_proxy_closes_
 file: crates/curl-core/src/conn/chain.rs
 witness: curl-core conn::chain::tests::an_http3_proxy_s_tunnel_is_the_race_s_attempt
 --- old
-            SetupPoint::Dialed(made) if route.proxy_over_quic() && made.tunnel.is_none() => {
+            SetupPoint::Dialed(made, _) if route.proxy_over_quic() && made.tunnel.is_none() => {
 --- new
-            SetupPoint::Dialed(made) if route.proxy_over_quic() && made.socks => {
+            SetupPoint::Dialed(made, _) if route.proxy_over_quic() && made.socks => {
 
 === a run through a tunnel goes in one send
 file: crates/curl-core/src/conn/quic.rs
@@ -939,10 +939,10 @@ witness: curl-core proto::http::tests::h3_trace::a_race_timed_out_closes_both_at
 file: crates/curl-core/src/multi/state/connecting.rs
 witness: curl-core proto::http::tests::h3_trace::http3_through_a_proxy_refusing_both_tunnels_fails
 --- old
-            (Some(race), SetupPoint::Dialed(_)) => {
+            (Some(race), SetupPoint::Dialed(..)) => {
                 // No one drives it again: what its handshake held goes now.
 --- new
-            (Some(race), SetupPoint::Dialed(_)) if race.failed.is_none() => {
+            (Some(race), SetupPoint::Dialed(..)) if race.failed.is_none() => {
                 // No one drives it again: what its handshake held goes now.
 
 === a race that every attempt failed names no chain

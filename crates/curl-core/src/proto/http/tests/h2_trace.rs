@@ -415,8 +415,8 @@ fn alpn_agreeing_h2_makes_the_session_as_the_connection_is_set_up() {
              [0-0] [SSL] query ALPN: returning 'h2'
              [0-0] [HTTP/2] [0] created h2 session
              [0-0] [MULTI] [CONNECTING] connected \
-                 [0][DNS][HTTPS-CONNECT][HTTP/2][SETUP][SSL][HAPPY-EYEBALLS][TCP]
-             [0-0] [MULTI] [CONNECTING] reduced to [0][HTTP/2][SSL][TCP]
+                 [CHAIN][DNS][HTTPS-CONNECT][HTTP/2][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
+             [0-0] [MULTI] [CONNECTING] reduced to [CHAIN][HTTP/2][SSL][TCP]<fd=1000>
              [0-0] [HTTP/2] query ALPN
              [0-0] [SSL] query ALPN: returning 'h2'
              [0-0] using HTTP/2"

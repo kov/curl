@@ -2353,7 +2353,7 @@ impl Conn {
     /// Its chain of filters as it connected, its setup's still there;
     /// none for a local one.
     pub(crate) fn connected_chain(&self) -> Option<chain::Chain> {
-        let Route::Net(route) = &self.route else {
+        let Route::Net(_) = &self.route else {
             return None;
         };
         let tunnel = match &self.transport {
@@ -2365,10 +2365,7 @@ impl Conn {
             _ => crate::components::Component::H1Proxy,
         };
         Some(chain::Chain::connected(
-            Dialing {
-                route,
-                dial: self.dial,
-            },
+            self,
             chain::Head::default(),
             false,
             tunnel,

@@ -3,7 +3,7 @@
 //! the system's own store, as C's build reads it on Windows where the
 //! transfer asks for it (`CURLSSLOPT_NATIVE_CA`) or the build makes it the
 //! default. Which of their certificates are taken is `native`'s choice,
-//! from what the system says of each.
+//! from what the system says of each, its common name among it.
 
 #![allow(unsafe_code)]
 
@@ -18,9 +18,9 @@ use curl_core::tls::TlsCx;
 use openssl_sys::X509_STORE;
 use windows_sys::Win32::Foundation::{CRYPT_E_NOT_FOUND, FILETIME, GetLastError};
 use windows_sys::Win32::Security::Cryptography::{
-    CERT_CONTEXT, CERT_NAME_SIMPLE_DISPLAY_TYPE, CTL_USAGE, CertCloseStore,
+    CERT_CONTEXT, CERT_NAME_ATTR_TYPE, CERT_NAME_SIMPLE_DISPLAY_TYPE, CTL_USAGE, CertCloseStore,
     CertEnumCertificatesInStore, CertFreeCertificateContext, CertGetEnhancedKeyUsage,
-    CertGetIntendedKeyUsage, CertGetNameStringA, CertOpenSystemStoreA,
+    CertGetIntendedKeyUsage, CertGetNameStringA, CertOpenSystemStoreA, szOID_COMMON_NAME,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
 
@@ -125,6 +125,10 @@ fn load_store(
                 break;
             }
         }
+        let mut name = [0u8; 256];
+        if native::blocked(common_name(cert, &mut name)) {
+            continue;
+        }
         let mut der = cert.pbCertEncoded.cast_const();
         let len = c_long::try_from(cert.cbCertEncoded).unwrap_or(c_long::MAX);
         // SAFETY: the certificate's encoding, `len` bytes, alive until the
@@ -154,6 +158,31 @@ fn load_store(
         Text(name.to_bytes())
     ));
     result.map(|()| added)
+}
+
+/// `cert`'s common name, read into `name` as the system's code page has
+/// it, unless it has none or an empty one (`CertGetNameStringA` with
+/// `szOID_COMMON_NAME`, its count of more than the ending zero); a longer
+/// name is cut to the buffer, as C's is.
+fn common_name<'n>(cert: &CERT_CONTEXT, name: &'n mut [u8; 256]) -> Option<&'n [u8]> {
+    // SAFETY: the certificate, alive while it is read; the object id is a
+    // C string; the name is written within the buffer named, ended by a
+    // zero byte.
+    let len = unsafe {
+        CertGetNameStringA(
+            cert,
+            CERT_NAME_ATTR_TYPE,
+            0,
+            szOID_COMMON_NAME.cast(),
+            name.as_mut_ptr(),
+            256,
+        )
+    };
+    if len <= 1 {
+        return None;
+    }
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    Some(&name[..end])
 }
 
 /// What `cert`'s key usage extension says.

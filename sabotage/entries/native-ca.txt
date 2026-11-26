@@ -69,3 +69,11 @@ features: native-ca
 --- new
             system: if cfg!(any(
                 any(),
+
+=== Windows' store keeps a blocked eMudhra root
+file: crates/curl-openssl/src/native.rs
+witness: curl-openssl native::tests::the_blocked_emudhra_names_are_left_out
+--- old
+    common_name.is_some_and(|name| BLOCKED.contains(&name))
+--- new
+    common_name.is_some_and(|name| BLOCKED[1..].contains(&name))

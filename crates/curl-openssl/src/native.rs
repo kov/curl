@@ -1,9 +1,10 @@
 //! Which certificates of the system's own store a session trusts, as C
 //! picks them from Windows' (`ossl_win_load_store`): each valid now, able
 //! to sign certificates if it says what its key is for, and meant for
-//! server authentication by what it or the system says of its uses. The
-//! choice is made here from what the system says of each certificate,
-//! which the Windows module asks it.
+//! server authentication by what it or the system says of its uses, and
+//! not one of the eMudhra roots and intermediates other vendors no longer
+//! trust. The choice is made here from what the system says of each
+//! certificate, which the Windows module asks it.
 
 /// The object id of server authentication (`szOID_PKIX_KP_SERVER_AUTH`).
 const SERVER_AUTH: &[u8] = b"1.3.6.1.5.5.7.3.1";
@@ -43,6 +44,32 @@ pub(crate) enum Uses {
     Named { server_auth: bool },
 }
 
+/// The common names of the eMudhra and emSign roots and intermediates
+/// left out whatever the system says of them, as C's blacklist names them
+/// (upstream 25f035ef89): Windows may still trust the roots, and OpenSSL
+/// does not read its list of blocked certificates.
+const BLOCKED: [&[u8]; 12] = [
+    b"emSign Root TLS CA - G3",
+    b"emSign Root CS CA - G3",
+    b"AAA Certificate Services",
+    b"emSign ECC Root CA - G3",
+    b"EM DV TLS CA - G3B",
+    b"EM OV TLS CA - G3B",
+    b"EM EV TLS CA - G3B",
+    b"EM DV TLS CA - G3C",
+    b"EM OV TLS CA - G3C",
+    b"EM EV TLS CA - G3C",
+    b"EM OV CS CA - G3B",
+    b"EM OV CS CA - G3C",
+];
+
+/// Whether a certificate whose common name is `common_name`, if it has a
+/// name, is one left out: the name whole, compared as C's `strcmp`
+/// compares it.
+pub(crate) fn blocked(common_name: Option<&[u8]>) -> bool {
+    common_name.is_some_and(|name| BLOCKED.contains(&name))
+}
+
 /// Whether the object ids `oids` of a certificate's uses name server
 /// authentication, compared as C's `strcmp` compares them.
 pub(crate) fn names_server_auth<'a>(mut oids: impl Iterator<Item = &'a [u8]>) -> bool {
@@ -61,6 +88,8 @@ struct Seen {
     now: u64,
     key_usage: KeyUsage,
     uses: Uses,
+    /// Its common name, if it has one that is not empty.
+    common_name: Option<&'static [u8]>,
 }
 
 /// Whether C would add the certificate `seen` describes to the store:
@@ -70,6 +99,7 @@ fn importable(seen: &Seen) -> bool {
     valid_at(seen.not_before, seen.not_after, seen.now)
         && signs_certificates(seen.key_usage)
         && serves(seen.uses)
+        && !blocked(seen.common_name)
 }
 
 /// Valid at `now`, its bounds included.
@@ -105,6 +135,7 @@ mod tests {
         now: 15,
         key_usage: KeyUsage::Says(KEY_CERT_SIGN),
         uses: Uses::Named { server_auth: true },
+        common_name: Some(b"ISRG Root X1"),
     };
 
     /// A certificate valid now, for signing certificates and for server
@@ -162,6 +193,34 @@ mod tests {
         let shorter: [&[u8]; 1] = [b"1.3.6.1.5.5.7.3."];
         assert!(!names_server_auth(shorter.into_iter()));
         assert!(!names_server_auth(core::iter::empty()));
+    }
+
+    /// Each of the eMudhra and emSign certificates C names is left out by
+    /// its common name, whole and as cased; a name like one of them, or
+    /// none, is not (`ossl_win_load_store`'s blacklist).
+    #[test]
+    fn the_blocked_emudhra_names_are_left_out() {
+        for name in BLOCKED {
+            assert!(!importable(&Seen {
+                common_name: Some(name),
+                ..GOOD
+            }));
+        }
+        for name in [
+            &b"emSign Root TLS CA - G"[..],
+            b"emSign Root TLS CA - G3 ",
+            b"EMSIGN ROOT TLS CA - G3",
+            b"EM DV TLS CA - G3A",
+        ] {
+            assert!(importable(&Seen {
+                common_name: Some(name),
+                ..GOOD
+            }));
+        }
+        assert!(importable(&Seen {
+            common_name: None,
+            ..GOOD
+        }));
     }
 
     /// Its uses must take in server authentication: named among others,

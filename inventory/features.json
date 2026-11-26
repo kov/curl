@@ -1,5 +1,5 @@
 {
- "c-commit": "f9998de722ed845ab3abc2927000736f7580b6e7",
+ "c-commit": "c25939b488b24fc42c38c180c5f5427c33866160",
  "data": {
   "backends": {
    "all": [
@@ -1864,7 +1864,7 @@
       "enum": "OPENSSL",
       "file": "lib/vtls/openssl.c",
       "id": 1,
-      "line": 5619,
+      "line": 5524,
       "name": "openssl",
       "symbol": "openssl"
      },
@@ -5663,7 +5663,7 @@
     }
    ],
    "curl-disable": {
-    "code-files-scanned": 481,
+    "code-files-scanned": 483,
     "documented": [
      "CURL_DISABLE_ALTSVC",
      "CURL_DISABLE_BINDLOCAL",
@@ -6123,7 +6123,7 @@
       "configure-define": true,
       "documented": true,
       "name": "CURL_DISABLE_RTSP",
-      "used-in-code-files": 11
+      "used-in-code-files": 12
      },
      {
       "cmake-option": true,
@@ -6475,8 +6475,8 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/http.c:3055",
-      "lib/url.c:1733"
+      "lib/http.c:3056",
+      "lib/url.c:1741"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 2,
@@ -6486,7 +6486,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/cf-https-connect.c:499"
+      "lib/cf-https-connect.c:503"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6496,7 +6496,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/transfer.c:546"
+      "lib/transfer.c:547"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6597,7 +6597,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/cf-socket.c:1084"
+      "lib/cf-socket.c:1083"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6617,7 +6617,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/cf-socket.c:1072"
+      "lib/cf-socket.c:1071"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6627,7 +6627,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/cf-socket.c:1078"
+      "lib/cf-socket.c:1077"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6637,7 +6637,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/cf-socket.c:1060"
+      "lib/cf-socket.c:1059"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6647,7 +6647,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/cf-socket.c:1066"
+      "lib/cf-socket.c:1065"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6689,7 +6689,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/getinfo.c:248"
+      "lib/getinfo.c:250"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6740,7 +6740,7 @@
      "sites-in-DEBUGBUILD-conditional": 0,
      "tool-read-sites": [
       "src/tool_operate.c:1628",
-      "src/tool_operate.c:2133"
+      "src/tool_operate.c:2141"
      ],
      "var": "CURL_FORBID_REUSE"
     },
@@ -6759,7 +6759,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/ftp.c:765"
+      "lib/ftp.c:764"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6799,7 +6799,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/http.c:3416"
+      "lib/http.c:3430"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6833,7 +6833,7 @@
      "sites-in-DEBUGBUILD-conditional": 0,
      "tool-read-sites": [
       "src/config2setopts.c:1219",
-      "src/tool_operate.c:2018"
+      "src/tool_operate.c:2022"
      ],
      "var": "CURL_QUICK_EXIT"
     },
@@ -6862,7 +6862,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/cfilters.c:1035"
+      "lib/cfilters.c:1042"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6901,9 +6901,9 @@
      "documented-in": "env-dbg",
      "read-sites": [
       "lib/altsvc.c:65",
-      "lib/getinfo.c:238",
-      "lib/getinfo.c:434",
-      "lib/getinfo.c:535",
+      "lib/getinfo.c:240",
+      "lib/getinfo.c:436",
+      "lib/getinfo.c:537",
       "lib/hsts.c:54"
      ],
      "scope": "lib",
@@ -6927,7 +6927,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/ws.c:1814"
+      "lib/ws.c:1828"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6937,7 +6937,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/ws.c:1491"
+      "lib/ws.c:1505"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -6947,7 +6947,7 @@
      "all-sites-in-DEBUGBUILD-conditional": true,
      "documented-in": "env-dbg",
      "read-sites": [
-      "lib/ws.c:1014"
+      "lib/ws.c:1027"
      ],
      "scope": "lib",
      "sites-in-DEBUGBUILD-conditional": 1,
@@ -8015,7 +8015,7 @@
    },
    "runtests-regexes-matching-no-printed-feature": [],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1039,
+   "test-feature-blocks": 1051,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8043,7 +8043,7 @@
       ],
       "regex": "\\bDebug"
      },
-     "tests": 159
+     "tests": 160
     },
     {
      "name": "DoH",
@@ -8076,7 +8076,7 @@
       ],
       "regex": "GSS-API"
      },
-     "tests": 13
+     "tests": 18
     },
     {
      "name": "GnuTLS",
@@ -8152,6 +8152,19 @@
      "tests": 33
     },
     {
+     "name": "Kerberos",
+     "origin": {
+      "ignore-case": true,
+      "kind": "features-line-regex",
+      "line": 695,
+      "matches-printed-features": [
+       "Kerberos"
+      ],
+      "regex": "Kerberos"
+     },
+     "tests": 2
+    },
+    {
      "name": "Largefile",
      "origin": {
       "ignore-case": true,
@@ -8169,7 +8182,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 51
+     "tests": 52
     },
     {
      "name": "MultiSSL",
@@ -8260,7 +8273,7 @@
       ],
       "regex": "SSPI"
      },
-     "tests": 73
+     "tests": 78
     },
     {
      "name": "Schannel",
@@ -8465,7 +8478,7 @@
       "kind": "runtests.pl-assignment",
       "line": 620
      },
-     "tests": 7
+     "tests": 8
     },
     {
      "name": "headers-api",
@@ -8479,7 +8492,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 108
+     "tests": 110
     },
     {
      "name": "http/2",
@@ -8492,7 +8505,7 @@
       ],
       "regex": "HTTP2"
      },
-     "tests": 9
+     "tests": 10
     },
     {
      "name": "http/3",
@@ -8592,7 +8605,7 @@
       ],
       "regex": "libz"
      },
-     "tests": 23
+     "tests": 24
     },
     {
      "name": "local-http",
@@ -8630,7 +8643,7 @@
      "origin": {
       "kind": "protocol-as-feature"
      },
-     "tests": 29
+     "tests": 30
     },
     {
      "name": "mqtts",
@@ -8804,7 +8817,7 @@
       "kind": "runtests.pl-assignment",
       "line": 812
      },
-     "tests": 90
+     "tests": 94
     },
     {
      "name": "verbose-strings",
@@ -8872,7 +8885,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1039,
+   "test-files-with-features": 1051,
    "tool-added-features": [
     {
      "bit": null,
@@ -10253,13 +10266,13 @@
     "file": [
      {
       "file": "lib/file.c",
-      "line": 704
+      "line": 743
      }
     ],
     "ftp": [
      {
       "file": "lib/ftp.c",
-      "line": 4771
+      "line": 4759
      }
     ],
     "gopher": [
@@ -10277,7 +10290,7 @@
     "http": [
      {
       "file": "lib/http.c",
-      "line": 4946
+      "line": 4960
      }
     ],
     "imap": [
@@ -10299,13 +10312,13 @@
     "mqtt": [
      {
       "file": "lib/mqtt.c",
-      "line": 1055
+      "line": 1056
      }
     ],
     "mqtts": [
      {
       "file": "lib/mqtt.c",
-      "line": 1029
+      "line": 1030
      }
     ],
     "pop3": [
@@ -10317,27 +10330,27 @@
     "rtsp": [
      {
       "file": "lib/rtsp.c",
-      "line": 1054
+      "line": 1059
      }
     ],
     "scp": [
      {
       "file": "lib/vssh/libssh.c",
-      "line": 3223
+      "line": 3233
      },
      {
       "file": "lib/vssh/libssh2.c",
-      "line": 3995
+      "line": 4001
      }
     ],
     "sftp": [
      {
       "file": "lib/vssh/libssh.c",
-      "line": 3247
+      "line": 3257
      },
      {
       "file": "lib/vssh/libssh2.c",
-      "line": 4019
+      "line": 4025
      }
     ],
     "smtp": [
@@ -10355,13 +10368,13 @@
     "tftp": [
      {
       "file": "lib/tftp.c",
-      "line": 1347
+      "line": 1343
      }
     ],
     "ws": [
      {
       "file": "lib/ws.c",
-      "line": 2109
+      "line": 2125
      }
     ]
    },

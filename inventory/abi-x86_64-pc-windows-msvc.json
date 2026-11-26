@@ -1,5 +1,5 @@
 {
- "c-commit": "4a1aa08f6cffa12ffd240a073d0ceba9a4f028c1",
+ "c-commit": "c25939b488b24fc42c38c180c5f5427c33866160",
  "data": {
   "compiler": "cl 19.44.35229",
   "constants": [
@@ -6288,7 +6288,7 @@
    "S(curl_mimepart);",
    "S(curl_ssls_export_cb);"
   ],
-  "probe-key": "6e3fc7adf8f8d0d2aedd109f5d4a136f9777f1b7a1840dbf128bcf4f0f870ef0",
+  "probe-key": "4a75d7c98735913b8d6f8a12768bdd0ef9bf51a9d7b8e9da87020e7f04413b13",
   "structs": {
    "struct CURLMsg": {
     "align": 8,

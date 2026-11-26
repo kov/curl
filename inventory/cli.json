@@ -1,5 +1,5 @@
 {
- "c-commit": "f9998de722ed845ab3abc2927000736f7580b6e7",
+ "c-commit": "c25939b488b24fc42c38c180c5f5427c33866160",
  "data": {
   "discrepancies": [
    {
@@ -6822,6 +6822,7 @@
     "requires": [],
     "scope": "global",
     "see_also": [
+     "fail-early",
      "next",
      "parallel-immediate",
      "parallel-max",
@@ -13879,7 +13880,7 @@
      "heading": "CURL_CA_BUNDLE <file>",
      "name": "CURL_CA_BUNDLE",
      "read_in_tool": [
-      "src/tool_operate.c:2280"
+      "src/tool_operate.c:2288"
      ],
      "string_literal_in_lib": [],
      "where": "tool"
@@ -13909,7 +13910,7 @@
      ],
      "string_literal_in_lib": [
       "lib/netrc.c:600",
-      "lib/vssh/libssh.c:1416",
+      "lib/vssh/libssh.c:1424",
       "lib/vssh/libssh2.c:1798",
       "lib/vssh/vssh.c:384"
      ],
@@ -13947,7 +13948,7 @@
      "heading": "SSL_CERT_DIR <directory>",
      "name": "SSL_CERT_DIR",
      "read_in_tool": [
-      "src/tool_operate.c:2288"
+      "src/tool_operate.c:2296"
      ],
      "string_literal_in_lib": [],
      "where": "tool"
@@ -13956,7 +13957,7 @@
      "heading": "SSL_CERT_FILE <path>",
      "name": "SSL_CERT_FILE",
      "read_in_tool": [
-      "src/tool_operate.c:2296"
+      "src/tool_operate.c:2304"
      ],
      "string_literal_in_lib": [],
      "where": "tool"
@@ -14176,7 +14177,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "getenv",
-     "line": 2018,
+     "line": 2022,
      "name": "CURL_QUICK_EXIT"
     },
     {
@@ -14184,7 +14185,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "getenv",
-     "line": 2133,
+     "line": 2141,
      "name": "CURL_FORBID_REUSE"
     },
     {
@@ -14192,7 +14193,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "curl_getenv",
-     "line": 2280,
+     "line": 2288,
      "name": "CURL_CA_BUNDLE"
     },
     {
@@ -14200,7 +14201,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "curl_getenv",
-     "line": 2288,
+     "line": 2296,
      "name": "SSL_CERT_DIR"
     },
     {
@@ -14208,7 +14209,7 @@
      "expr": null,
      "file": "src/tool_operate.c",
      "helper": "curl_getenv",
-     "line": 2296,
+     "line": 2304,
      "name": "SSL_CERT_FILE"
     },
     {
@@ -15311,7 +15312,7 @@
      "PARAM_MANUAL_REQUESTED",
      "PARAM_VERSION_INFO_REQUESTED"
     ],
-    "source": "src/tool_operate.c:2466",
+    "source": "src/tool_operate.c:2474",
     "specific": [
      {
       "param": "PARAM_LIBCURL_UNSUPPORTED_PROTOCOL",

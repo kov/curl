@@ -1,22 +1,22 @@
 {
- "c-commit": "f9998de722ed845ab3abc2927000736f7580b6e7",
+ "c-commit": "c25939b488b24fc42c38c180c5f5427c33866160",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
-   "crlf=headers": 1096,
-   "crlf=yes": 613,
+   "crlf=headers": 1103,
+   "crlf=yes": 619,
    "delay=1": 3,
-   "mode=text": 218,
+   "mode=text": 219,
    "mode=warn": 2,
-   "nocheck=yes": 552,
-   "nonewline=yes": 171,
+   "nocheck=yes": 558,
+   "nonewline=yes": 173,
    "option=binary-trace": 30,
    "option=force-output": 1,
    "option=no-include": 49,
    "option=no-memdebug": 2,
    "option=no-output": 48,
    "option=no-output no-include": 6,
-   "option=no-output,no-include": 98,
+   "option=no-output,no-include": 102,
    "option=no-output/no-include": 1,
    "option=no-q": 2,
    "option=no-stdout": 1,
@@ -30,7 +30,7 @@
    "no-memdebug": 2,
    "no-output": 48,
    "no-output no-include": 6,
-   "no-output,no-include": 98,
+   "no-output,no-include": 102,
    "no-output/no-include": 1,
    "no-q": 2,
    "no-stdout": 1
@@ -40,17 +40,17 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2168,
+   "default_run_candidates": 2186,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
-   "libtest_programs": 298,
+   "libtest_programs": 300,
    "perf_programs": 14,
-   "pytest_functions": 368,
+   "pytest_functions": 371,
    "server_keywords_mapped": 36,
-   "test_files": 2182,
-   "tunit_programs": 6,
-   "unit_programs": 83
+   "test_files": 2200,
+   "tunit_programs": 7,
+   "unit_programs": 86
   },
   "data_dir_other_files": [
    "DISABLED",
@@ -376,7 +376,7 @@
    "19": 3,
    "2": 33,
    "21": 3,
-   "22": 11,
+   "22": 13,
    "23": 12,
    "25": 8,
    "26": 12,
@@ -397,14 +397,14 @@
    "5": 3,
    "52": 7,
    "53": 1,
-   "55": 10,
+   "55": 11,
    "56": 23,
    "6": 7,
    "60": 13,
    "61": 14,
    "63": 7,
    "64": 5,
-   "67": 30,
+   "67": 33,
    "69": 2,
    "7": 31,
    "70": 1,
@@ -424,7 +424,7 @@
    "IDN": 3,
    "IPv6": 1,
    "MultiSSL": 1,
-   "SSPI": 73,
+   "SSPI": 78,
    "Schannel": 11,
    "badlibssh": 1,
    "c-ares": 1,
@@ -441,17 +441,18 @@
   },
   "feature_required_counts": {
    "--libcurl": 14,
-   "Debug": 159,
+   "Debug": 160,
    "DoH": 6,
    "ECH": 3,
-   "GSS-API": 13,
+   "GSS-API": 18,
    "HSTS": 23,
    "HTTPS-proxy": 1,
    "HTTPSRR": 1,
    "IDN": 16,
    "IPv6": 32,
+   "Kerberos": 2,
    "Largefile": 3,
-   "Mime": 51,
+   "Mime": 52,
    "NTLM": 2,
    "OpenSSL": 6,
    "PSL": 9,
@@ -477,10 +478,10 @@
    "ftp": 23,
    "getrlimit": 4,
    "gopher": 1,
-   "h2c": 7,
+   "h2c": 8,
    "headers-api": 15,
-   "http": 108,
-   "http/2": 9,
+   "http": 110,
+   "http/2": 10,
    "http/3": 4,
    "https": 14,
    "httpsig": 28,
@@ -491,11 +492,11 @@
    "ldap": 2,
    "libssh": 5,
    "libssh2": 4,
-   "libz": 23,
+   "libz": 24,
    "local-http": 30,
    "manual": 7,
    "md5": 65,
-   "mqtt": 29,
+   "mqtt": 30,
    "mqtts": 3,
    "netrc": 2,
    "nghttpx": 14,
@@ -517,7 +518,7 @@
    "tftp": 2,
    "threaded-resolver": 1,
    "threadsafe": 1,
-   "unittest": 90,
+   "unittest": 94,
    "verbose-strings": 13,
    "wakeup": 5,
    "win32": 2,
@@ -722,7 +723,7 @@
    "--dump-header": 2,
    "--etag-compare": 1,
    "--etag-save": 2,
-   "--fail": 6,
+   "--fail": 7,
    "--fail-early": 2,
    "--fail-with-body": 3,
    "--follow": 3,
@@ -741,7 +742,7 @@
    "--local-port": 1,
    "--location": 8,
    "--location-trusted": 6,
-   "--login-options": 2,
+   "--login-options": 4,
    "--manual": 3,
    "--max-filesize": 7,
    "--max-redirs": 2,
@@ -749,8 +750,8 @@
    "--next": 12,
    "--no-clobber": 6,
    "--no-remote-name": 1,
-   "--output-dir": 3,
-   "--parallel": 1,
+   "--output-dir": 5,
+   "--parallel": 2,
    "--path-as-is": 1,
    "--proto": 5,
    "--proto-default": 8,
@@ -760,8 +761,8 @@
    "--quote": 1,
    "--raw": 2,
    "--remote-header-name": 1,
-   "--remote-time": 6,
-   "--remove-on-error": 2,
+   "--remote-time": 8,
+   "--remove-on-error": 3,
    "--request": 1,
    "--request-target": 3,
    "--resolve": 26,
@@ -776,6 +777,7 @@
    "--styled-output": 2,
    "--test-event": 1,
    "--trace-config": 2,
+   "--upload-file": 1,
    "--url": 2,
    "--url-query": 2,
    "--variable": 8,
@@ -784,15 +786,15 @@
    "-F": 1,
    "-G": 4,
    "-H": 2,
-   "-J": 37,
+   "-J": 39,
    "-K": 1,
-   "-O": 7,
+   "-O": 9,
    "-d": 1,
    "-f": 1,
    "-w": 11,
-   "-z": 8,
+   "-z": 9,
    ".localhost": 1,
-   "103": 1,
+   "103": 2,
    "204": 1,
    "308": 1,
    "421": 1,
@@ -866,7 +868,7 @@
    "CURLOPT_TIMECONDITION": 5,
    "CURLOPT_URL": 4,
    "CURLOPT_USERPWD": 1,
-   "CURLPAUSE_RECV": 1,
+   "CURLPAUSE_RECV": 3,
    "CURL_DISABLE": 1,
    "CURL_DISABLE_PROXY": 1,
    "CURL_EXTERN": 2,
@@ -876,7 +878,7 @@
    "CWD": 5,
    "Clear Text": 55,
    "Client Auth": 3,
-   "Content-Encoding": 2,
+   "Content-Encoding": 3,
    "Content-Length": 3,
    "Content-Range": 9,
    "Curl_cert_hostcheck": 1,
@@ -906,10 +908,10 @@
    "EXAMINE": 1,
    "EXPN": 2,
    "EXPUNGE": 1,
-   "Early Hints": 1,
+   "Early Hints": 2,
    "Expect: 100-continue": 4,
    "FETCH": 18,
-   "FILE": 47,
+   "FILE": 48,
    "FLUSH": 1,
    "FORM": 8,
    "FTP": 300,
@@ -920,12 +922,12 @@
    "GOPHER": 7,
    "GOPHER-ipv6": 1,
    "GOPHERS": 1,
-   "GSS-API": 3,
+   "GSS-API": 8,
    "GTime2str": 1,
    "HELP": 1,
    "HMAC": 1,
    "HSTS": 23,
-   "HTTP": 1105,
+   "HTTP": 1112,
    "HTTP 1xx response code": 1,
    "HTTP Basic": 3,
    "HTTP Basic auth": 36,
@@ -933,7 +935,7 @@
    "HTTP DELETE": 1,
    "HTTP Digest auth": 50,
    "HTTP FORMPOST": 17,
-   "HTTP GET": 675,
+   "HTTP GET": 680,
    "HTTP HEAD": 9,
    "HTTP MIME": 4,
    "HTTP MIME POST": 7,
@@ -954,7 +956,7 @@
    "HTTP set cookie": 4,
    "HTTP/0.9": 9,
    "HTTP/1.0": 10,
-   "HTTP/2": 16,
+   "HTTP/2": 17,
    "HTTP/3": 4,
    "HTTPS": 65,
    "HTTPS GET": 1,
@@ -963,7 +965,7 @@
    "HTTPS proxy": 6,
    "HTTPS proxy Basic auth": 1,
    "IDN": 16,
-   "IMAP": 68,
+   "IMAP": 73,
    "IMAPS": 1,
    "INDEX": 3,
    "IPFS": 20,
@@ -980,7 +982,7 @@
    "MDTM": 3,
    "MDTM fail": 1,
    "MIME": 7,
-   "MQTT": 31,
+   "MQTT": 32,
    "MQTT CONNACK": 1,
    "MQTT PUBLISH": 8,
    "MQTT SUBSCRIBE": 19,
@@ -1036,15 +1038,16 @@
    "Range": 20,
    "Referer": 1,
    "Resume": 36,
-   "SASL": 70,
+   "SASL": 75,
    "SASL AUTH +LOGIN": 1,
    "SASL AUTH CRAM-MD5": 9,
    "SASL AUTH DIGEST-MD5": 10,
    "SASL AUTH EXTERNAL": 12,
+   "SASL AUTH GSSAPI": 5,
    "SASL AUTH LOGIN": 6,
    "SASL AUTH NTLM": 1,
    "SASL AUTH OAUTH2": 18,
-   "SASL AUTH PLAIN": 19,
+   "SASL AUTH PLAIN": 22,
    "SASL CANCELLATION": 6,
    "SASL DOWNGRADE": 6,
    "SASL-IR": 21,
@@ -1062,7 +1065,7 @@
    "SIZE": 2,
    "SLOWDOWN": 3,
    "SLOWDOWNDATA": 2,
-   "SMTP": 88,
+   "SMTP": 89,
    "SMTP DSN": 1,
    "SMTP HELO": 1,
    "SMTPS": 1,
@@ -1080,8 +1083,8 @@
    "Schannel": 1,
    "Secure": 1,
    "TELNET": 8,
-   "TFTP": 19,
-   "TFTP RRQ": 14,
+   "TFTP": 20,
+   "TFTP RRQ": 15,
    "TFTP WRQ": 4,
    "TLS": 5,
    "TOP": 1,
@@ -1119,7 +1122,7 @@
    "case-normalization": 1,
    "cfilter": 1,
    "checksrc": 1,
-   "chunked Transfer-Encoding": 44,
+   "chunked Transfer-Encoding": 45,
    "cipher_suite": 1,
    "cmdline": 8,
    "compressed": 26,
@@ -1183,7 +1186,8 @@
    "etags": 1,
    "expand": 1,
    "flaky": 11,
-   "followlocation": 93,
+   "followlocation": 95,
+   "frzn_strs": 1,
    "ftp_213_date": 1,
    "ftplistparser": 9,
    "getASN1Element": 1,
@@ -1215,7 +1219,7 @@
    "known_hosts": 4,
    "libcurl.def": 1,
    "libssh2": 3,
-   "libtest": 390,
+   "libtest": 393,
    "list": 1,
    "llist": 1,
    "long URL": 1,
@@ -1295,7 +1299,7 @@
    "tool-progress": 1,
    "tool-sizeparser": 1,
    "trailing-dot": 7,
-   "tunittest": 6,
+   "tunittest": 7,
    "type=": 5,
    "typecheck": 1,
    "u32_ptrset": 1,
@@ -1303,7 +1307,7 @@
    "uint32_tbl": 1,
    "uint_bset": 1,
    "uint_spbset": 1,
-   "unittest": 84,
+   "unittest": 87,
    "unsupported scheme": 2,
    "upload": 2,
    "url": 1,
@@ -1324,15 +1328,15 @@
   },
   "macro_counts": {
    "AMP": 3,
-   "CR": 110,
+   "CR": 112,
    "EMPTY": 3,
-   "GT": 84,
+   "GT": 85,
    "LT": 7,
    "SP": 32,
    "TAB": 14,
-   "b64": 168,
+   "b64": 170,
    "days": 6,
-   "hex": 113,
+   "hex": 114,
    "if": 21,
    "include": 26,
    "repeat": 99
@@ -1369,34 +1373,34 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2182
+   "testcases_listed": 2200
   },
   "part_counts": {
-   "client/command": 2075,
+   "client/command": 2089,
    "client/connectport": 1,
    "client/disable": 11,
-   "client/features": 1038,
-   "client/file": 388,
+   "client/features": 1050,
+   "client/file": 391,
    "client/file1": 14,
    "client/file2": 17,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 14,
-   "client/name": 2182,
+   "client/name": 2200,
    "client/precheck": 27,
-   "client/server": 1927,
+   "client/server": 1941,
    "client/setenv": 207,
-   "client/stdin": 88,
+   "client/stdin": 89,
    "client/stdout": 5,
-   "client/tool": 108,
+   "client/tool": 109,
    "client/verify": 1,
-   "info/keywords": 2182,
+   "info/keywords": 2200,
    "reply/connect": 78,
    "reply/connect1": 2,
    "reply/connect1000": 3,
    "reply/connect2": 1,
-   "reply/data": 1533,
-   "reply/data1": 132,
+   "reply/data": 1542,
+   "reply/data1": 135,
    "reply/data100": 5,
    "reply/data1000": 51,
    "reply/data1001": 9,
@@ -1407,37 +1411,39 @@
    "reply/data1300": 2,
    "reply/data1400": 2,
    "reply/data1500": 2,
-   "reply/data2": 196,
+   "reply/data2": 197,
    "reply/data200": 4,
-   "reply/data3": 36,
+   "reply/data3": 37,
    "reply/data300": 4,
-   "reply/data4": 14,
+   "reply/data4": 15,
    "reply/data400": 3,
-   "reply/data5": 2,
+   "reply/data5": 3,
    "reply/data500": 2,
-   "reply/data6": 1,
-   "reply/datacheck": 318,
+   "reply/data6": 2,
+   "reply/data7": 1,
+   "reply/data8": 1,
+   "reply/datacheck": 320,
    "reply/dns": 3,
    "reply/mdtm": 10,
    "reply/postcmd": 6,
-   "reply/servercmd": 316,
+   "reply/servercmd": 322,
    "reply/size": 18,
    "verify/data": 1,
    "verify/dns": 1,
-   "verify/errorcode": 544,
-   "verify/file": 184,
-   "verify/file1": 72,
-   "verify/file2": 73,
+   "verify/errorcode": 550,
+   "verify/file": 186,
+   "verify/file1": 73,
+   "verify/file2": 74,
    "verify/file3": 27,
-   "verify/limits": 32,
-   "verify/notexists": 48,
-   "verify/postcheck": 28,
-   "verify/protocol": 1624,
+   "verify/limits": 33,
+   "verify/notexists": 49,
+   "verify/postcheck": 30,
+   "verify/protocol": 1637,
    "verify/proxy": 43,
    "verify/socks": 5,
-   "verify/stderr": 67,
-   "verify/stdout": 285,
-   "verify/strip": 124,
+   "verify/stderr": 68,
+   "verify/stdout": 286,
+   "verify/strip": 125,
    "verify/stripfile": 53,
    "verify/stripfile2": 26,
    "verify/strippart": 113,
@@ -3191,7 +3197,7 @@
     "tests": []
    },
    "lib1156": {
-    "bytes": 6239,
+    "bytes": 8287,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
@@ -5008,7 +5014,7 @@
     ]
    },
    "lib1558": {
-    "bytes": 1976,
+    "bytes": 2608,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_getinfo",
@@ -5020,9 +5026,13 @@
     ],
     "curl_symbols": [
      "CURLE_OK",
+     "CURLE_PARTIAL_FILE",
      "CURLINFO_PROTOCOL",
+     "CURLOPT_HEADERDATA",
+     "CURLOPT_HEADERFUNCTION",
      "CURLOPT_URL",
-     "CURL_GLOBAL_ALL"
+     "CURL_GLOBAL_ALL",
+     "CURL_WRITEFUNC_ERROR"
     ],
     "entry": [
      "test_lib1558"
@@ -6001,7 +6011,7 @@
     ]
    },
    "lib1678": {
-    "bytes": 5414,
+    "bytes": 8370,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
@@ -6020,11 +6030,13 @@
      "CURLE_BAD_FUNCTION_ARGUMENT",
      "CURLE_FAILED_INIT",
      "CURLE_OK",
+     "CURLE_READ_ERROR",
      "CURLOPT_SHARE",
      "CURLSHE_OK",
      "CURLSHOPT_SHARE",
      "CURL_GLOBAL_ALL",
-     "CURL_LOCK_DATA_SSL_SESSION"
+     "CURL_LOCK_DATA_SSL_SESSION",
+     "CURL_OFF_T_MAX"
     ],
     "entry": [
      "test_lib1678",
@@ -8196,6 +8208,46 @@
      2118
     ]
    },
+   "lib2120": {
+    "bytes": 3879,
+    "curl_api_calls": [
+     "curl_easy_cleanup",
+     "curl_easy_pause",
+     "curl_global_cleanup",
+     "curl_mfprintf",
+     "curl_mprintf",
+     "curl_multi_cleanup",
+     "curl_multi_info_read",
+     "curl_multi_poll",
+     "curl_multi_remove_handle"
+    ],
+    "curl_symbols": [
+     "CURLE_OK",
+     "CURLMSG_DONE",
+     "CURLOPT_ACCEPT_ENCODING",
+     "CURLOPT_TIMEOUT_MS",
+     "CURLOPT_URL",
+     "CURLOPT_WRITEDATA",
+     "CURLOPT_WRITEFUNCTION",
+     "CURLPAUSE_CONT",
+     "CURLPAUSE_RECV",
+     "CURL_GLOBAL_ALL",
+     "CURL_WRITEFUNC_ERROR"
+    ],
+    "entry": [
+     "test_lib2120"
+    ],
+    "file": "tests/libtest/lib2120.c",
+    "generated": false,
+    "includes": [
+     "first.h"
+    ],
+    "kind": "libtest",
+    "tests": [
+     2120,
+     2121
+    ]
+   },
    "lib2270": {
     "bytes": 3407,
     "curl_api_calls": [
@@ -9487,6 +9539,50 @@
      3107
     ]
    },
+   "lib3173": {
+    "bytes": 2474,
+    "curl_api_calls": [
+     "curl_easy_cleanup",
+     "curl_easy_duphandle",
+     "curl_easy_init",
+     "curl_easy_perform",
+     "curl_easy_setopt",
+     "curl_global_cleanup",
+     "curl_global_init",
+     "curl_mfprintf",
+     "curl_mime_addpart",
+     "curl_mime_data",
+     "curl_mime_free",
+     "curl_mime_init",
+     "curl_slist_append",
+     "curl_slist_free_all"
+    ],
+    "curl_symbols": [
+     "CURLE_OK",
+     "CURLOPT_HTTPHEADER",
+     "CURLOPT_MAIL_FROM",
+     "CURLOPT_MAIL_RCPT",
+     "CURLOPT_MIMEPOST",
+     "CURLOPT_URL",
+     "CURLOPT_USERPWD",
+     "CURLOPT_VERBOSE",
+     "CURL_GLOBAL_ALL",
+     "CURL_ZERO_TERMINATED"
+    ],
+    "entry": [
+     "test_lib3173"
+    ],
+    "file": "tests/libtest/lib3173.c",
+    "generated": false,
+    "includes": [
+     "first.h",
+     "testtrace.h"
+    ],
+    "kind": "libtest",
+    "tests": [
+     3173
+    ]
+   },
    "lib3207": {
     "bytes": 5871,
     "curl_api_calls": [
@@ -10635,7 +10731,7 @@
     ]
    },
    "lib517": {
-    "bytes": 11104,
+    "bytes": 11146,
     "curl_api_calls": [
      "curl_getdate",
      "curl_mprintf"
@@ -12211,7 +12307,7 @@
     ]
    },
    "lib582": {
-    "bytes": 9879,
+    "bytes": 10538,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_global_cleanup",
@@ -12510,7 +12606,7 @@
     ]
    },
    "lib643": {
-    "bytes": 7292,
+    "bytes": 8155,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
@@ -13763,6 +13859,78 @@
      1720
     ]
    },
+   "tool2155": {
+    "bytes": 23288,
+    "curl_api_calls": [
+     "curl_mprintf"
+    ],
+    "curl_symbols": [
+     "CURLE_BAD_FUNCTION_ARGUMENT",
+     "CURLE_OK",
+     "CURLE_URL_MALFORMAT",
+     "CURL_ARRAYSIZE"
+    ],
+    "entry": [
+     "test_tool2155"
+    ],
+    "exercises_files": [
+     "src/tool_urlglob.c"
+    ],
+    "file": "tests/tunit/tool2155.c",
+    "generated": false,
+    "includes": [
+     "tool_sdecls.h",
+     "tool_urlglob.h",
+     "unitcheck.h"
+    ],
+    "internal_functions": {
+     "glob_cleanup": {
+      "files": [
+       "src/tool_urlglob.c"
+      ],
+      "unittest_exposed": false
+     },
+     "glob_inuse": {
+      "files": [
+       "src/tool_urlglob.c"
+      ],
+      "unittest_exposed": false
+     },
+     "glob_is_literal": {
+      "files": [
+       "src/tool_urlglob.c"
+      ],
+      "unittest_exposed": false
+     },
+     "glob_match_url": {
+      "files": [
+       "src/tool_urlglob.c"
+      ],
+      "unittest_exposed": false
+     },
+     "glob_next_url": {
+      "files": [
+       "src/tool_urlglob.c"
+      ],
+      "unittest_exposed": false
+     },
+     "glob_url": {
+      "files": [
+       "src/tool_urlglob.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [
+     "src/tool_sdecls.h",
+     "src/tool_urlglob.h"
+    ],
+    "kind": "tunit",
+    "platform_conditional": true,
+    "tests": [
+     2155
+    ]
+   },
    "unit1300": {
     "bytes": 9453,
     "curl_api_calls": [],
@@ -14267,7 +14435,7 @@
     ]
    },
    "unit1395": {
-    "bytes": 5326,
+    "bytes": 5550,
     "curl_api_calls": [
      "curl_mfprintf"
     ],
@@ -14791,7 +14959,7 @@
     ]
    },
    "unit1614": {
-    "bytes": 8127,
+    "bytes": 14471,
     "curl_api_calls": [
      "curl_mfprintf"
     ],
@@ -16305,7 +16473,7 @@
     ]
    },
    "unit1675": {
-    "bytes": 18012,
+    "bytes": 18146,
     "curl_api_calls": [
      "curl_free",
      "curl_maprintf",
@@ -16569,7 +16737,7 @@
     ]
    },
    "unit1694": {
-    "bytes": 16734,
+    "bytes": 16687,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
@@ -16581,7 +16749,6 @@
      "CURLE_OK",
      "CURLE_OUT_OF_MEMORY",
      "CURLE_RANGE_ERROR",
-     "CURLE_UNSUPPORTED_PROTOCOL",
      "CURL_ARRAYSIZE",
      "CURL_DISABLE_FILE",
      "CURL_DISABLE_FTP",
@@ -17760,6 +17927,132 @@
      2641
     ]
    },
+   "unit2642": {
+    "bytes": 5314,
+    "curl_api_calls": [
+     "curl_easy_cleanup",
+     "curl_easy_init",
+     "curl_global_cleanup",
+     "curl_multi_add_handle",
+     "curl_multi_cleanup",
+     "curl_multi_init",
+     "curl_multi_perform",
+     "curl_multi_remove_handle",
+     "curl_multi_timeout"
+    ],
+    "curl_symbols": [
+     "CURLE_AGAIN",
+     "CURLE_OK",
+     "CURL_DISABLE_HTTP",
+     "CURL_GLOBAL_ALL",
+     "CURL_HASH_TYPE_BYTES",
+     "CURL_LOG_LVL_NONE"
+    ],
+    "entry": [
+     "test_unit2642"
+    ],
+    "exercises_files": [
+     "lib/cfilters.c",
+     "lib/cshutdn.c",
+     "lib/curlx/timeval.c",
+     "lib/hash.c",
+     "lib/http2.c",
+     "lib/multi.c",
+     "lib/url.c"
+    ],
+    "file": "tests/unit/unit2642.c",
+    "generated": false,
+    "includes": [
+     "cfilters.h",
+     "curl_trc.h",
+     "http2.h",
+     "multiif.h",
+     "unitcheck.h",
+     "url.h",
+     "urldata.h"
+    ],
+    "internal_functions": {
+     "Curl_attach_connection": {
+      "files": [
+       "lib/multi.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_cf_create": {
+      "files": [
+       "lib/cfilters.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_cfchain_add": {
+      "files": [
+       "lib/cfilters.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_cfchain_init": {
+      "files": [
+       "lib/cfilters.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_conn_free": {
+      "files": [
+       "lib/url.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_cshutdn_add": {
+      "files": [
+       "lib/cshutdn.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_cshutdn_count": {
+      "files": [
+       "lib/cshutdn.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_detach_connection": {
+      "files": [
+       "lib/multi.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_hash_init": {
+      "files": [
+       "lib/hash.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_http2_upgrade": {
+      "files": [
+       "lib/http2.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [
+     "lib/cfilters.h",
+     "lib/curl_trc.h",
+     "lib/http2.h",
+     "lib/multiif.h",
+     "lib/url.h",
+     "lib/urldata.h"
+    ],
+    "kind": "unit",
+    "platform_conditional": false,
+    "tests": [
+     2642
+    ]
+   },
    "unit3200": {
     "bytes": 5317,
     "curl_api_calls": [
@@ -18417,7 +18710,7 @@
     ]
    },
    "unit3227": {
-    "bytes": 5088,
+    "bytes": 6029,
     "curl_api_calls": [
      "curl_easy_cleanup",
      "curl_easy_init",
@@ -18455,6 +18748,12 @@
     ],
     "internal_functions": {
      "Curl_mime_prepare_headers": {
+      "files": [
+       "lib/mime.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_mime_read": {
       "files": [
        "lib/mime.c"
       ],
@@ -19199,6 +19498,55 @@
      3400
     ]
    },
+   "unit3903": {
+    "bytes": 3175,
+    "curl_api_calls": [
+     "curl_mfprintf",
+     "curl_slist_append",
+     "curl_slist_free_all"
+    ],
+    "curl_symbols": [],
+    "entry": [
+     "test_unit3903"
+    ],
+    "exercises_files": [
+     "lib/frzn_strs.c"
+    ],
+    "file": "tests/unit/unit3903.c",
+    "generated": false,
+    "includes": [
+     "frzn_strs.h",
+     "unitcheck.h"
+    ],
+    "internal_functions": {
+     "Curl_frzn_strs_dup": {
+      "files": [
+       "lib/frzn_strs.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_frzn_strs_free": {
+      "files": [
+       "lib/frzn_strs.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_frzn_strs_from_slist": {
+      "files": [
+       "lib/frzn_strs.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [
+     "lib/frzn_strs.h"
+    ],
+    "kind": "unit",
+    "platform_conditional": false,
+    "tests": [
+     3903
+    ]
+   },
    "unit4781": {
     "bytes": 6662,
     "curl_api_calls": [
@@ -19370,6 +19718,64 @@
     "platform_conditional": false,
     "tests": [
      4997
+    ]
+   },
+   "unit4998": {
+    "bytes": 5719,
+    "curl_api_calls": [
+     "curl_easy_cleanup",
+     "curl_easy_init",
+     "curl_easy_setopt",
+     "curl_global_cleanup"
+    ],
+    "curl_symbols": [
+     "CURLE_AGAIN",
+     "CURLE_OK",
+     "CURLE_OUT_OF_MEMORY",
+     "CURLOPT_WRITEDATA",
+     "CURLOPT_WRITEFUNCTION",
+     "CURL_ARRAYSIZE",
+     "CURL_DISABLE_MQTT",
+     "CURL_GLOBAL_ALL",
+     "CURL_HASH_TYPE_BYTES"
+    ],
+    "entry": [
+     "test_unit4998"
+    ],
+    "exercises_files": [
+     "lib/hash.c"
+    ],
+    "file": "tests/unit/unit4998.c",
+    "generated": false,
+    "includes": [
+     "hash.h",
+     "mqtt.h",
+     "unitcheck.h",
+     "urldata.h"
+    ],
+    "internal_functions": {
+     "Curl_hash_destroy": {
+      "files": [
+       "lib/hash.c"
+      ],
+      "unittest_exposed": false
+     },
+     "Curl_hash_init": {
+      "files": [
+       "lib/hash.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [
+     "lib/hash.h",
+     "lib/mqtt.h",
+     "lib/urldata.h"
+    ],
+    "kind": "unit",
+    "platform_conditional": false,
+    "tests": [
+     4998
     ]
    }
   },
@@ -24410,6 +24816,25 @@
          ],
          "line": 626,
          "name": "test_17_24_embedded_zero_wildcard"
+        },
+        {
+         "decorators": [
+          {
+           "argnames": "'proto'",
+           "call": "pytest.mark.parametrize",
+           "kind": "parametrize",
+           "n_values": null,
+           "text": "pytest.mark.parametrize('proto', Env.http_protos())"
+          }
+         ],
+         "fixtures": [
+          "env",
+          "proto",
+          "httpd",
+          "nghttpx"
+         ],
+         "line": 639,
+         "name": "test_17_25_no_common_name_fallback"
         }
        ]
       }
@@ -24860,6 +25285,24 @@
          ],
          "line": 303,
          "name": "test_20_16_meta_large_callback"
+        },
+        {
+         "decorators": [],
+         "fixtures": [
+          "env",
+          "httpd"
+         ],
+         "line": 311,
+         "name": "test_20_17_fail_upgrade"
+        },
+        {
+         "decorators": [],
+         "fixtures": [
+          "env",
+          "httpd"
+         ],
+         "line": 318,
+         "name": "test_20_18_late_http_answer"
         }
        ]
       }
@@ -27053,7 +27496,7 @@
            "call": "pytest.mark.parametrize",
            "kind": "parametrize",
            "n_values": 4,
-           "text": "pytest.mark.parametrize(['alpn_proto', 'proxy_proto', 'exp_err'], [pytest.param('http/1.1', 'h3', 'could not connect to server', id='fail_h1_over_h3_proxytunnel'), pytest.param('h2', 'h3', 'could not connect to server', marks=MARK_NEEDS_NGHTTP2, id='fail_h2_over_h3_proxytunnel'), pytest.param('h3', 'h3', 'could not connect to server', id='fail_h3_over_h3_proxytunnel'), pytest.param('h3', 'http/1.1', 'connect-udp tunnel failed', id='fail_h3_over_h1_proxytunnel')])"
+           "text": "pytest.mark.parametrize(['alpn_proto', 'proxy_proto', 'exp_err'], [pytest.param('http/1.1', 'h3', 7, id='fail_h1_over_h3_proxytunnel'), pytest.param('h2', 'h3', 7, marks=MARK_NEEDS_NGHTTP2, id='fail_h2_over_h3_proxytunnel'), pytest.param('h3', 'h3', 7, id='fail_h3_over_h3_proxytunnel'), pytest.param('h3', 'http/1.1', 7, id='fail_h3_over_h1_proxytunnel')])"
           }
          ],
          "fixtures": [
@@ -27094,7 +27537,7 @@
           "nghttpx_fwd",
           "proxy_proto"
          ],
-         "line": 269,
+         "line": 266,
          "name": "test_60_03_h3_target_auto_connect_udp"
         },
         {
@@ -27111,7 +27554,7 @@
           "env",
           "httpd"
          ],
-         "line": 301,
+         "line": 298,
          "name": "test_60_04_guard_proxy_http3_unsupported"
         },
         {
@@ -27130,7 +27573,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 325,
+         "line": 322,
          "name": "test_60_05_graceful_shutdown"
         },
         {
@@ -27149,7 +27592,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 351,
+         "line": 348,
          "name": "test_60_06_proxy_drop_mid_transfer"
         },
         {
@@ -27168,7 +27611,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 399,
+         "line": 396,
          "name": "test_60_07_large_download"
         },
         {
@@ -27188,7 +27631,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 413,
+         "line": 410,
          "name": "test_60_08_large_upload"
         },
         {
@@ -27214,7 +27657,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 432,
+         "line": 429,
          "name": "test_60_09_parallel_downloads"
         },
         {
@@ -27233,7 +27676,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 447,
+         "line": 444,
          "name": "test_60_10_proxy_basic_auth"
         },
         {
@@ -27252,7 +27695,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 461,
+         "line": 458,
          "name": "test_60_11_connection_reuse"
         },
         {
@@ -27278,7 +27721,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 478,
+         "line": 475,
          "name": "test_60_12_quic_session_resumption"
         },
         {
@@ -27306,7 +27749,7 @@
           "fname",
           "fsize"
          ],
-         "line": 514,
+         "line": 511,
          "name": "test_60_13_udp_tunnel_payload_sizes"
         },
         {
@@ -27326,7 +27769,7 @@
           "nghttpx",
           "nghttpx_fwd"
          ],
-         "line": 530,
+         "line": 527,
          "name": "test_60_14_udp_tunnel_capsule_absent"
         },
         {
@@ -27349,7 +27792,7 @@
           "httpd",
           "h2o_proxy"
          ],
-         "line": 574,
+         "line": 571,
          "name": "test_60_16_h2_uses_connect_tcp_not_udp"
         },
         {
@@ -27368,7 +27811,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 594,
+         "line": 591,
          "name": "test_60_17_happy_eyeballs_filter_present"
         },
         {
@@ -27391,7 +27834,7 @@
           "h2o_server",
           "h2o_proxy"
          ],
-         "line": 613,
+         "line": 610,
          "name": "test_60_18_happy_eyeballs_ipv4_all_proto"
         },
         {
@@ -27425,7 +27868,7 @@
           "nghttpx_fwd",
           "proxy"
          ],
-         "line": 638,
+         "line": 635,
          "name": "test_60_19_http3_races_through_a_proxy"
         }
        ]
@@ -27453,7 +27896,7 @@
     "dnsd": 18,
     "docname": 13,
     "ech_mode": 5,
-    "env": 368,
+    "env": 371,
     "exp_err": 1,
     "exp_exit": 4,
     "exp_ok": 1,
@@ -27465,14 +27908,14 @@
     "h2o_server": 13,
     "http_version": 2,
     "httpcode": 1,
-    "httpd": 268,
+    "httpd": 271,
     "indata": 3,
     "max_arg": 1,
     "max_host_conns": 1,
     "max_total_conns": 1,
     "min_arg": 1,
     "model": 6,
-    "nghttpx": 155,
+    "nghttpx": 156,
     "nghttpx_fwd": 20,
     "nghttpx_tcp": 8,
     "ocsp_case": 1,
@@ -27480,7 +27923,7 @@
     "pause_offset": 3,
     "pr_server": 1,
     "priority": 1,
-    "proto": 146,
+    "proto": 147,
     "proxy": 1,
     "proxy_proto": 3,
     "pub_domain": 1,
@@ -27539,7 +27982,7 @@
     "not Env.curl_has_feature('SSLS-EXPORT')": 2,
     "not Env.curl_has_protocol('scp')": 11,
     "not Env.curl_has_protocol('sftp')": 12,
-    "not Env.curl_has_protocol('ws')": 16,
+    "not Env.curl_has_protocol('ws')": 18,
     "not Env.curl_is_debug()": 61,
     "not Env.curl_is_verbose()": 22,
     "not Env.curl_override_dns()": 1,
@@ -27605,10 +28048,10 @@
     "tests/http/test_14_auth.py": 6,
     "tests/http/test_15_tracing.py": 5,
     "tests/http/test_16_info.py": 4,
-    "tests/http/test_17_ssl_use.py": 25,
+    "tests/http/test_17_ssl_use.py": 26,
     "tests/http/test_18_methods.py": 2,
     "tests/http/test_19_shutdown.py": 8,
-    "tests/http/test_20_websockets.py": 16,
+    "tests/http/test_20_websockets.py": 18,
     "tests/http/test_21_resolve.py": 17,
     "tests/http/test_22_httpsrr.py": 9,
     "tests/http/test_23_ech.py": 9,
@@ -27623,11 +28066,11 @@
    }
   },
   "runner_counts": {
-   "curl": 1674,
-   "libtest": 390,
+   "curl": 1685,
+   "libtest": 393,
    "perl-script": 28,
-   "tunit": 6,
-   "unit": 84
+   "tunit": 7,
+   "unit": 87
   },
   "server_certs_requested": {
    "https": [
@@ -27649,7 +28092,7 @@
    "gopher": 5,
    "gopher-ipv6": 1,
    "gophers": 1,
-   "http": 1200,
+   "http": 1207,
    "http-ipv6": 15,
    "http-proxy": 51,
    "http-unix": 2,
@@ -27658,7 +28101,7 @@
    "https": 76,
    "https-mtls": 3,
    "https-proxy": 7,
-   "imap": 68,
+   "imap": 73,
    "imaps": 1,
    "mqtt": 26,
    "mqtts": 3,
@@ -27667,13 +28110,13 @@
    "rtsp": 13,
    "scp": 15,
    "sftp": 52,
-   "smtp": 88,
+   "smtp": 89,
    "smtps": 1,
    "socks4": 6,
    "socks5": 23,
    "socks5unix": 3,
    "telnet": 2,
-   "tftp": 18
+   "tftp": 19
   },
   "servers": {
    "c_programs": {
@@ -37733,7 +38176,7 @@
      "crlf=headers",
      "nocheck=yes"
     ],
-    "bytes": 981,
+    "bytes": 1839,
     "command": "http://%HOSTIP:%HTTPPORT/want/%TESTNUMBER",
     "command_option": null,
     "command_type": null,
@@ -37766,6 +38209,11 @@
      "reply/data1",
      "reply/data2",
      "reply/data3",
+     "reply/data4",
+     "reply/data5",
+     "reply/data6",
+     "reply/data7",
+     "reply/data8",
      "verify/limits",
      "verify/stdout"
     ],
@@ -61685,8 +62133,8 @@
    },
    {
     "attr_values": [],
-    "bytes": 528,
-    "command": "file://%FILE_PWD/%LOGDIR/data%TESTNUMBER",
+    "bytes": 576,
+    "command": "file://%FILE_PWD/%LOGDIR/data%TESTNUMBER %LOGDIR/data%TESTNUMBER",
     "command_option": null,
     "command_type": null,
     "disable": [],
@@ -61699,12 +62147,13 @@
     "has_precheck": false,
     "keywords": [
      "CURLINFO_PROTOCOL",
+     "FILE",
      "curl_easy_getinfo",
      "libtest"
     ],
     "killserver": [],
     "macros": [],
-    "name": "CURLINFO_PROTOCOL for file:// transfer",
+    "name": "CURLINFO_PROTOCOL and premature EOF for file:// transfers",
     "non_ascii": false,
     "nul": false,
     "number": 1558,
@@ -72327,6 +72776,64 @@
    },
    {
     "attr_values": [
+     "crlf=headers",
+     "nocheck=yes",
+     "nonewline=yes"
+    ],
+    "bytes": 711,
+    "command": "http://%HOSTIP:%HTTPPORT/ --silent -w '%{stderr}%{redirect_url}'",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "103",
+     "Early Hints",
+     "HTTP",
+     "followlocation"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "Ignore Location: in 103 responses",
+    "non_ascii": false,
+    "nul": false,
+    "number": 1816,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/protocol",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
      "crlf=yes",
      "sendzero=yes"
     ],
@@ -82888,6 +83395,67 @@
    {
     "attr_values": [
      "crlf=headers",
+     "mode=text",
+     "nocheck=yes",
+     "nonewline=yes",
+     "option=no-output,no-include"
+    ],
+    "bytes": 900,
+    "command": "-T %LOGDIR/input%TESTNUMBER -w '%{response_code} %{size_upload}\\n' http://%HOSTIP:%HTTPPORT/%TESTNUMBER --next --fail-with-body --remove-on-error -o %LOGDIR/input%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER0001",
+    "command_option": "no-output,no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "22",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--remove-on-error",
+     "--upload-file",
+     "HTTP"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "Release the upload file before the next transfer removes it",
+    "non_ascii": false,
+    "nul": false,
+    "number": 209,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "verify/errorcode",
+     "verify/notexists",
+     "verify/stdout"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "TESTNUMBER0001"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
      "mode=text"
     ],
     "bytes": 953,
@@ -84837,6 +85405,124 @@
     "attr_values": [
      "crlf=headers"
     ],
+    "bytes": 660,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "CURLPAUSE_RECV",
+     "HTTP",
+     "HTTP GET",
+     "chunked Transfer-Encoding",
+     "libtest"
+    ],
+    "killserver": [],
+    "macros": [
+     "CR"
+    ],
+    "name": "API receive pause stops callbacks for buffered chunks",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2120,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "libtest",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": "lib2120",
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes"
+    ],
+    "bytes": 1010,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "libz"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "CURLPAUSE_RECV",
+     "Content-Encoding",
+     "HTTP",
+     "HTTP GET",
+     "libtest"
+    ],
+    "killserver": [],
+    "macros": [
+     "CR",
+     "hex"
+    ],
+    "name": "API receive pause stops callbacks during gzip decoding",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2121,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/tool",
+     "info/keywords",
+     "reply/data",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "libtest",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": "lib2120",
+    "tool_name": "lib2120",
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers"
+    ],
     "bytes": 1726,
     "command": "--proxy-anyauth -U : -x http://%HOSTIP:%HTTPPORT http://remote.example/%TESTNUMBER",
     "command_option": null,
@@ -85003,6 +85689,45 @@
      "HOSTIP",
      "TESTNUMBER"
     ]
+   },
+   {
+    "attr_values": [],
+    "bytes": 271,
+    "command": "",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "unittest"
+    ],
+    "has_command": false,
+    "has_precheck": false,
+    "keywords": [
+     "tunittest"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "URL globbing tests (tool_urlglob)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2155,
+    "parts": [
+     "client/features",
+     "client/name",
+     "info/keywords",
+     "verify/limits"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "tunit",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": "tool2155",
+    "variables": []
    },
    {
     "attr_values": [
@@ -91992,6 +92717,48 @@
     ]
    },
    {
+    "attr_values": [],
+    "bytes": 249,
+    "command": "",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "h2c",
+     "http",
+     "http/2",
+     "unittest"
+    ],
+    "has_command": false,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP/2",
+     "unittest"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "HTTP/2 shutdown processes one receive per pass",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2642,
+    "parts": [
+     "client/features",
+     "client/name",
+     "info/keywords"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "unit",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": "unit2642",
+    "variables": []
+   },
+   {
     "attr_values": [
      "crlf=headers"
     ],
@@ -94346,6 +95113,56 @@
      "HTTPPORT",
      "TESTNUMBER",
      "VERSION"
+    ]
+   },
+   {
+    "attr_values": [],
+    "bytes": 502,
+    "command": "tftp://%HOSTIP:%TFTPPORT//%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "TFTP",
+     "TFTP RRQ"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "TFTP retrieve empty file with tsize 0 in OACK",
+    "non_ascii": false,
+    "nul": false,
+    "number": 2785,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/servercmd",
+     "verify/protocol",
+     "verify/strip"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "tftp"
+    ],
+    "servers": [
+     "tftp"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "TESTNUMBER",
+     "TFTPPORT"
     ]
    },
    {
@@ -98679,6 +99496,133 @@
     ]
    },
    {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes",
+     "option=no-output,no-include"
+    ],
+    "bytes": 1271,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -O -J -L -R --output-dir %LOGDIR",
+    "command_option": "no-output,no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--output-dir",
+     "--remote-time",
+     "-J",
+     "-O",
+     "HTTP",
+     "HTTP GET",
+     "followlocation"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "-O -J -L -R must not change timestamp of existing file on 304",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3041,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "verify/file",
+     "verify/postcheck",
+     "verify/protocol"
+    ],
+    "postcheck": true,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "PERL",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes",
+     "option=no-output,no-include"
+    ],
+    "bytes": 1094,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -O -J -R -z \"dec 12 12:00:00 2010 GMT\" --output-dir %LOGDIR",
+    "command_option": "no-output,no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--output-dir",
+     "--remote-time",
+     "-J",
+     "-O",
+     "-z",
+     "HTTP",
+     "HTTP GET"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "-O -J -R -z must not re-date existing file on unmet condition",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3042,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/file",
+     "verify/postcheck",
+     "verify/protocol"
+    ],
+    "postcheck": true,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "PERL",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
     "attr_values": [],
     "bytes": 449,
     "command": "https://%HOSTIP:%HTTPSPORT/want/%TESTNUMBER --cacert \"%LOGDIR/cacert\" --no-ca-native",
@@ -99883,6 +100827,70 @@
    {
     "attr_values": [
      "crlf=headers",
+     "nocheck=yes",
+     "option=no-output,no-include"
+    ],
+    "bytes": 1348,
+    "command": "--parallel --parallel-max 1 --fail -o %LOGDIR/out1-%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER0001 -o %LOGDIR/out2-%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER0002 -o %LOGDIR/out3-%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER0003",
+    "command_option": "no-output,no-include",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "22",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--fail",
+     "--parallel",
+     "HTTP",
+     "HTTP GET"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "parallel transfers keep failure exit code when more remain",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3150,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data1",
+     "reply/data2",
+     "reply/data3",
+     "verify/errorcode",
+     "verify/file1",
+     "verify/file2",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "TESTNUMBER0001",
+     "TESTNUMBER0002",
+     "TESTNUMBER0003",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
      "nonewline=yes"
     ],
     "bytes": 1639,
@@ -100001,6 +101009,62 @@
      "TESTNUMBER",
      "TESTNUMBER0002",
      "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes"
+    ],
+    "bytes": 535,
+    "command": "smtp://%HOSTIP:%SMTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "55",
+    "features": [
+     "Mime"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "SMTP",
+     "libtest"
+    ],
+    "killserver": [],
+    "macros": [
+     "GT"
+    ],
+    "name": "SMTP with MIMEPOST and HTTPHEADER then duped handle",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3173,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/stdin",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "libtest",
+    "server_names": [
+     "smtp"
+    ],
+    "servers": [
+     "smtp"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": "lib3173",
+    "variables": [
+     "HOSTIP",
+     "SMTPPORT",
+     "TESTNUMBER"
     ]
    },
    {
@@ -109969,6 +111033,46 @@
     ]
    },
    {
+    "attr_values": [],
+    "bytes": 221,
+    "command": "",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "unittest"
+    ],
+    "has_command": false,
+    "has_precheck": false,
+    "keywords": [
+     "frzn_strs",
+     "unittest"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "frozen strings unit tests",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3903,
+    "parts": [
+     "client/features",
+     "client/name",
+     "info/keywords"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "unit",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": "unit3903",
+    "variables": []
+   },
+   {
     "attr_values": [
      "crlf=headers"
     ],
@@ -113470,7 +114574,7 @@
      "nonewline=yes",
      "option=no-q"
     ],
-    "bytes": 796,
+    "bytes": 824,
     "command": "%HOSTIP:%HTTPPORT/%TESTNUMBER",
     "command_option": "no-q",
     "command_type": null,
@@ -117743,6 +118847,46 @@
     "variables": []
    },
    {
+    "attr_values": [],
+    "bytes": 219,
+    "command": "",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "mqtt",
+     "unittest"
+    ],
+    "has_command": false,
+    "has_precheck": false,
+    "keywords": [
+     "MQTT",
+     "unittest"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "MQTT fragmented SUBACK payload",
+    "non_ascii": false,
+    "nul": false,
+    "number": 4998,
+    "parts": [
+     "client/features",
+     "client/name",
+     "info/keywords"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "unit",
+    "server_names": [],
+    "servers": [],
+    "setenv": [],
+    "tool": null,
+    "tool_name": "unit4998",
+    "variables": []
+   },
+   {
     "attr_values": [
      "crlf=headers"
     ],
@@ -120010,6 +121154,302 @@
      "HTTPPORT",
      "TESTNUMBER",
      "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes"
+    ],
+    "bytes": 971,
+    "command": "'imap://%HOSTIP:%IMAPPORT/%TESTNUMBER/;MAILINDEX=1' -u user@curl.test:secret --login-options 'AUTH=GSSAPI;AUTH=PLAIN'",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "!SSPI",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--login-options",
+     "GSS-API",
+     "IMAP",
+     "SASL",
+     "SASL AUTH GSSAPI",
+     "SASL AUTH PLAIN"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "IMAP mixed GSSAPI and PLAIN preferences select PLAIN with a password",
+    "non_ascii": false,
+    "nul": false,
+    "number": 5033,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/servercmd",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "imap"
+    ],
+    "servers": [
+     "imap"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "IMAPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes"
+    ],
+    "bytes": 703,
+    "command": "'imap://%HOSTIP:%IMAPPORT/%TESTNUMBER/' -u user@curl.test:secret --login-options 'AUTH=GSSAPI'",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "67",
+    "features": [
+     "!SSPI",
+     "GSS-API",
+     "Kerberos"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--login-options",
+     "GSS-API",
+     "IMAP",
+     "SASL",
+     "SASL AUTH GSSAPI"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "IMAP explicitly selects GSSAPI with a password",
+    "non_ascii": false,
+    "nul": false,
+    "number": 5034,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/servercmd",
+     "verify/errorcode",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "imap"
+    ],
+    "servers": [
+     "imap"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "IMAPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes"
+    ],
+    "bytes": 668,
+    "command": "'imap://%HOSTIP:%IMAPPORT/%TESTNUMBER/' -u user@curl.test:",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "67",
+    "features": [
+     "!SSPI",
+     "GSS-API",
+     "Kerberos"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "GSS-API",
+     "IMAP",
+     "SASL",
+     "SASL AUTH GSSAPI",
+     "SASL AUTH PLAIN"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "IMAP allows GSSAPI with an empty password",
+    "non_ascii": false,
+    "nul": false,
+    "number": 5035,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/servercmd",
+     "verify/errorcode",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "imap"
+    ],
+    "servers": [
+     "imap"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "IMAPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes"
+    ],
+    "bytes": 630,
+    "command": "'imap://%HOSTIP:%IMAPPORT/%TESTNUMBER/' -u user@curl.test:secret",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "67",
+    "features": [
+     "!SSPI",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "GSS-API",
+     "IMAP",
+     "SASL",
+     "SASL AUTH GSSAPI"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "IMAP skips GSSAPI when it is the only mechanism",
+    "non_ascii": false,
+    "nul": false,
+    "number": 5036,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/servercmd",
+     "verify/errorcode",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "imap"
+    ],
+    "servers": [
+     "imap"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "IMAPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=yes"
+    ],
+    "bytes": 914,
+    "command": "'imap://%HOSTIP:%IMAPPORT/%TESTNUMBER/;MAILINDEX=1' -u user@curl.test:secret",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "!SSPI",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "GSS-API",
+     "IMAP",
+     "SASL",
+     "SASL AUTH GSSAPI",
+     "SASL AUTH PLAIN"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "IMAP defaults to PLAIN with a domain-qualified username and password",
+    "non_ascii": false,
+    "nul": false,
+    "number": 5037,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/servercmd",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "imap"
+    ],
+    "servers": [
+     "imap"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "IMAPPORT",
+     "TESTNUMBER"
     ]
    },
    {
@@ -135900,7 +137340,7 @@
      "crlf=headers",
      "nocheck=yes"
     ],
-    "bytes": 645,
+    "bytes": 651,
     "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
     "command_option": null,
     "command_type": null,
@@ -149088,7 +150528,7 @@
     ]
    }
   ],
-  "tests_without_server_section": 256,
+  "tests_without_server_section": 260,
   "variable_counts": {
    "A1": 2,
    "A2": 3,
@@ -149151,20 +150591,20 @@
    "GTT": 1,
    "H2CVER": 2,
    "HOST6IP": 22,
-   "HOSTIP": 1868,
+   "HOSTIP": 1882,
    "HTTP2PORT": 5,
    "HTTP2TLSPORT": 6,
    "HTTP3PORT": 4,
    "HTTP6PORT": 14,
-   "HTTPPORT": 1180,
+   "HTTPPORT": 1187,
    "HTTPS": 3,
    "HTTPSPORT": 72,
    "HTTPSPROXYPORT": 7,
    "HTTPUNIXPATH": 2,
-   "IMAPPORT": 68,
+   "IMAPPORT": 73,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 685,
+   "LOGDIR": 689,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -149175,7 +150615,7 @@
    "MQTTSPORT": 3,
    "NOLISTENPORT": 42,
    "O3": 1,
-   "PERL": 36,
+   "PERL": 38,
    "POP3PORT": 48,
    "POP3SPORT": 1,
    "POST": 3,
@@ -149185,7 +150625,7 @@
    "RTSPPORT": 13,
    "SCP_PWD": 16,
    "SFTP_PWD": 52,
-   "SMTPPORT": 88,
+   "SMTPPORT": 89,
    "SMTPSPORT": 1,
    "SOCKSPORT": 29,
    "SOCKSUNIXPATH": 3,
@@ -149202,13 +150642,13 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1846,
+   "TESTNUMBER": 1859,
    "TESTNUMBER000": 1,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
-   "TESTNUMBER0001": 86,
-   "TESTNUMBER0002": 194,
-   "TESTNUMBER0003": 29,
+   "TESTNUMBER0001": 88,
+   "TESTNUMBER0002": 195,
+   "TESTNUMBER0003": 30,
    "TESTNUMBER0004": 10,
    "TESTNUMBER0005": 2,
    "TESTNUMBER0006": 1,
@@ -149223,10 +150663,10 @@
    "TESTNUMBER1000": 2,
    "TESTNUMBER1002": 2,
    "TESTNUMBERMMM": 3,
-   "TFTPPORT": 18,
+   "TFTPPORT": 19,
    "USER": 63,
    "VALUE2": 2,
-   "VERSION": 898
+   "VERSION": 902
   }
  },
  "generated-by": "inventory/gen/tests.py",
@@ -150044,6 +151484,7 @@
   "tests/data/test1801",
   "tests/data/test1802",
   "tests/data/test181",
+  "tests/data/test1816",
   "tests/data/test182",
   "tests/data/test1827",
   "tests/data/test183",
@@ -150230,6 +151671,7 @@
   "tests/data/test2087",
   "tests/data/test2088",
   "tests/data/test2089",
+  "tests/data/test209",
   "tests/data/test2090",
   "tests/data/test2091",
   "tests/data/test2092",
@@ -150264,9 +151706,12 @@
   "tests/data/test2118",
   "tests/data/test2119",
   "tests/data/test212",
+  "tests/data/test2120",
+  "tests/data/test2121",
   "tests/data/test2122",
   "tests/data/test214",
   "tests/data/test215",
+  "tests/data/test2155",
   "tests/data/test216",
   "tests/data/test217",
   "tests/data/test2173",
@@ -150392,6 +151837,7 @@
   "tests/data/test264",
   "tests/data/test2640",
   "tests/data/test2641",
+  "tests/data/test2642",
   "tests/data/test266",
   "tests/data/test268",
   "tests/data/test269",
@@ -150430,6 +151876,7 @@
   "tests/data/test276",
   "tests/data/test277",
   "tests/data/test278",
+  "tests/data/test2785",
   "tests/data/test279",
   "tests/data/test28",
   "tests/data/test280",
@@ -150508,6 +151955,8 @@
   "tests/data/test3039",
   "tests/data/test304",
   "tests/data/test3040",
+  "tests/data/test3041",
+  "tests/data/test3042",
   "tests/data/test305",
   "tests/data/test306",
   "tests/data/test307",
@@ -150529,8 +151978,10 @@
   "tests/data/test313",
   "tests/data/test314",
   "tests/data/test315",
+  "tests/data/test3150",
   "tests/data/test316",
   "tests/data/test317",
+  "tests/data/test3173",
   "tests/data/test318",
   "tests/data/test319",
   "tests/data/test32",
@@ -150714,6 +152165,7 @@
   "tests/data/test389",
   "tests/data/test39",
   "tests/data/test390",
+  "tests/data/test3903",
   "tests/data/test391",
   "tests/data/test392",
   "tests/data/test393",
@@ -150853,6 +152305,7 @@
   "tests/data/test498",
   "tests/data/test499",
   "tests/data/test4997",
+  "tests/data/test4998",
   "tests/data/test5",
   "tests/data/test50",
   "tests/data/test500",
@@ -150892,6 +152345,11 @@
   "tests/data/test5030",
   "tests/data/test5031",
   "tests/data/test5032",
+  "tests/data/test5033",
+  "tests/data/test5034",
+  "tests/data/test5035",
+  "tests/data/test5036",
+  "tests/data/test5037",
   "tests/data/test504",
   "tests/data/test505",
   "tests/data/test506",
@@ -151610,6 +153068,7 @@
   "tests/libtest/lib2082.c",
   "tests/libtest/lib2095.c",
   "tests/libtest/lib2118.c",
+  "tests/libtest/lib2120.c",
   "tests/libtest/lib2270.c",
   "tests/libtest/lib2301.c",
   "tests/libtest/lib2302.c",
@@ -151645,6 +153104,7 @@
   "tests/libtest/lib3104.c",
   "tests/libtest/lib3105.c",
   "tests/libtest/lib3107.c",
+  "tests/libtest/lib3173.c",
   "tests/libtest/lib3207.c",
   "tests/libtest/lib3208.c",
   "tests/libtest/lib3231.c",
@@ -151792,6 +153252,7 @@
   "tests/tunit/tool1622.c",
   "tests/tunit/tool1623.c",
   "tests/tunit/tool1720.c",
+  "tests/tunit/tool2155.c",
   "tests/unit/Makefile.inc",
   "tests/unit/unit1300.c",
   "tests/unit/unit1302.c",
@@ -151854,6 +153315,7 @@
   "tests/unit/unit2607.c",
   "tests/unit/unit2640.c",
   "tests/unit/unit2641.c",
+  "tests/unit/unit2642.c",
   "tests/unit/unit3200.c",
   "tests/unit/unit3205.c",
   "tests/unit/unit3211.c",
@@ -151873,8 +153335,10 @@
   "tests/unit/unit3306.c",
   "tests/unit/unit3307.c",
   "tests/unit/unit3400.c",
+  "tests/unit/unit3903.c",
   "tests/unit/unit4781.c",
   "tests/unit/unit4782.c",
-  "tests/unit/unit4997.c"
+  "tests/unit/unit4997.c",
+  "tests/unit/unit4998.c"
  ]
 }

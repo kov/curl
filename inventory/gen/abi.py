@@ -797,10 +797,6 @@ def generate():
 
     deprecated_consts = sum(1 for c in constants if c.get("deprecated")
                             is not None)
-    check_foreign({"constants": constants, "typedefs": typedefs,
-                   "structs": structs, "enums": [
-                       {"typedef": e["typedef"], "tag": e["tag"]}
-                       for e in enums]})
     data = {
         "target": target,
         "headers": {h: NOT_PROBED.get(h, "probed") for h in HEADERS},
@@ -923,6 +919,12 @@ def generate():
         "lib/CMakeLists.txt", "curl-config.in", "libcurl.pc.in", "lib/",
         "lib/strerror.c", "lib/api.c", "lib/api.h", "tests/data/test1538",
         "docs/libcurl/"])
+    # After the write: a target measured elsewhere is remeasured from the
+    # abi.json of this commit, so a stale one must not keep it unwritten.
+    check_foreign({"constants": constants, "typedefs": typedefs,
+                   "structs": structs, "enums": [
+                       {"typedef": e["typedef"], "tag": e["tag"]}
+                       for e in enums]})
 
 
 if __name__ == "__main__":

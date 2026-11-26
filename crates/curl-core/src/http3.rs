@@ -632,11 +632,15 @@ pub trait Connection: fmt::Debug + Send {
     /// buffer does (`H3_STREAM_SEND_BUFFER_MAX`).
     /// None taken is the peer's flow control holding the stream back; a
     /// stream that takes no more is refused, never taken for one held
-    /// back.
-    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused>;
-
-    /// The body of `stream` ends after what it holds.
-    fn end_body(&mut self, stream: StreamId);
+    /// back. With `eos`, `bytes` are the last of the body, none at all
+    /// possibly: taken whole, the body ends after them; an upload cut
+    /// short never says so.
+    fn write_body(
+        &mut self,
+        stream: StreamId,
+        bytes: &[u8],
+        eos: bool,
+    ) -> Result<usize, BodyRefused>;
 
     /// The bytes of `stream`'s body it holds: handed to the HTTP/3
     /// library and not yet acknowledged, and not yet handed.

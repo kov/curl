@@ -655,7 +655,7 @@ impl H3Proxy {
         let Some(stream) = self.tunnel.open() else {
             return (Err(ErrorKind::SendError), 0);
         };
-        let took = match self.quic.write_body(stream, bytes) {
+        let took = match self.quic.write_body(stream, bytes, false) {
             Ok(took) => took,
             Err(refused) => return (self.send_ended(cx, socket, Err(refused.kind())), 0),
         };

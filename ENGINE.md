@@ -2482,12 +2482,13 @@ the one the call lends and no timer is armed.
 binding holds them: chunks of 64 KiB whose room is reserved as each is made, so that what is
 added never moves what was handed; at most ten, as C's `sendbuf`; a chunk goes once all of it is
 acknowledged. A cancelled stream's body stays until ngtcp2 closes the stream. The binding alone
-says when the body ends (its `ended`, all it holds handed); the core tells it so once all of a
-body of known size is written, and for one of unknown size once the request is all sent (C's
-`CF_CTRL_DATA_DONE_SEND`), which the stream applies at its next call on the connection: that only
-resumes the stream, so its end goes as the connection next sends either way. A body of no bytes
-is none: the head ends the stream. The stream keeps the body's size and what the library was
-handed, from which C's `left=` is said. A send with as much in flight as the stream's ideal, or
+says when the body ends (its `ended`, all it holds handed). The body ends only by the sender's
+`eos`, as C's `sendbuf_eos`: `write_body` is given it with the last bytes, or with none once the
+reader says the body is done after its bytes went (`req_flush`'s send of none), and a body taken
+whole with it ends. An upload cut short never says so, and its stream is closed without an end
+of stream. The body's bytes that came with the head go into the stream as it opens
+(`h3_stream_open`; for quiche once it is said opened, `h3_open_stream`). A body of no bytes is
+none: the head ends the stream. A send with as much in flight as the stream's ideal, or
 that the binding has no room for, is AGAIN and sends nothing; the transfer's pollset, made from
 the connection as it is asked (`H3Conn::adjust_pollset`), then waits on what the peer says rather
 than on the socket's room (`cf_ngtcp2_adjust_pollset`).

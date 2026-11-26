@@ -611,7 +611,7 @@ fn a_get_over_http3_is_answered() {
         [HTTP/3] egress, send collected 1 packets in 75 bytes
         [HTTP/3] vquic_sendmsg(len=75, gso=75, calls=1) -> 0, sent=75
         [HTTP/3] [0] cf_send(74), added 74, inflight=0, reduce tx_win=30720
-        [HTTP/3] [0] cf_send(len=74) -> 0, 74
+        [HTTP/3] [0] cf_send(len=74, eos=1) -> 0, 74
         Request completely sent off
         [HTTP/3] progress_ingress(socket)
         [HTTP/3] [0] status: HTTP/3 200
@@ -1962,6 +1962,7 @@ fn body_lines(ran: &Ran) -> Vec<String> {
     lines(
         ran,
         &[
+            "[HTTP/3] [0] stream open",
             "[HTTP/3] [0] read req",
             "[HTTP/3] [0] cf_send",
             "[MULTI] [DO] -> ",
@@ -1976,9 +1977,9 @@ fn bytes(body: &[u8]) -> UploadSource {
     UploadSource::Bytes(curl_alloc::TryArc::try_new(body.to_vec()).unwrap())
 }
 
-/// A body of known size goes after the head, once the request is under
-/// way, and ends with its last bytes: the library reads it as it next
-/// writes the stream (C's lines for `-d hello`).
+/// A body of known size that came with the head goes with it as the
+/// stream opens, and ends with its last bytes: the library reads it as
+/// it next writes the stream (`h3_stream_open`; C's lines for `-d`).
 #[test]
 fn a_body_of_known_size_ends_with_its_last_bytes() {
     let script = post_script(b"5\n", 2);
@@ -1990,25 +1991,22 @@ fn a_body_of_known_size_ends_with_its_last_bytes() {
     assert_eq!(
         body_lines(&ran),
         [
-            "[HTTP/3] [0] read req body -> AGAIN",
-            "[HTTP/3] [0] cf_send(148), added 143, inflight=0, reduce tx_win=30720",
-            "[HTTP/3] [0] cf_send(len=148) -> 0, 143",
+            "[HTTP/3] [0] stream open, adding to sendbuf(len=5, eos=1) -> 0, 5",
+            "[HTTP/3] [0] read req body -> 1 vecs EOF with 5 (buffered=5, buf-eos1)",
+            "[HTTP/3] [0] cf_send(148), added 148, inflight=5, reduce tx_win=30720",
+            "[HTTP/3] [0] cf_send(len=148, eos=1) -> 0, 148",
+            "upload completely sent off: 5 bytes",
             "[MULTI] [DO] -> [DID]",
             "[MULTI] [DID] -> [PERFORMING]",
-            "[HTTP/3] [0] cf_send, add to sendbuf(len=5) -> 0, 5",
-            "[HTTP/3] [0] read req body -> 1 vecs EOF with 5 (buffered=5, left=0)",
-            "[HTTP/3] [0] cf_send(5), added 5, inflight=5, reduce tx_win=28672",
-            "[HTTP/3] [0] cf_send(len=5) -> 0, 5",
-            "upload completely sent off: 5 bytes",
         ]
     );
     let s = script.lock().unwrap();
     assert_eq!((&s.body.bytes[..], s.body.ended), (&b"hello"[..], true));
 }
 
-/// A body of unknown size ends once all of it is sent: the library is
-/// told then, and its end goes as the connection next sends
-/// (`CF_CTRL_DATA_DONE_SEND`; C's lines for `-T -`).
+/// A body of unknown size ends once its reader says so: its end, no
+/// bytes, is sent then, and goes as the connection next sends
+/// (`req_flush`'s send of none with `eos`; C's lines for `-T -`).
 #[test]
 fn a_body_of_unknown_size_ends_once_it_is_sent() {
     let script = post_script(b"13\n", 3);
@@ -2018,17 +2016,41 @@ fn a_body_of_unknown_size_ends_once_it_is_sent() {
     });
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
     assert_eq!(
-        body_lines(&ran)[5..],
+        body_lines(&ran),
         [
-            "[HTTP/3] [0] cf_send, add to sendbuf(len=13) -> 0, 13",
-            "[HTTP/3] [0] read req body -> 1 vecs with 13 (buffered=13, left=-1)",
+            "[HTTP/3] [0] stream open, adding to sendbuf(len=13, eos=0) -> 0, 13",
+            "[HTTP/3] [0] read req body -> 1 vecs with 13 (buffered=13, buf-eos0)",
             "[HTTP/3] [0] read req body -> AGAIN",
-            "[HTTP/3] [0] cf_send(13), added 13, inflight=13, reduce tx_win=28672",
-            "[HTTP/3] [0] cf_send(len=13) -> 0, 13",
+            "[HTTP/3] [0] cf_send(137), added 137, inflight=13, reduce tx_win=30720",
+            "[HTTP/3] [0] cf_send(len=137, eos=0) -> 0, 137",
+            "[MULTI] [DO] -> [DID]",
+            "[MULTI] [DID] -> [PERFORMING]",
+            "[HTTP/3] [0] cf_send, add to sendbuf(len=0, eos=1) -> 0, 0",
+            "[HTTP/3] [0] read req body -> 0 vecs EOF with 0 (buffered=13, buf-eos1)",
+            "[HTTP/3] [0] cf_send(len=0, eos=1) -> 0, 0",
             "upload completely sent off: 13 bytes",
-            "[HTTP/3] [0] read req body -> 0 vecs EOF with 0 (buffered=13, left=0)",
         ]
     );
+    // The send of none is the transfer's, said as C's debug build's
+    // `xfer_send` says it.
+    let said = lines(
+        &ran,
+        &[
+            "sending last upload chunk",
+            "Curl_xfer_send(len=0",
+            "[HTTP/3] [0] cf_send, add to sendbuf(len=0",
+        ],
+    );
+    let want: &[&str] = if cfg!(feature = "debug-hooks") {
+        &[
+            "sending last upload chunk of 0 bytes",
+            "[HTTP/3] [0] cf_send, add to sendbuf(len=0, eos=1) -> 0, 0",
+            "Curl_xfer_send(len=0, eos=1) -> 0, 0",
+        ]
+    } else {
+        &["[HTTP/3] [0] cf_send, add to sendbuf(len=0, eos=1) -> 0, 0"]
+    };
+    assert_eq!(said, want);
     assert_eq!(
         script.lock().unwrap().read.len(),
         4,
@@ -2095,17 +2117,18 @@ fn a_callback_reaches_the_quic_connection_s_tls_session() {
 #[test]
 fn a_body_in_flight_waits_for_its_acknowledgement() {
     let body = vec![b'x'; 100_000];
-    // The peer answers the request's packet and the body's first with
-    // nothing; the packet the library's timer sends is answered with the
-    // acknowledgement, the body's last with the response.
-    let script = post_script(b"100000\n", 4);
+    // The peer answers the packet of the request and the body's first
+    // bytes, which go with its head, with nothing; the packet the
+    // library's timer sends is answered with the acknowledgement, the
+    // body's last with the response.
+    let script = post_script(b"100000\n", 3);
     {
         let mut s = script.lock().unwrap();
-        s.on_read[3] = vec![Told::Acked(65_388)];
+        s.on_read[2] = vec![Told::Acked(65_388)];
         s.timer = Some(std::time::Duration::from_millis(25));
         s.on_expiry = vec![vec![9; 20]];
     }
-    let ran = h3_with(&script, 4, |o| {
+    let ran = h3_with(&script, 3, |o| {
         o.method = Method::Post;
         o.upload = bytes(&body);
     });
@@ -2122,33 +2145,34 @@ fn a_body_in_flight_waits_for_its_acknowledgement() {
                 .to_owned()
         })
         .filter(|l| {
-            l.starts_with("[HTTP/3] [0] cf_send(len=34612)")
+            l.starts_with("[HTTP/3] [0] cf_send(len=34612,")
                 || l.starts_with("[MULTI] [PERFORMING] pollset")
         })
         .collect();
-    // The rest of the body is read and sent in the pass after the one
-    // that sent the first buffer, as C reads before it flushes alone
-    // (`Curl_req_send_more`).
+    // The first buffer goes with the head as the stream opens; the rest
+    // of the body is read and tried at once in the same pass, as C reads
+    // after a whole send (`Curl_req_send_more`), and waits.
     assert_eq!(
         said[..4],
         [
+            "[HTTP/3] [0] cf_send(len=34612, eos=1) -> 81, 0".to_owned(),
             "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
-            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
-            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
+            "[HTTP/3] [0] cf_send(len=34612, eos=1) -> 0, 34612".to_owned(),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
         ]
     );
     let s = script.lock().unwrap();
     assert_eq!((s.body.bytes.len(), s.body.ended), (100_000, true));
 }
 
-/// An error response read while the head is sent, as the library's timer
-/// runs at the send's end (`cf_ngtcp2_send`'s `check_and_set_expiry`),
-/// stops the upload there: what that send took is still the head's,
-/// traced and counted as the head, and none of the body goes (`xfer_send`
-/// after `Curl_req_abort_sending`).
+/// An error response read while the request is sent, as the library's
+/// timer runs at the send's end (`cf_ngtcp2_send`'s
+/// `check_and_set_expiry`), stops the upload there: what that send took,
+/// the head and the body that came with it into the stream as it opened,
+/// is still traced and counted as each, from where the send started
+/// (`xfer_send` after `Curl_req_abort_sending`).
 #[test]
-fn an_error_read_as_the_head_is_sent_stops_the_body() {
+fn an_error_read_as_the_request_is_sent_stops_the_upload() {
     let script = post_script(b"no\n", 1);
     {
         let mut s = script.lock().unwrap();
@@ -2182,7 +2206,7 @@ fn an_error_read_as_the_head_is_sent_stops_the_body() {
         [
             "HTTP error before end of send, stop sending",
             "abort upload",
-            "[HTTP/3] [0] cf_send(len=148) -> 0, 143",
+            "[HTTP/3] [0] cf_send(len=148, eos=1) -> 0, 148",
         ]
     );
     // Traced once, whole, behind the transfer's ids.
@@ -2192,11 +2216,48 @@ fn an_error_read_as_the_head_is_sent_stops_the_body() {
     );
     assert_eq!(head.len(), 143);
     assert_eq!(ran.seen.of("out"), [format!("[0-0] {head}").into_bytes()]);
-    assert_eq!(ran.seen.of("dataout"), Vec::<Vec<u8>>::new());
+    assert_eq!(ran.seen.of("dataout"), [b"[0-0] hello".to_vec()]);
     let sizes = ran.easy.report().sizes();
-    assert_eq!((sizes.request(), sizes.upload()), (143, 0));
+    assert_eq!((sizes.request(), sizes.upload()), (148, 5));
     assert_eq!(ran.seen.of("header")[0], b"HTTP/3 400 \r\n");
-    assert_eq!(script.lock().unwrap().body.bytes, b"");
+    assert_eq!(script.lock().unwrap().body.bytes, b"hello");
+}
+
+/// An upload an error response cuts short never ends its body: the
+/// stream closes without an end of stream, its body not taken for whole
+/// (upstream 16ba028563, which ended it on `CF_CTRL_DATA_DONE_SEND`).
+#[test]
+fn an_upload_cut_short_never_ends_its_body() {
+    let script = post_script(b"no\n", 1);
+    {
+        let mut s = script.lock().unwrap();
+        for told in s.on_read.back_mut().unwrap() {
+            if let Told::Header { name, value, .. } = told
+                && name == b":status"
+            {
+                *value = b"400".to_vec();
+            }
+        }
+        // Due as soon as the request is submitted: the send reads.
+        s.timer = Some(std::time::Duration::ZERO);
+    }
+    let body = vec![b'x'; 100_000];
+    let ran = h3_with(&script, 1, |o| {
+        o.method = Method::Post;
+        o.upload = bytes(&body);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert!(
+        ran.seen
+            .text()
+            .iter()
+            .any(|l| l.ends_with("abort upload\n")),
+        "{:#?}",
+        ran.seen.text()
+    );
+    let s = script.lock().unwrap();
+    assert!(s.body.bytes.len() < body.len(), "{}", s.body.bytes.len());
+    assert!(!s.body.ended, "the cut body ended");
 }
 
 /// A peer at `PORT` on IPv4 alone, whose datagrams meet `quic`, its first
@@ -3313,7 +3374,7 @@ fn a_request_goes_as_early_data_under_a_session_resumed() {
             [HTTP/3] connect -> 0, done=1
             using HTTP/3
             [HTTP/3] egress, send collected 2 packets in 2400 bytes
-            [HTTP/3] [0] cf_send(len=74) -> 0, 74
+            [HTTP/3] [0] cf_send(len=74, eos=1) -> 0, 74
             [HTTP/3] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]
             [HTTP/3] server did{did} accept 74 bytes of early data"
         ));
@@ -4830,7 +4891,7 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
                 .to_owned()
         })
         .filter(|l| {
-            l.starts_with("[HTTP/3] [0] cf_send(len=34612)")
+            l.starts_with("[HTTP/3] [0] cf_send(len=34612,")
                 || l.starts_with("[MULTI] [PERFORMING] pollset")
         })
         .collect();
@@ -4840,10 +4901,9 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
     assert_eq!(
         said,
         [
+            "[HTTP/3] [0] cf_send(len=34612, eos=1) -> 81, 0".to_owned(),
             "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
-            "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
-            "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
+            "[HTTP/3] [0] cf_send(len=34612, eos=1) -> 0, 34612".to_owned(),
             "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
         ]
     );
@@ -6542,6 +6602,7 @@ fn a_body_over_quiche_is_said_as_quiche_takes_it() {
         let want: &[&str] = match room {
             None => &["[HTTP/3] [0] send body(len=5, eos=1) -> 5"],
             Some(_) => &[
+                "[HTTP/3] [0] send_body(len=5) -> window exhausted",
                 "[HTTP/3] [0] send_body(len=5) -> window exhausted",
                 "[HTTP/3] [0] send_body(len=5) -> window exhausted",
             ],

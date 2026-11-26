@@ -2115,8 +2115,21 @@ impl Request {
                 if let Sending::Body(Reading { eos_read: true, .. }) = self.outgoing {
                     // The stream hears the body's end, which no bytes
                     // carried (`req_flush`'s `xfer_send` of none).
-                    if self.wire.h2().is_some_and(|s| !s.body_eos()) {
-                        self.h2_send(cx, lease, self.sent, true)?;
+                    let h2 = self.wire.h2().is_some_and(|s| !s.body_eos());
+                    let h3 = self.wire.h3().is_some_and(|s| !s.body_eos());
+                    if h2 || h3 {
+                        trace::debug_info(cx, format_args!("sending last upload chunk of 0 bytes"));
+                        let sent = if h2 {
+                            self.h2_send(cx, lease, self.sent, true)
+                        } else {
+                            self.h3_send(cx, lease, self.sent, true)
+                        };
+                        let code = sent.as_ref().err().map_or(0, |e| e.number());
+                        trace::debug_info(
+                            cx,
+                            format_args!("Curl_xfer_send(len=0, eos=1) -> {code}, 0"),
+                        );
+                        sent?;
                     }
                     break;
                 }

@@ -1495,20 +1495,23 @@ impl curl_core::http3::Connection for Connection {
         Ok(stream)
     }
 
-    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused> {
+    /// The body's end is told with its last bytes (`sendbuf_eos`): the
+    /// library is given it once all of them are in flight.
+    fn write_body(
+        &mut self,
+        stream: StreamId,
+        bytes: &[u8],
+        eos: bool,
+    ) -> Result<usize, BodyRefused> {
         // SAFETY: the state, between calls.
         let bodies = unsafe { &mut (*self.inner.ptr()).bodies };
-        Ok(body_of(bodies, stream.0)
-            .expect("a body is written to a stream submitted with one")
-            .write(bytes)?)
-    }
-
-    fn end_body(&mut self, stream: StreamId) {
-        // SAFETY: the state, between calls.
-        let bodies = unsafe { &mut (*self.inner.ptr()).bodies };
-        body_of(bodies, stream.0)
-            .expect("a body ends on a stream submitted with one")
-            .ended = true;
+        let body =
+            body_of(bodies, stream.0).expect("a body is written to a stream submitted with one");
+        let n = body.write(bytes)?;
+        if eos && n == bytes.len() {
+            body.ended = true;
+        }
+        Ok(n)
     }
 
     fn body_in_flight(&self, stream: StreamId) -> usize {

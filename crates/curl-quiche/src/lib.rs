@@ -1022,16 +1022,28 @@ impl curl_core::http3::Connection for Connection {
     }
 
     /// What of `bytes` quiche takes of the body now: it holds them, none
-    /// if its flow control holds the stream back (`cf_quiche_send_body`).
-    fn write_body(&mut self, stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused> {
+    /// if its flow control holds the stream back; with `eos` the body's
+    /// end goes with the last of them, quiche ending it once it takes
+    /// them all (`cf_quiche_send_body`). An end of no bytes it does not
+    /// take now is offered again as packets are written.
+    fn write_body(
+        &mut self,
+        stream: StreamId,
+        bytes: &[u8],
+        eos: bool,
+    ) -> Result<usize, BodyRefused> {
         use quiche::h3::Error as H;
         let quic = &mut *self.quic;
         let h3 = self.h3.as_mut().expect("bodies go once HTTP/3 is set up");
         // Only quiche's `Done`, or nothing taken, is its flow control
         // holding the stream back; a stream the peer stopped or reset is
         // refused, or the body would be offered again for ever.
-        let n = match quiet(|| h3.send_body(quic, quiche_id(stream), bytes, false)) {
+        let n = match quiet(|| h3.send_body(quic, quiche_id(stream), bytes, eos)) {
             Ok(n) => n,
+            Err(H::Done) if eos && bytes.is_empty() => {
+                self.streams.end(stream);
+                0
+            }
             Err(H::Done) => 0,
             Err(H::TransportError(quiche::Error::InvalidStreamState(_))) => {
                 return Err(BodyRefused::StreamState);
@@ -1045,18 +1057,6 @@ impl curl_core::http3::Connection for Connection {
             self.streams.block(stream);
         }
         Ok(n)
-    }
-
-    /// The body's end, offered now and again as packets are written
-    /// until quiche takes it (`CF_CTRL_DATA_DONE_SEND`).
-    fn end_body(&mut self, stream: StreamId) {
-        let quic = &mut *self.quic;
-        let h3 = self.h3.as_mut().expect("bodies go once HTTP/3 is set up");
-        if let Err(quiche::h3::Error::Done) =
-            quiet(|| h3.send_body(quic, quiche_id(stream), &[], true))
-        {
-            self.streams.end(stream);
-        }
     }
 
     /// quiche holds what it took: none in flight but it.

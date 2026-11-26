@@ -1118,25 +1118,15 @@ impl Quic {
         self.conn.send_room()
     }
 
-    /// The bytes of `stream`'s body held and not yet acknowledged, handed
-    /// to the library or not (`sendbuf`'s length).
-    pub(crate) fn body_buffered(&self, stream: StreamId) -> usize {
-        self.conn.body_buffered(stream)
-    }
-
     /// Take what of `bytes` it holds room for of `stream`'s body: how
-    /// many.
+    /// many; with `eos`, the last of it, which ends the body taken whole.
     pub(crate) fn write_body(
         &mut self,
         stream: StreamId,
         bytes: &[u8],
+        eos: bool,
     ) -> Result<usize, crate::http3::BodyRefused> {
-        self.conn.write_body(stream, bytes)
-    }
-
-    /// `stream`'s body ends after what it holds.
-    pub(crate) fn end_body(&mut self, stream: StreamId) {
-        self.conn.end_body(stream);
+        self.conn.write_body(stream, bytes, eos)
     }
 
     /// `stream` has more of its body to send (`nghttp3_conn_resume_stream`).

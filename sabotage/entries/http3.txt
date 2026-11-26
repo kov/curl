@@ -257,21 +257,36 @@ witness: curl-core proto::http::tests::h3_trace::an_empty_body_is_none
     let body = step.req.body.is_some();
 
 === an HTTP/3 body of unknown size never ends
-file: crates/curl-core/src/proto/http/h3.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::h3_trace::a_body_of_unknown_size_ends_once_it_is_sent
 --- old
-    step.stream().body_size = Some(written);
-    quic.end_body(stream);
+                    let h3 = self.wire.h3().is_some_and(|s| !s.body_eos());
 --- new
-    step.stream().body_size = Some(written);
+                    let h3 = false;
 
-=== an HTTP/3 body of known size ends only once all is sent
+=== an HTTP/3 body's last bytes do not end it
 file: crates/curl-core/src/proto/http/h3.rs
 witness: curl-core proto::http::tests::h3_trace::a_body_of_known_size_ends_with_its_last_bytes
 --- old
-                    if step.stream().body_size == Some(written) {
+    let took = match quic.write_body(stream, &step.req.out[range], eos) {
 --- new
-                    if false {
+    let took = match quic.write_body(stream, &step.req.out[range], false) {
+
+=== an HTTP/3 body that came with the head waits for the next send
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_of_known_size_ends_with_its_last_bytes
+--- old
+    if body && !rest.is_empty() && step.flavour == Flavour::Ngtcp2 {
+--- new
+    if false {
+
+=== an HTTP/3 send of the body's end alone is not traced as the transfer's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_of_unknown_size_ends_once_it_is_sent
+features: test-util,debug-hooks
+--- old
+                        trace::debug_info(cx, format_args!("sending last upload chunk of 0 bytes"));
+--- new
 
 === an HTTP/3 body is written past what it may have in flight
 file: crates/curl-core/src/proto/http/h3.rs
@@ -1214,7 +1229,7 @@ features: test-util,debug-hooks
 
 === a send the upload ended during takes the head as it is after the send
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_sent_stops_the_body
+witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_request_is_sent_stops_the_upload
 --- old
             let head = n.min(head_left);
 --- new
@@ -1226,7 +1241,7 @@ witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_se
 
 === a send the upload ended during moves on past what was read
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_sent_stops_the_body
+witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_request_is_sent_stops_the_upload
 --- old
             if !self.sending() {
                 return Ok(true);
@@ -1237,7 +1252,7 @@ witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_se
 
 === a send the upload ended during is sliced from where the upload ended
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_head_is_sent_stops_the_body
+witness: curl-core proto::http::tests::h3_trace::an_error_read_as_the_request_is_sent_stops_the_upload
 --- old
                 trace::bytes(cx, DebugKind::HeaderOut, &self.out[start..start + head]);
             }
@@ -1869,3 +1884,16 @@ witness: curl-core conn::quic::tests::a_run_cut_short_by_a_failure_is_cut_at_its
                 self.out.gso = Some(size);
 --- new
                 gso = n;
+
+=== an HTTP/3 upload cut short ends its body as if whole
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::an_upload_cut_short_never_ends_its_body
+--- old
+        let failures = quic.failures();
+        let r = f(&mut step, quic);
+--- new
+        let failures = quic.failures();
+        if let (Sending::Aborted, Some(id)) = (step.req.outgoing, step.stream().id) {
+            quic.write_body(id, &[], true).ok();
+        }
+        let r = f(&mut step, quic);

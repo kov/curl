@@ -55,11 +55,11 @@ pub(super) struct H3Stream {
     ended: Option<Ended>,
     /// Nothing more of the request goes (`send_closed`).
     send_closed: bool,
-    /// The body's size, none if unknown until it is all sent; and how
-    /// much of it the library was handed. What is left of it is
-    /// `upload_left`.
-    body_size: Option<u64>,
-    handed: u64,
+    /// All there is of the body is in the library's hands: the last of
+    /// it came with the sender's `eos` (`sendbuf_eos`). An upload cut
+    /// short never says so, and its stream ends without an end of
+    /// stream (upstream 16ba028563).
+    body_eos: bool,
     /// The peer's flow control holds its sending back
     /// (`quic_flow_blocked`).
     flow_blocked: bool,
@@ -98,14 +98,18 @@ impl Default for H3Stream {
             head_done: false,
             ended: None,
             send_closed: false,
-            body_size: Some(0),
-            handed: 0,
+            body_eos: false,
             flow_blocked: false,
         }
     }
 }
 
 impl H3Stream {
+    /// All of the body is in the library's hands.
+    pub(super) fn body_eos(&self) -> bool {
+        self.body_eos
+    }
+
     /// What its connection weighs of its sending, once it is open.
     pub(super) fn sending(&self) -> Option<StreamSend> {
         self.id.map(|stream| StreamSend {
@@ -374,9 +378,6 @@ impl Request {
             flavour: quic.flavour(),
         };
         let failures = quic.failures();
-        if matches!(step.req.outgoing, Sending::Done | Sending::Aborted) {
-            done_sending(&mut step, quic);
-        }
         let r = f(&mut step, quic);
         if quic.failures() != failures {
             // The connection's failure is every stream's on it: each other
@@ -429,20 +430,14 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
         end: usize,
-        _eos: bool,
+        eos: bool,
     ) -> Result<usize, ErrorKind> {
         let start = self.sent;
         let len = end - start;
         let (r, n) = self.with_h3(cx, lease, |step, quic| {
             let mut n = 0;
             if let Err(kind) = quic.verified() {
-                let id = step.stream().shown_id();
-                let code = kind.number();
-                trace::of(
-                    &mut *step.cx,
-                    Component::Http3,
-                    format_args!("[{id}] cf_send(len={len}) -> {code}, {n}"),
-                );
+                send_said(step, len, eos, kind.number(), n);
                 return (Err(kind), n);
             }
             let r = 'out: {
@@ -460,7 +455,7 @@ impl Request {
                         );
                         break 'out Err(ErrorKind::SendError);
                     }
-                    match open(step, quic, start..end) {
+                    match open(step, quic, start..end, eos) {
                         Ok(Some(taken)) => n = taken,
                         Ok(None) => break 'out Ok(Called::Again),
                         Err(kind) => {
@@ -515,55 +510,18 @@ impl Request {
                         // more until some is acknowledged.
                         break 'out Ok(Called::Again);
                     }
-                    let took = match quic.write_body(stream, &step.req.out[start..end]) {
+                    // Nothing of the body follows its end (C's
+                    // "adding upload data after EOS").
+                    assert!(len == 0 || !s.body_eos, "upload data after the body's end");
+                    let took = match add_body(step, quic, stream, start..end, eos, false) {
                         Ok(took) => took,
-                        Err(refused) => {
-                            refused_traced(&mut *step.cx, id, len, refused);
-                            break 'out Err(refused.kind());
-                        }
+                        Err(kind) => break 'out Err(kind),
                     };
-                    match step.flavour {
-                        Flavour::Ngtcp2 => {
-                            let code = if took == 0 { AGAIN_NUMBER } else { 0 };
-                            trace::of(
-                                &mut *step.cx,
-                                Component::Http3,
-                                format_args!(
-                                    "[{id}] cf_send, add to sendbuf(len={len}) -> {code}, {took}"
-                                ),
-                            );
-                        }
-                        // quiche holds what it takes: handed at once, and
-                        // none taken is its flow control's
-                        // (`cf_quiche_send_body`).
-                        Flavour::Quiche if took == 0 => {
-                            trace::of(
-                                &mut *step.cx,
-                                Component::Http3,
-                                format_args!("[{id}] send_body(len={len}) -> window exhausted"),
-                            );
-                            step.stream().flow_blocked = true;
-                        }
-                        Flavour::Quiche => {
-                            let s = step.stream();
-                            s.handed += took as u64;
-                            let eos = u8::from(s.body_size == Some(s.handed));
-                            trace::of(
-                                &mut *step.cx,
-                                Component::Http3,
-                                format_args!("[{id}] send body(len={len}, eos={eos}) -> {took}"),
-                            );
-                        }
-                    }
-                    if took == 0 {
+                    let ends = step.stream().body_eos;
+                    if took == 0 && !(eos && ends) {
                         break 'out Ok(Called::Again);
                     }
                     n = took;
-                    // All of a body of known size held: it ends after it.
-                    let written = written(step.stream(), quic, stream);
-                    if step.stream().body_size == Some(written) {
-                        quic.end_body(stream);
-                    }
                     quic.resume(stream);
                 }
                 // What went before the handshake is early data.
@@ -579,13 +537,7 @@ impl Request {
                 Err(kind) => Err(kind),
                 Ok(()) => r,
             };
-            let id = step.stream().shown_id();
-            let code = code(r);
-            trace::of(
-                &mut *step.cx,
-                Component::Http3,
-                format_args!("[{id}] cf_send(len={len}) -> {code}, {n}"),
-            );
+            send_said(step, len, eos, code(r), n);
             (r, n)
         });
         r.map(|_| n)
@@ -997,25 +949,22 @@ impl Request {
                 eof,
                 buffered,
             } => {
-                // As C's `cb_h3_read_req_body` says it, what is left of a
-                // body of unknown size `-1`.
-                s.handed += n as u64;
+                // As C's `cb_h3_read_req_body` says it, with whether all of
+                // the body is in its buffer.
                 if eof {
                     s.send_closed = true;
                 }
                 if n == 0 && !eof {
                     trace::of(cx, h3, format_args!("[{id}] read req body -> AGAIN"));
                 } else {
-                    let left = s.body_size.map_or(-1, |size| {
-                        i64::try_from(size - s.handed).expect("a body's size fits")
-                    });
+                    let all = u8::from(s.body_eos);
                     let end = if eof { " EOF" } else { "" };
                     trace::of(
                         cx,
                         h3,
                         format_args!(
                             "[{id}] read req body -> {vecs} vecs{end} with {n} \
-                             (buffered={buffered}, left={left})"
+                             (buffered={buffered}, buf-eos{all})"
                         ),
                     );
                 }
@@ -1175,28 +1124,6 @@ fn rx_window<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
     }
 }
 
-/// How much of `stream`'s body was written to the library: what it was
-/// handed, and what it holds that it was not.
-fn written(s: &H3Stream, quic: &Quic, stream: StreamId) -> u64 {
-    let unhanded = quic.body_buffered(stream) - quic.body_in_flight(stream);
-    s.handed + unhanded as u64
-}
-
-/// The request is all sent, or will not be (`CF_CTRL_DATA_DONE_SEND`):
-/// its body ends after what the library holds, its size now known. What
-/// is left goes as the connection next sends.
-fn done_sending<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
-    let s = step.stream();
-    let Some(stream) = s.id.filter(|_| !s.send_closed && s.ended.is_none()) else {
-        return;
-    };
-    s.send_closed = true;
-    let written = written(s, quic, stream);
-    step.stream().body_size = Some(written);
-    quic.end_body(stream);
-    quic.resume(stream);
-}
-
 /// Stop the stream, if it is open, both ways, nothing more heard of it
 /// (`Curl_cf_ngtcp2_h3_stream_close`).
 fn close<H: Host>(step: &mut H3Step<'_, '_, H>, quic: &mut Quic) {
@@ -1219,6 +1146,7 @@ fn open<H: Host>(
     step: &mut H3Step<'_, '_, H>,
     quic: &mut Quic,
     range: std::ops::Range<usize>,
+    eos: bool,
 ) -> Result<Option<usize>, ErrorKind> {
     let head = match step.req.outgoing {
         Sending::Head { left, .. } => left.get(),
@@ -1270,8 +1198,16 @@ fn open<H: Host>(
     let s = step.stream();
     s.id = Some(stream);
     s.send_closed = !body;
-    s.body_size = size.map(crate::upload::chain::WireSize::get);
+    s.body_eos = !body;
     rx_window(step, quic);
+    // The body's bytes that came with the head are taken with it: into
+    // ngtcp2's buffer as the stream opens, to quiche once it is said
+    // opened (`h3_stream_open`, `h3_open_stream`).
+    let rest = start + head..range.end;
+    let mut taken = 0;
+    if body && !rest.is_empty() && step.flavour == Flavour::Ngtcp2 {
+        taken = add_body(step, quic, stream, rest.clone(), eos, true)?;
+    }
     if step.cx.verbose() {
         let id = curl_alloc::try_format(format_args!("{}", stream.0))
             .map_err(|_| ErrorKind::OutOfMemory)?;
@@ -1292,7 +1228,109 @@ fn open<H: Host>(
             trace::info_with(step.cx, &parts);
         }
     }
-    Ok(Some(head))
+    if body && !rest.is_empty() && step.flavour == Flavour::Quiche {
+        taken = add_body(step, quic, stream, rest, eos, true)?;
+    }
+    Ok(Some(head + taken))
+}
+
+/// A send said as C's filter ends it: ngtcp2's with the send's `eos`
+/// (`cf_ngtcp2_send`), quiche's without (`cf_quiche_send`).
+fn send_said<H: Host>(step: &mut H3Step<'_, '_, H>, len: usize, eos: bool, code: u16, n: usize) {
+    let id = step.stream().shown_id();
+    if step.flavour == Flavour::Ngtcp2 {
+        let eos = u8::from(eos);
+        trace::of(
+            &mut *step.cx,
+            Component::Http3,
+            format_args!("[{id}] cf_send(len={len}, eos={eos}) -> {code}, {n}"),
+        );
+    } else {
+        trace::of(
+            &mut *step.cx,
+            Component::Http3,
+            format_args!("[{id}] cf_send(len={len}) -> {code}, {n}"),
+        );
+    }
+}
+
+/// Hand the library `out[range]` of the body, with `eos` the last of it,
+/// traced as C's filter traces it: ngtcp2's buffer takes it
+/// (`cf_ngtcp2_send`, or `h3_stream_open` as the stream `opening`), and
+/// quiche takes it at once, none taken its flow control's
+/// (`cf_quiche_send_body`). How many it took; taken whole with `eos`,
+/// the body ends.
+fn add_body<H: Host>(
+    step: &mut H3Step<'_, '_, H>,
+    quic: &mut Quic,
+    stream: StreamId,
+    range: std::ops::Range<usize>,
+    eos: bool,
+    opening: bool,
+) -> Result<usize, ErrorKind> {
+    let id = stream.0;
+    let len = range.len();
+    let took = match quic.write_body(stream, &step.req.out[range], eos) {
+        Ok(took) => took,
+        Err(refused) => {
+            refused_traced(&mut *step.cx, id, len, refused);
+            return Err(refused.kind());
+        }
+    };
+    let ends = eos && took == len;
+    match step.flavour {
+        Flavour::Ngtcp2 => {
+            let code = if took == 0 && len > 0 {
+                AGAIN_NUMBER
+            } else {
+                0
+            };
+            let eos = u8::from(eos);
+            if opening {
+                trace::of(
+                    &mut *step.cx,
+                    Component::Http3,
+                    format_args!(
+                        "[{id}] stream open, adding to sendbuf(len={len}, eos={eos}) -> \
+                         {code}, {took}"
+                    ),
+                );
+            } else {
+                trace::of(
+                    &mut *step.cx,
+                    Component::Http3,
+                    format_args!(
+                        "[{id}] cf_send, add to sendbuf(len={len}, eos={eos}) -> {code}, {took}"
+                    ),
+                );
+            }
+            if ends {
+                step.stream().body_eos = true;
+            }
+        }
+        Flavour::Quiche if took == 0 && len > 0 => {
+            trace::of(
+                &mut *step.cx,
+                Component::Http3,
+                format_args!("[{id}] send_body(len={len}) -> window exhausted"),
+            );
+            step.stream().flow_blocked = true;
+        }
+        Flavour::Quiche => {
+            let s = step.stream();
+            if ends {
+                s.body_eos = true;
+                s.send_closed = true;
+            }
+            let eos = u8::from(s.send_closed);
+            trace::of(
+                &mut *step.cx,
+                Component::Http3,
+                format_args!("[{id}] send body(len={len}, eos={eos}) -> {took}"),
+            );
+        }
+    }
+    Ok(took)
 }
 
 /// The library keeps more or less of the body in flight than it is given

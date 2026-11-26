@@ -206,9 +206,18 @@ file: crates/curl-core/src/proto/http/h3.rs
 witness: curl-core proto::http::tests::h3_trace::a_body_over_quiche_is_said_as_quiche_takes_it
 features: test-util
 --- old
-                        Flavour::Quiche if took == 0 => {
+        Flavour::Quiche if took == 0 && len > 0 => {
 --- new
-                        Flavour::Quiche if false => {
+        Flavour::Quiche if false => {
+
+=== a body quiche could take with the head waits for the next send
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_over_quiche_is_said_as_quiche_takes_it
+features: test-util
+--- old
+    if body && !rest.is_empty() && step.flavour == Flavour::Quiche {
+--- new
+    if false {
 
 === a datagram's ECN mark is said over quiche
 file: crates/curl-core/src/conn/quic.rs

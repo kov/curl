@@ -479,7 +479,7 @@ fn an_upload_held_back_goes_on_as_packets_come() {
         let (mut sent, mut held) = (0, 0);
         while sent < upload.len() {
             assert!(StdInstant::now() < deadline, "the upload takes too long");
-            let n = conn.write_body(stream, &upload[sent..]).unwrap();
+            let n = conn.write_body(stream, &upload[sent..], false).unwrap();
             assert_eq!(conn.body_in_flight(stream), 0);
             assert_eq!(conn.body_buffered(stream), 0);
             sent += n;
@@ -496,7 +496,7 @@ fn an_upload_held_back_goes_on_as_packets_come() {
             assert_eq!(told.unblocked.last(), Some(&stream));
         }
         assert!(held > 0, "the window held the upload back");
-        conn.end_body(stream);
+        conn.write_body(stream, &[], true).unwrap();
         run(conn, cx, over, told, |t| t.closed_streams.contains(&stream)).unwrap();
         assert!(server.seen().bodies == [upload.clone()], "the body whole");
     });
@@ -518,7 +518,7 @@ fn an_upload_the_peer_stops_is_refused() {
         let deadline = StdInstant::now() + Duration::from_secs(10);
         let refused = loop {
             assert!(StdInstant::now() < deadline, "the stopped upload goes on");
-            match conn.write_body(stream, &upload) {
+            match conn.write_body(stream, &upload, false) {
                 Ok(_) => {
                     flush(conn, cx, over, told).unwrap();
                     take_one(conn, cx, over, told).unwrap();

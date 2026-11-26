@@ -817,7 +817,12 @@ impl Connection for FakeConnection {
         Ok(StreamId(id))
     }
 
-    fn write_body(&mut self, _stream: StreamId, bytes: &[u8]) -> Result<usize, BodyRefused> {
+    fn write_body(
+        &mut self,
+        _stream: StreamId,
+        bytes: &[u8],
+        eos: bool,
+    ) -> Result<usize, BodyRefused> {
         let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         let b = &mut s.body;
         if let Some(refused) = b.refused {
@@ -828,15 +833,10 @@ impl Connection for FakeConnection {
             .map_or(usize::MAX, |max| max - (b.bytes.len() - b.acked));
         let n = bytes.len().min(room);
         own(|| b.bytes.extend_from_slice(&bytes[..n]));
+        if eos && n == bytes.len() {
+            b.ended = true;
+        }
         Ok(n)
-    }
-
-    fn end_body(&mut self, _stream: StreamId) {
-        self.script
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .body
-            .ended = true;
     }
 
     fn body_in_flight(&self, _stream: StreamId) -> usize {

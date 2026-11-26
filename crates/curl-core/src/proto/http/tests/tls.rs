@@ -2294,6 +2294,7 @@ fn the_readers_start_over_once_an_http_2_proxy_s_tunnel_is_up() {
         picked,
         [
             "[READ] client_reset, clear readers",
+            "[READ] client_reset, clear readers",
             "CONNECT: 'h2' negotiated",
             "CONNECT Response Status 200",
             "CONNECT tunnel established, response 200",

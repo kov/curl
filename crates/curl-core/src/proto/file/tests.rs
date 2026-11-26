@@ -793,6 +793,7 @@ fn an_upload_is_read_as_c_reads_it() {
         lines,
         [
             "[READ] client_reset, clear readers",
+            "[READ] client_reset, clear readers",
             "[READ] add buf reader, len=5 -> 0",
             "[READ] cr_buf_read(len=65536) -> 0, nread=5, eos=1",
             "[READ] client_read(len=65536) -> 0, nread=5, eos=1",

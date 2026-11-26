@@ -1122,6 +1122,7 @@ fn the_readers_start_over_once_an_http_proxy_s_tunnel_is_up() {
         picked,
         [
             "[READ] client_reset, clear readers",
+            "[READ] client_reset, clear readers",
             "CONNECT: no ALPN negotiated",
             "CONNECT phase completed for HTTP proxy",
             "CONNECT tunnel established, response 200",

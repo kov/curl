@@ -51,6 +51,7 @@ fn bytes_are_read_through_the_buffer_reader() {
         read_lines(&ran),
         [
             "[READ] client_reset, clear readers".to_owned(),
+            "[READ] client_reset, clear readers".to_owned(),
             "[READ] add buf reader, len=3 -> 0".to_owned(),
             format!("[READ] cr_buf_read(len={room}) -> 0, nread=3, eos=1"),
             format!("[READ] client_read(len={room}) -> 0, nread=3, eos=1"),
@@ -80,6 +81,7 @@ fn a_handler_s_pieces_are_read_into_chunks() {
     assert_eq!(
         read_lines(&ran),
         [
+            "[READ] client_reset, clear readers".to_owned(),
             "[READ] client_reset, clear readers".to_owned(),
             "[READ] add fread reader, len=-1 -> 0".to_owned(),
             format!("[READ] client_read(len={room}) -> 0, nread=0, eos=0"),
@@ -142,7 +144,7 @@ fn a_body_held_for_a_100_gives_nothing_until_it_comes() {
     assert_eq!(ran.result, Ok(()));
     let room = room_after(ran.request.len() - 3);
     assert_eq!(
-        read_lines(&ran)[1..6],
+        read_lines(&ran)[2..7],
         [
             "[READ] add buf reader, len=3 -> 0".to_owned(),
             format!("[READ] client_read(len={room}) -> 0, nread=0, eos=0"),
@@ -205,7 +207,7 @@ fn a_tree_is_read_through_the_mime_reader() {
             .len();
     let room = room_after(ran.request.len() - size);
     assert_eq!(
-        read_lines(&ran)[1..4],
+        read_lines(&ran)[2..5],
         [
             format!("[READ] cr_mime_read(len={size}), mime_read() -> {size}"),
             format!("[READ] cr_mime_read(len={size}, total={size}, read={size}) -> 0, {size}, 1"),
@@ -715,6 +717,7 @@ fn converted_line_ends_are_read_through_their_stage() {
     assert_eq!(
         read_lines(&ran),
         [
+            "[READ] client_reset, clear readers".to_owned(),
             "[READ] client_reset, clear readers".to_owned(),
             "[READ] add fread reader, len=7 -> 0".to_owned(),
             "[READ] cr_in_read(len=7, total=7, read=7) -> 0, nread=7, eos=1".to_owned(),

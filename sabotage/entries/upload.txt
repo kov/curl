@@ -421,3 +421,13 @@ witness: curl-core proto::http::tests::rtsp::a_body_with_converted_line_ends_is_
         if self.chain.lines.is_some() || self.chain.mail.is_some() || self.chain.ws.is_some() {
 --- new
         if self.chain.mail.is_some() || self.chain.ws.is_some() {
+
+=== a new transfer does not let go of the readers as it starts
+file: crates/curl-core/src/multi/state/leg.rs
+witness: curl-core proto::http::tests::read_trace::bytes_are_read_through_the_buffer_reader
+features: test-util
+--- old
+    crate::upload::trace_reset(cx, false);
+    // Taken as it is parsed, its text not read again.
+--- new
+    // Taken as it is parsed, its text not read again.

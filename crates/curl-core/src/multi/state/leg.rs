@@ -66,6 +66,9 @@ pub(super) fn pretransfer<H: Host>(
         run.wildcard = Some(made.map_err(|_| ErrorKind::OutOfMemory)?);
     }
     crate::proto::http::hsts::load(cx)?;
+    // A new transfer lets go of the readers a last one may have kept to
+    // rewind (`Curl_pretransfer`'s `Curl_client_reset`).
+    crate::upload::trace_reset(cx, false);
     // Taken as it is parsed, its text not read again.
     if let Some(copy) = shared {
         return copy.map_err(url_error);

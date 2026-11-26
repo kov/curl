@@ -850,7 +850,7 @@ impl Request {
                     .and_then(|()| line.try_extend_from_slice(b"\r\n"));
                 match made {
                     Ok(()) if trailer => {
-                        self.h3_trailer_line(cx, &line);
+                        self.h3_trailer_line(cx, flavour, &line);
                         Heard::Fine
                     }
                     Ok(()) => {
@@ -1000,7 +1000,7 @@ impl Request {
     /// a `Set-Cookie` or a `Location` there does nothing
     /// (`cf_h3_write_field`, `cf_quiche_write_trailer`). A failure fails
     /// the stream, as a field of the head's does.
-    fn h3_trailer_line<H: Host>(&mut self, cx: &mut StepCx<'_, H>, line: &[u8]) {
+    fn h3_trailer_line<H: Host>(&mut self, cx: &mut StepCx<'_, H>, flavour: Flavour, line: &[u8]) {
         if self.h3_stream().failed.is_some() {
             return;
         }
@@ -1017,14 +1017,19 @@ impl Request {
             .map_err(|e| head_failed(cx, &e));
         }
         if let Err(kind) = handed {
+            let quiche = flavour == Flavour::Quiche;
             let s = self.h3_stream();
             s.failed = Some(kind);
-            let (id, code, len) = (s.shown_id(), kind.number(), line.len());
-            trace::of(
-                cx,
-                Component::Http3,
-                format_args!("[{id}] error {code} writing {len} bytes of trailer"),
-            );
+            // Said by quiche's filter alone (`cf_quiche_write_trailer`);
+            // ngtcp2's fails the stream untraced (`cf_h3_write_field`).
+            if quiche {
+                let (id, code, len) = (s.shown_id(), kind.number(), line.len());
+                trace::of(
+                    cx,
+                    Component::Http3,
+                    format_args!("[{id}] error {code} writing {len} bytes of trailer"),
+                );
+            }
         }
     }
 

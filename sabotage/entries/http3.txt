@@ -1929,3 +1929,14 @@ witness: curl-core proto::http::tests::h3_trace::a_body_end_quiche_holds_back_is
         Ok(took) => (took.bytes, took.ended),
 --- new
         Ok(took) => (took.bytes, eos && took.bytes == len),
+
+=== a trailer not taken is said over ngtcp2 too
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_trailer_not_taken_is_said_over_quiche_alone
+features: test-util
+--- old
+            if quiche {
+                let (id, code, len) = (s.shown_id(), kind.number(), line.len());
+--- new
+            if true {
+                let (id, code, len) = (s.shown_id(), kind.number(), line.len());

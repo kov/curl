@@ -723,6 +723,52 @@ fn trailers_over_http3_are_handed_on_and_not_taken_in() {
     assert_eq!(easy.cookie_list().unwrap(), [other.to_vec()]);
 }
 
+/// A trailer the transfer cannot take, past what its headers may come
+/// to, fails the stream, said by quiche's filter alone
+/// (`cf_quiche_write_trailer`; ngtcp2's `cf_h3_write_field` is silent,
+/// upstream 13091d4900).
+#[test]
+fn a_trailer_not_taken_is_said_over_quiche_alone() {
+    for quiche in [false, true] {
+        let script = match quiche {
+            true => quiche_script(b"12"),
+            false => get_script(b"12"),
+        };
+        {
+            let mut s = script.lock().unwrap();
+            let reply = s.on_read.back_mut().unwrap();
+            let closed = reply
+                .iter()
+                .position(|t| matches!(t, Told::Closed(..)))
+                .unwrap();
+            reply.splice(
+                closed..closed,
+                [
+                    Told::Header {
+                        stream: 0,
+                        name: b"x-big".to_vec(),
+                        value: vec![b'a'; crate::proto::http1::fields::MAX_HEADERS],
+                    },
+                    Told::HeadersDone(0),
+                ],
+            );
+        }
+        let mut m = quic_server(&[b"server flight", b"response"]);
+        let e = tracing(FakeTls::new().unwrap(), &script);
+        let ran = h3_get(&mut m, e);
+        assert!(ran.result.is_err(), "quiche {quiche}");
+        // The line is said where it is: the trailer's own line before it
+        // is said by both (a positive control).
+        assert_eq!(lines(&ran, &["[HTTP/3] [0] trailer: x-big"]).len(), 1);
+        let said = lines(&ran, &["[HTTP/3] [0] error 56 writing"]);
+        assert_eq!(
+            said.len(),
+            usize::from(quiche),
+            "quiche {quiche}: {said:#?}"
+        );
+    }
+}
+
 /// A status in a trailers' block, which quiche hands on as any other
 /// field, is the peer's malformed response: the stream fails, and no
 /// second status line reaches the response's head, which is over.

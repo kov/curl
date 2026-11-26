@@ -54,6 +54,17 @@ pub(crate) struct Request {
     buf: Vec<u8>,
     pipeline: Pipeline,
     doing: Doing,
+    /// The file's size as its download started, where it started and how
+    /// much of it was to be read, for a download whose size is known.
+    sized: Option<Sized>,
+}
+
+/// What a download of a known size expects of its file.
+#[derive(Clone, Copy, Debug)]
+struct Sized {
+    size: u64,
+    from: u64,
+    expected: u64,
 }
 
 /// How far DO is. The look at the progress C takes after each piece
@@ -128,6 +139,7 @@ impl Request {
             buf: Vec::new(),
             pipeline: Pipeline::new(Reach::Local),
             doing: Doing::Start,
+            sized: None,
         };
         if cx.easy().options().method != Method::Upload {
             match fs::open_read(request.c_path()) {
@@ -304,6 +316,11 @@ impl Request {
             self.list(cx)?;
             progress::update(cx, false).map(|()| DoStep::Did)
         } else {
+            self.sized = known.map(|expected| Sized {
+                size: meta.size,
+                from: u64::try_from(resume).expect("not before the start"),
+                expected,
+            });
             self.read_body(cx, known)
         }
     }
@@ -392,6 +409,15 @@ impl Request {
         let read = injected(cx, &self.pipeline).map_or(read, Err);
         let n = read.map_err(|_| ErrorKind::ReadError)?;
         if n == 0 {
+            if let (Some(left), Some(sized)) = (left.filter(|&n| n > 0), self.sized)
+                && shrunk(file, sized, left)
+            {
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::PartialFile,
+                    format_args!("File ended before the expected size"),
+                ));
+            }
             self.doing = Doing::Ending { check: false };
             return Ok(DoStep::Piece);
         }
@@ -665,6 +691,16 @@ fn dos_path(path: &mut Vec<u8>) {
             *b = b'\\';
         }
     }
+}
+
+/// A file that ends with `left` of the bytes expected unread had more
+/// than were read when the download started, and is now shorter than
+/// it was then (`file_check_eof`). A file the system sizes past what it
+/// reads (`/proc`'s) has not shrunk; a status that cannot be read says
+/// nothing.
+fn shrunk(file: &File, sized: Sized, left: u64) -> bool {
+    let read = sized.expected - left;
+    sized.size - sized.from > read && file.metadata().is_ok_and(|m| m.len() < sized.size)
 }
 
 /// The file's modification time, in seconds after the epoch, as `fstat`

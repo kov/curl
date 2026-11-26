@@ -292,6 +292,64 @@ fn a_file_is_read_as_far_as_its_size() {
     assert_eq!(seen.body(), [0; 20000]);
 }
 
+/// A file cut shorter than it was when the transfer looked at it, before
+/// or while it is read, ends the transfer as a partial file (lib1558).
+#[test]
+fn a_file_cut_short_is_a_partial_file() {
+    struct Cutter {
+        path: PathBuf,
+        seen: Seen,
+    }
+    impl Cutter {
+        fn cut(&self) {
+            std::fs::File::options()
+                .write(true)
+                .open(&self.path)
+                .unwrap()
+                .set_len(100)
+                .unwrap();
+        }
+    }
+    impl HeaderHandler for Cutter {
+        fn header(
+            &self,
+            cx: &mut crate::handler::WriteCx<'_>,
+            line: &[u8],
+            o: HeaderOrigin,
+        ) -> Write {
+            self.cut();
+            self.seen.header(cx, line, o)
+        }
+    }
+    impl WriteHandler for Cutter {
+        fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
+            self.cut();
+            self.seen.write(cx, body)
+        }
+    }
+    let s = Scratch::new("cut");
+    for in_body in [false, true] {
+        s.file("f", &[0; 20000], Y2K_NOON);
+        let (mut e, seen) = easy(&s.url("f"));
+        let cutter = Cutter {
+            path: s.0.join("f"),
+            seen: seen.clone(),
+        };
+        let cb = &mut e.options_mut().callbacks;
+        if in_body {
+            cb.write = Some(Handler::write(cutter).unwrap());
+        } else {
+            cb.header = Some(Handler::header(cutter).unwrap());
+        }
+        assert_eq!(
+            run(e).0,
+            Err(ErrorKind::PartialFile),
+            "in the body: {in_body}"
+        );
+        assert!(seen.body().len() < 20000, "in the body: {in_body}");
+    }
+}
+
 /// An empty file has its headers and nothing more: progress at the end of
 /// the read, not after a write.
 #[test]

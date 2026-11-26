@@ -361,3 +361,11 @@ witness: curl-core proto::file::tests::a_range_of_more_last_bytes_than_the_file_
             if st_size < -resume {
 --- new
             if st_size + 1 < -resume {
+
+=== a file cut short under its download ends it as a whole one
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_cut_short_is_a_partial_file
+--- old
+    sized.size - sized.from > read && file.metadata().is_ok_and(|m| m.len() < sized.size)
+--- new
+    sized.size - sized.from > read && file.metadata().is_ok_and(|m| m.len() < sized.from)

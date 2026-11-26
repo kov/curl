@@ -905,19 +905,20 @@ static CURLcode auth_digest(struct Curl_easy *data,
     infof(data, "Ignoring duplicate digest auth header.");
   }
   else if(Curl_auth_is_digest_supported()) {
-    CURLcode result;
-
-    *availp |= CURLAUTH_DIGEST;
-    authp->avail |= CURLAUTH_DIGEST;
-
     /* We call this function on input Digest headers even if Digest
      * authentication is not activated yet, as we need to store the
      * incoming data from this header in case we are going to use
      * Digest */
-    result = Curl_input_digest(data, proxy, auth);
+    CURLcode result = Curl_input_digest(data, proxy, auth);
+    if(result == CURLE_OUT_OF_MEMORY)
+      return result;
+    if(result == CURLE_NOT_BUILT_IN) {
+      infof(data, "Ignoring unusable Digest algorithm.");
+      return CURLE_OK;
+    }
+    *availp |= CURLAUTH_DIGEST;
+    authp->avail |= CURLAUTH_DIGEST;
     if(result) {
-      if(result == CURLE_OUT_OF_MEMORY)
-        return result;
       infof(data, "Digest authentication problem, ignoring.");
       data->state.authproblem = TRUE;
     }
@@ -3202,6 +3203,20 @@ static CURLcode http_header_c(struct Curl_easy *data,
         /* we asked for a resume and we got it */
         k->content_range = TRUE;
     }
+    else if(*ptr == '*' && ptr[1] == '/' && k->httpcode == 416 &&
+            data->state.resume_from && data->state.httpreq == HTTPREQ_GET) {
+      curl_off_t total;
+      ptr += 2;
+      if(!curlx_str_number(&ptr, &total, CURL_OFF_T_MAX)) {
+        while(ISBLANK(*ptr))
+          ptr++;
+        if((*ptr == '\r' || *ptr == '\n' || !*ptr) &&
+           total != data->state.resume_from) {
+          failf(data, "Cannot resume: remote file size differs from offset");
+          return CURLE_RANGE_ERROR;
+        }
+      }
+    }
     else if(k->httpcode < 300)
       data->state.resume_from = 0; /* get everything */
   }
@@ -3226,7 +3241,7 @@ static CURLcode http_header_l(struct Curl_easy *data,
       data->info.filetime = k->timeofdoc;
     return CURLE_OK;
   }
-  if(HD_IS(hd, hdlen, "Location:")) {
+  if(HD_IS(hd, hdlen, "Location:") && (k->httpcode/100 >= 2)) {
     /* this is the URL that the server advises us to use instead */
     char *location = Curl_copy_header_value(hd);
     if(!location)
@@ -3246,8 +3261,7 @@ static CURLcode http_header_l(struct Curl_easy *data,
       }
       data->req.location = location;
 
-      if((k->httpcode >= 300 && k->httpcode < 400) &&
-         data->set.http_follow_mode) {
+      if(data->set.http_follow_mode && (k->httpcode/100 == 3)) {
         CURLcode result;
         DEBUGASSERT(!data->req.newurl);
         data->req.newurl = curlx_strdup(data->req.location); /* clone */

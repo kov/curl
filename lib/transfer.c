@@ -469,6 +469,7 @@ CURLcode Curl_pretransfer(struct Curl_easy *data)
   Curl_peer_unlink(&data->state.initial_origin);
   Curl_peer_unlink(&data->state.origin);
   data->state.requests = 0;
+  data->state.still_connecting = FALSE;
   data->state.followlocation = 0; /* reset the location-follow counter */
   data->state.this_is_a_follow = FALSE; /* reset this */
   data->state.http_ignorecustom = FALSE; /* use custom HTTP method */
@@ -509,7 +510,7 @@ CURLcode Curl_pretransfer(struct Curl_easy *data)
     Curl_cookie_run(data); /* activate */
 
   /* If there is a list of host pairs to deal with */
-  if(!result && data->state.resolve)
+  if(!result && data->set.resolve && !data->state.resolve_loaded)
     result = Curl_loadhostpairs(data);
 
   if(!result)
@@ -821,12 +822,6 @@ CURLcode Curl_xfer_recv(struct Curl_easy *data,
   return Curl_conn_recv(data, buf, blen, pnrcvd);
 }
 
-CURLcode Curl_xfer_send_close(struct Curl_easy *data)
-{
-  Curl_conn_ev_data_done_send(data);
-  return CURLE_OK;
-}
-
 bool Curl_xfer_is_blocked(struct Curl_easy *data)
 {
   bool want_send = CURL_REQ_WANT_SEND(data);
@@ -859,12 +854,14 @@ CURLcode Curl_xfer_pause_send(struct Curl_easy *data, bool enable)
   return result;
 }
 
-CURLcode Curl_xfer_pause_recv(struct Curl_easy *data, bool enable)
+CURLcode Curl_xfer_pause_recv(struct Curl_easy *data, bool enable, bool flush)
 {
   CURLcode result = CURLE_OK;
   Curl_rlimit_block(&data->progress.dl.rlimit, enable, Curl_pgrs_now(data));
-  if(!enable && Curl_cwriter_is_paused(data))
-    result = Curl_cwriter_unpause(data);
+  if(enable)
+    data->req.writer.paused = TRUE;
+  else if(Curl_cwriter_is_paused(data))
+    result = Curl_cwriter_unpause(data, flush);
   Curl_conn_ev_data_pause(data, enable);
   Curl_pgrsRecvPause(data, enable);
   return result;

@@ -147,13 +147,13 @@ static void mstate_enter_completed(struct Curl_easy *data,
 }
 
 /* always use this function to change state, to make debugging easier */
-static void mstate(struct Curl_easy *data, CURLMstate state
+static void mstate(struct Curl_easy *data, uint8_t state
 #ifdef DEBUGBUILD
                    , int lineno
 #endif
 )
 {
-  CURLMstate oldstate = data->mstate;
+  uint8_t oldstate = data->mstate;
   static const mstate_enter_func state_enter[MSTATE_LAST] = {
     NULL,                      /* INIT */
     NULL,                      /* PENDING */
@@ -185,9 +185,9 @@ static void mstate(struct Curl_easy *data, CURLMstate state
 #endif
 
   /* really switching state */
-  data->mstate = state;
+  data->mstate = (uint8_t)state;
   if(state_enter[state])
-    state_enter[state](data, oldstate);
+    state_enter[state](data, (CURLMstate)oldstate);
 }
 
 #ifndef DEBUGBUILD
@@ -400,7 +400,7 @@ static void multi_warn_debug(struct Curl_multi *multi, struct Curl_easy *data)
 
 bool Curl_is_connecting(struct Curl_easy *data)
 {
-  return data->mstate < MSTATE_DO;
+  return (data->mstate < MSTATE_DO) || data->state.still_connecting;
 }
 
 static CURLMcode multi_assess_wakeup(struct Curl_multi *multi)
@@ -768,7 +768,6 @@ CURLMcode Curl_multi_remove_handle(struct Curl_multi *multi,
                                    struct Curl_easy *data)
 {
   CURLMcode mresult;
-  bool premature;
   uint32_t mid;
 
   /* Prevent users from trying to remove same easy handle more than once */
@@ -788,9 +787,9 @@ CURLMcode Curl_multi_remove_handle(struct Curl_multi *multi,
     return CURLM_INTERNAL_ERROR;
   }
 
-  premature = (data->mstate < MSTATE_COMPLETED);
-
   if(data->conn) {
+    bool premature = (data->mstate < MSTATE_COMPLETED);
+
     /* If the 'state' is not INIT or COMPLETED, we might need to do something
        nice to put the easy_handle in a good known state when this returns. */
     if(premature && (data->mstate > MSTATE_DO))
@@ -800,7 +799,7 @@ CURLMcode Curl_multi_remove_handle(struct Curl_multi *multi,
        connection.
        Note that this ignores the return code because there is
        nothing really useful to do with it anyway! */
-    (void)multi_done(data, data->result, premature);
+    (void)multi_done(data, (CURLcode)data->done, premature);
   }
 
   /* The timer must be shut down before data->multi is set to NULL, else
@@ -2540,15 +2539,16 @@ static CURLMcode multistate_init(struct Curl_easy *data, CURLcode *result)
 static CURLMcode multistate_setup(struct Curl_easy *data)
 {
   const struct curltime *pnow = Curl_pgrs_now(data);
+  timediff_t ctimeout_ms = (data->set.connecttimeout > 0) ?
+    data->set.connecttimeout : DEFAULT_CONNECT_TIMEOUT;
+
   Curl_pgrsTimeWas(data, TIMER_STARTSINGLE, *pnow);
   if(data->set.timeout)
     Curl_expire_set(data, EXPIRE_TIMEOUT, data->set.timeout, pnow);
-  if(data->set.connecttimeout)
-    /* Since a connection might go to pending and back to CONNECT several
-       times before it actually takes off, we need to set the timeout once
-       in SETUP before we enter CONNECT the first time. */
-    Curl_expire_set(data, EXPIRE_CONNECTTIMEOUT,
-                    data->set.connecttimeout, pnow);
+  /* Since a connection might go to pending and back to CONNECT several
+     times before it actually takes off, we need to set the timeout once
+     in SETUP before we enter CONNECT the first time. */
+  Curl_expire_set(data, EXPIRE_CONNECTTIMEOUT, ctimeout_ms, pnow);
 
   multistate(data, MSTATE_CONNECT);
   return CURLM_CALL_MULTI_PERFORM;
@@ -2936,7 +2936,7 @@ statemachine_end:
           multi_ischanged(multi, FALSE));
 
 out:
-  data->result = result;
+  data->done = (uint8_t)result;
   return mresult;
 }
 

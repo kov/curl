@@ -723,6 +723,9 @@ static size_t read_part_content(curl_mimepart *part, char *buffer,
     /* sz is already zero. */
   }
   else {
+    if(part->datasize != (curl_off_t)-1)
+      bufsize = curlx_sotouz_range(part->datasize - part->state.offset,
+                                  0, bufsize);
     switch(part->kind) {
     case MIMEKIND_MULTIPART:
       /*
@@ -1514,9 +1517,9 @@ CURLcode Curl_mime_set_subparts(curl_mimepart *part,
   if(part->kind == MIMEKIND_MULTIPART && part->arg == subparts)
     return CURLE_OK;
 
-  cleanup_part_content(part);
-
-  if(subparts) {
+  if(!subparts)
+    cleanup_part_content(part);
+  else {
     /* Should not have been attached already. */
     if(subparts->parent)
       return CURLE_BAD_FUNCTION_ARGUMENT;
@@ -1539,6 +1542,8 @@ CURLcode Curl_mime_set_subparts(curl_mimepart *part,
     if(mime_subparts_seek(subparts, (curl_off_t)0, SEEK_SET) !=
        CURL_SEEKFUNC_OK)
       return CURLE_SEND_FAIL_REWIND;
+
+    cleanup_part_content(part);
 
     subparts->parent = part;
     /* Subparts are processed internally: no read callback. */

@@ -118,8 +118,6 @@ CURLcode Curl_xfer_recv(struct Curl_easy *data,
                         char *buf, size_t blen,
                         size_t *pnrcvd);
 
-CURLcode Curl_xfer_send_close(struct Curl_easy *data);
-
 /* Return TRUE if the transfer is not done, but further progress
  * is blocked. For example when it is only receiving and its writer
  * is PAUSED. */
@@ -131,7 +129,7 @@ bool Curl_xfer_recv_is_paused(struct Curl_easy *data);
 
 /* Enable/Disable pausing of send/recv for the transfer. */
 CURLcode Curl_xfer_pause_send(struct Curl_easy *data, bool enable);
-CURLcode Curl_xfer_pause_recv(struct Curl_easy *data, bool enable);
+CURLcode Curl_xfer_pause_recv(struct Curl_easy *data, bool enable, bool flush);
 
 /* TRUE if the transfer is secure, e.g. uses TLS and does not
  * use a forward proxy. */

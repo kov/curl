@@ -1288,9 +1288,8 @@ fn a_transfer_not_exchanging_cannot_be_paused() {
 
 /// A pause asked for from inside a write stops the output with the piece
 /// the handler was given: what is left of the write is held, and an
-/// unpause gives it, then lets the input go on. C holds output only under a
-/// handler's own pause and goes on handing the rest of the write to the
-/// handler while the application's pause stands (DIVERGENCE.md).
+/// unpause gives it, then lets the input go on (`Curl_xfer_pause_recv`
+/// sets the writer paused; tests 2120 and 2121).
 #[test]
 fn a_receive_pause_holds_the_rest_of_the_write_under_way() {
     let mut m = multi();
@@ -1334,22 +1333,42 @@ fn a_receive_pause_holds_the_rest_of_the_write_under_way() {
     assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
 }
 
-/// An unpause from another transfer's handler replays at once; a pause
-/// during that replay holds again, and a second unpause goes on from the
-/// piece it held. No byte is lost or given twice.
+/// An unpause from another transfer's handler does not replay inside it:
+/// the held output goes on at its own transfer's next step, after the
+/// handler returned (`Curl_xfer_pause_recv` with no flush in a callback),
+/// so a second unpause before that step changes nothing. A pause during
+/// the replay holds again, and an unpause from outside goes on at once
+/// from the piece it held. No byte is lost or given twice.
 #[test]
-fn a_sibling_s_unpause_replays_at_once() {
+fn a_sibling_s_unpause_replays_at_its_next_step() {
+    let order = std::sync::Arc::new(curl_alloc::Lock::new(Vec::new()));
     let mut m = multi();
     let mut a = script(vec![Piece::Body(bytes(40000))]);
-    let a_calls = planned(&mut a, pausing_on(&[0, 2]));
+    let seen = order.clone();
+    let a_calls = planned(&mut a, move |cx, n| {
+        seen.lock().unwrap().push("a");
+        pausing_on(&[0, 2])(cx, n)
+    });
     let a_id = m.add(Box::new(a), (), &mut NoEvents).unwrap();
     let mut b = script(vec![body(b"1"), body(b"2")]);
+    let seen = order.clone();
     let b_calls = planned(&mut b, move |cx, _| {
+        seen.lock().unwrap().push("b in");
         cx.pause(a_id, PauseRequest::CONT).unwrap();
+        seen.lock().unwrap().push("b out");
         Write::Accepted
     });
     m.add(Box::new(b), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    for _ in 0..3 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(
+        *order.lock().unwrap(),
+        ["a", "b in", "b out", "b in", "b out", "a", "a"],
+        "a's replay after b's handler returned"
+    );
+    m.pause(a_id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    assert_eq!(order.lock().unwrap().len(), 9, "replayed before it returns");
     let a_seen: Vec<_> = a_calls
         .lock()
         .unwrap()
@@ -1368,6 +1387,108 @@ fn a_sibling_s_unpause_replays_at_once() {
     let mut results: Vec<_> = std::iter::from_fn(|| m.info_read().map(|msg| msg.result)).collect();
     results.sort_by_key(|r| r.is_err());
     assert_eq!(results, [Ok(()), Ok(())]);
+}
+
+/// Output a sibling's handler unpaused goes on at its transfer's next
+/// step though nothing more has come in: it does not wait for more input
+/// to come with, as C's client writer has it wait (DIVERGENCE.md).
+#[test]
+fn an_unpaused_hold_goes_on_before_more_input() {
+    let mut m = multi();
+    let mut a = script(vec![
+        body(b"AAAAA"),
+        Piece::Yield,
+        Piece::Yield,
+        Piece::Yield,
+        body(b"aaaaa"),
+    ]);
+    let a_calls = planned(&mut a, pausing_on(&[0]));
+    let a_id = m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    let mut b = script(vec![body(b"1")]);
+    planned(&mut b, move |cx, _| {
+        cx.pause(a_id, PauseRequest::CONT).unwrap();
+        Write::Accepted
+    });
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let writes = |calls: &Calls| -> Vec<Vec<u8>> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, b, _)| b.clone())
+            .collect()
+    };
+    assert_eq!(writes(&a_calls), [b"AAAAA".to_vec(), b"AAAAA".to_vec()]);
+    for _ in 0..5 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(
+        writes(&a_calls),
+        [b"AAAAA".to_vec(), b"AAAAA".to_vec(), b"aaaaa".to_vec()]
+    );
+}
+
+/// Unpauses transfer `a` when `b` is done, from the notify callback.
+struct UnpausesOnDone {
+    a: Option<TransferId>,
+    b: Option<TransferId>,
+    order: std::sync::Arc<curl_alloc::Lock<Vec<&'static str>>>,
+}
+
+impl crate::multi::MultiEvents<crate::multi::NoHost> for UnpausesOnDone {
+    fn notify(
+        &mut self,
+        cx: &mut crate::multi::NotifyCx<'_, crate::multi::NoHost>,
+        n: crate::multi::Notification,
+    ) {
+        if self
+            .b
+            .is_some_and(|b| n == crate::multi::Notification::EasyDone(b))
+        {
+            self.order.lock().unwrap().push("notify in");
+            let a = self.a.expect("added");
+            cx.pause(a, PauseRequest::CONT, self).unwrap();
+            self.order.lock().unwrap().push("notify out");
+        }
+    }
+}
+
+/// An unpause from the notify callback, a callback as a handler is, does
+/// not replay inside it either: the held output goes on at its
+/// transfer's next step.
+#[test]
+fn an_unpause_from_the_notify_callback_replays_at_its_next_step() {
+    let order = std::sync::Arc::new(curl_alloc::Lock::new(Vec::new()));
+    let mut m = multi();
+    m.set_notify(crate::multi::NotifyKind::EasyDone, true);
+    let mut a = script(vec![Piece::Body(bytes(20000))]);
+    let seen = order.clone();
+    let a_calls = planned(&mut a, move |cx, n| {
+        seen.lock().unwrap().push("a");
+        pausing_on(&[0])(cx, n)
+    });
+    let mut ev = UnpausesOnDone {
+        a: None,
+        b: None,
+        order: order.clone(),
+    };
+    let a_id = m.add(Box::new(a), (), &mut ev).unwrap();
+    ev.a = Some(a_id);
+    let b_id = m
+        .add(Box::new(script(vec![body(b"1")])), (), &mut ev)
+        .unwrap();
+    ev.b = Some(b_id);
+    for _ in 0..3 {
+        m.perform(&mut ev).unwrap();
+    }
+    assert_eq!(
+        *order.lock().unwrap(),
+        ["a", "notify in", "notify out", "a", "a"]
+    );
+    let a_bytes: Vec<u8> = taken(&a_calls).into_iter().flat_map(|(_, b)| b).collect();
+    assert_eq!(a_bytes, bytes(20000));
 }
 
 /// An unpause of the transfer being replayed, from inside the replay,

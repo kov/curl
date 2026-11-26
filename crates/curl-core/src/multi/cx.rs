@@ -1190,9 +1190,9 @@ impl<'a> TransferCx<'a> {
     }
 
     /// Pause or unpause a transfer, this one among them
-    /// (`curl_easy_pause`). Another's held output is replayed before this
-    /// returns; this one's, by the replay or step already under way. The
-    /// timer hears of it at the end of the pass.
+    /// (`curl_easy_pause`). Held output is replayed at its transfer's next
+    /// step, never inside this handler; this one's, by the replay or step
+    /// already under way. The timer hears of it at the end of the pass.
     pub fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
         self.calls.pause(id, req)
     }
@@ -1672,14 +1672,16 @@ impl<H: Host> NotifyCx<'_, H> {
         self.multi.owners()
     }
 
-    /// As `Multi::pause`.
+    /// As `Multi::pause`, but held output is replayed at the transfer's
+    /// next step, not inside the callback.
     pub fn pause(
         &mut self,
         id: TransferId,
         req: PauseRequest,
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<(), ErrorKind> {
-        self.multi.pause(id, req, ev)
+        self.multi
+            .pause_replaying(id, req, super::Replay::AtItsStep, ev)
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {

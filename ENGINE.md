@@ -1532,12 +1532,14 @@ The rules that keep this sound:
   unless the connection is kept up (`ProtoState::reads_through_pause`,
   `multi_adjust_pollset`): a paused transfer over ngtcp2 waits to read, and its connection
   adds what it wants on top.
-- **A call on a sibling transfer** routes to that slot. A sibling's unpause flushes its
-  pipeline synchronously by the same rule as a step: its `Run` is moved out for the flush
-  and put back after, so the handlers it calls get a context whose `EngineRest` does not alias
-  it. A `pause` reaching a transfer whose `Run` is already out (the stepping one, or one being
-  flushed) finds no pipeline to flush and only changes the value; nesting is bounded by that,
-  not by a counter.
+- **A call on a sibling transfer** routes to that slot. An unpause from a handler, or from the
+  notify callback, does not flush: it marks the sibling to run, and the progress pass after its
+  next step replays what it holds (`Replay::AtItsStep`; C's `Curl_xfer_pause_recv` with no
+  flush inside a callback), so no handler is called inside another's. An unpause from outside
+  (`Multi::pause`) flushes at once by the same rule as a step: the `Run` is moved out for the
+  flush and put back after, so the handlers it calls get a context whose `EngineRest` does not
+  alias it. A `pause` reaching a transfer whose `Run` is already out finds no pipeline to
+  flush and only changes the value.
 - **A connection being driven** is driven in its lease: `ConnLease::connect` moves the
   machine out of the lease's `ConnSlot::Connecting`, drives it and puts the result back, the
   pool not borrowed at all. The machine is part of the stepping transfer's `Run`, so it is one
@@ -4054,8 +4056,9 @@ pub enum SendPause { Running, Paused }
 
 `pause` (core of `curl_easy_pause`):
 1. no lease held → BadFunctionArgument;
-2. apply per direction; an unpause of held output flushes when the `Run` is in its slot, and a
-   failed flush is `pause`'s error, leaving the output `Failed` for the next step to report;
+2. apply per direction; an unpause of held output from outside the multi's callbacks flushes
+   when the `Run` is in its slot, and a failed flush is `pause`'s error, leaving the output
+   `Failed` for the next step to report; one from inside them leaves the flush to the step;
 3. unless blocked in every wanted direction, mark the transfer dirty;
 4. if anything changed: `timer_update`, then `assess(id)`; an `Abort` from either is
    AbortedByCallback.
@@ -4296,7 +4299,7 @@ over the last five one-second records. The handler is called, or the meter drawn
 - after every receive/send pass, with the low-speed check unless the request is done or either
   direction is paused; while `LowSpeed` is set the check re-arms `SpeedCheck` for a second;
 - after every step that went well while holding a connection (the tail of `multi_runsingle`'s
-  loop), with held output a handler unpaused replayed at once; the state the step went to is
+  loop), with held output a handler unpaused replayed then; the state the step went to is
   traced first, as C's switch changes state before `is_finished`. Every C state from CONNECT on
   that holds a connection is a step of its own, so the counts are C's: file:// pins them,
   two before DO and three after it; a piece of DO is not a C state, and has none;

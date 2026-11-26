@@ -1378,9 +1378,20 @@ impl<H: Host> Multi<H> {
         req: PauseRequest,
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<(), ErrorKind> {
+        self.pause_replaying(id, req, Replay::AtOnce, ev)
+    }
+
+    /// As `pause`, held output replayed `when` says.
+    pub(crate) fn pause_replaying(
+        &mut self,
+        id: TransferId,
+        req: PauseRequest,
+        when: Replay,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), ErrorKind> {
         let now = self.clock.now();
         let was = self.slots.get(id).map(|s| s.pause);
-        let result = pause_transfer(&mut self.rest(now, ev), id, req);
+        let result = pause_transfer(&mut self.rest(now, ev), id, req, when);
         // The timer hears only of a change: one that leaves the transfer
         // running, which it marks dirty (easy.c:1229).
         let timer = self
@@ -2159,16 +2170,29 @@ fn number<H: Host>(slots: &mut Slots<H>, pool: &mut Pool, id: TransferId) {
     easy.report_mut().set_transfer(number);
 }
 
+/// When an unpause replays the output a transfer holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Replay {
+    /// Before the unpause returns: nothing runs on the multi.
+    AtOnce,
+    /// At the transfer's next step, which the unpause marks to run: from
+    /// inside a handler or the notify callback, so no handler is called
+    /// inside another (`Curl_xfer_pause_recv`'s `flush`, false when
+    /// `Curl_api_is_in_callback`).
+    AtItsStep,
+}
+
 /// Pause or unpause transfer `id` (the core of `curl_easy_pause`). An
-/// unpause of held output replays it at once if the transfer's run is in
-/// its slot; if it is out (the transfer is being stepped, or replayed
-/// already), the replay sees the change before its next entry. A failed
-/// replay leaves the output failed, and the transfer fails at its next
-/// step.
+/// unpause of held output replays it as `when` says, at once only if the
+/// transfer's run is in its slot; if it is out (the transfer is being
+/// stepped, or replayed already), the replay sees the change before its
+/// next entry. A failed replay leaves the output failed, and the transfer
+/// fails at its next step.
 fn pause_transfer<H: Host>(
     rest: &mut EngineRest<'_, H>,
     id: TransferId,
     req: PauseRequest,
+    when: Replay,
 ) -> Result<(), ErrorKind> {
     let Some(slot) = rest.tell.slots.app_mut(id) else {
         return Err(ErrorKind::BadFunctionArgument);
@@ -2210,7 +2234,7 @@ fn pause_transfer<H: Host>(
         }
         None => slot.judge_pause = true,
     }
-    let replay = was_held && slot.pause.recv == RecvPause::Running;
+    let replay = was_held && slot.pause.recv == RecvPause::Running && when == Replay::AtOnce;
     // The connection hears of a change to receiving, once held output is
     // replayed (`Curl_xfer_pause_recv`).
     let paused = slot.pause.recv_paused();

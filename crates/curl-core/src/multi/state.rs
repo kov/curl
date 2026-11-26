@@ -2385,7 +2385,8 @@ fn over_limit<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> bool {
 
 /// A step that went well, with a connection, ends with a progress pass
 /// (the tail of `multi_runsingle`'s loop, after `is_finished`). The
-/// handler may have unpaused held output: it is replayed at once.
+/// handler may have unpaused held output, its own or, before this step, a
+/// sibling's handler: it is replayed here.
 fn progress_after_step<H: Host>(
     next: TransferState,
     wake: Wake,

@@ -895,17 +895,18 @@ so: weaknesses kept because C has them.
   `a_redirect_s_ftp_server_is_sent_no_account_or_alternative`
   (`crates/curl-core/src/proto/ftp/tests.rs`).
 
-## Output C delivers while paused
+## Output held by a pause
 
-- **`CURLPAUSE_RECV` holds output already read.** After `curl_easy_pause(CURLPAUSE_RECV)`,
-  delivery checks the pause before each piece that would reach the write or header handler and
-  holds the rest until the unpause, as it does under a handler's own `CURL_WRITEFUNC_PAUSE`. A
-  pause asked inside a write stops after the piece under way. C's client writer stops only on a
-  handler's pause (`writer.paused`, which `curl_easy_pause` does not set), so the rest of a
-  write already under way, such as all that one read of a compressed body decodes to, goes on
-  to the handler while the pause stands.
-  Upstream: #23853, PR #23885. Pinned by `a_receive_pause_holds_the_rest_of_the_write_under_way`
-  (`crates/curl-core/src/deliver/tests.rs`).
+- **Output an unpause from a callback lets go does not wait for more input.** An unpause from
+  inside a handler or the notify callback replays held output after the callback returns, at
+  its transfer's next step, as C now does (`Curl_xfer_pause_recv` does not flush inside a
+  callback). There C's client writer gives what it holds only with the next bytes the
+  connection reads (`cw_out_do_flush` as a write comes down the stack) or at the transfer's end
+  (`Curl_cw_out_done`), so held output waits for the server to send more, without bound if it
+  sends nothing. Measured 2026-11-26 with two transfers, the second's write callback unpausing
+  the first, whose server then sends nothing for 1.5 seconds: C delivers the held bytes with
+  the next ones after the stall, the rewrite as soon as the callback returns. Pinned by
+  `an_unpaused_hold_goes_on_before_more_input` (`crates/curl-core/src/deliver/tests.rs`).
 
 ## Names C leaves unchecked
 

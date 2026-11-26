@@ -189,13 +189,13 @@ witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
             OutState::Held(held) => {
                 buffering(cx, bytes.len(), held.held());
 
-=== an unpause waits for the next step to replay
+=== an unpause from outside waits for the next step to replay
 file: crates/curl-core/src/multi/mod.rs
-witness: curl-core deliver::tests::a_sibling_s_unpause_replays_at_once
+witness: curl-core deliver::tests::the_paused_piece_is_given_again_whole
 --- old
-    let replay = was_held && slot.pause.recv == RecvPause::Running;
+    let replay = was_held && slot.pause.recv == RecvPause::Running && when == Replay::AtOnce;
 --- new
-    let replay = false && was_held && slot.pause.recv == RecvPause::Running;
+    let replay = false && was_held && slot.pause.recv == RecvPause::Running && when == Replay::AtOnce;
 
 === a paused transfer reads on
 file: crates/curl-core/src/proto/script.rs
@@ -495,3 +495,19 @@ witness: curl-core deliver::tests::a_receive_pause_holds_the_rest_of_the_write_u
     if pausable && cx.pause().recv == RecvPause::Stopped {
 --- new
     if pausable && cx.pause().recv == RecvPause::Stopped && false {
+
+=== an unpause from a sibling's handler replays inside that handler
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core deliver::tests::a_sibling_s_unpause_replays_at_its_next_step
+--- old
+    let replay = was_held && slot.pause.recv == RecvPause::Running && when == Replay::AtOnce;
+--- new
+    let replay = was_held && slot.pause.recv == RecvPause::Running;
+
+=== an unpause from the notify callback replays inside it
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core deliver::tests::an_unpause_from_the_notify_callback_replays_at_its_next_step
+--- old
+            .pause_replaying(id, req, super::Replay::AtItsStep, ev)
+--- new
+            .pause_replaying(id, req, super::Replay::AtOnce, ev)

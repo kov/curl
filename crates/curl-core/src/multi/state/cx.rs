@@ -938,7 +938,7 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     }
 
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
-        super::super::pause_transfer(&mut self.rest, id, req)
+        super::super::pause_transfer(&mut self.rest, id, req, super::super::Replay::AtItsStep)
     }
 
     fn fail(&mut self, why: &[u8]) {

@@ -94,17 +94,6 @@ struct Callback {
     size: Option<u64>,
 }
 
-/// The tree behind a pointer the application passed, if not NULL.
-///
-/// # Safety
-///
-/// `mime` is NULL or a live tree from `curl_mime_init`.
-unsafe fn tree<'a>(mime: *mut curl_mime) -> Option<&'a mut ShimMime> {
-    // SAFETY: as the caller guarantees; C lets one thread use a tree at a
-    // time.
-    unsafe { mime.cast::<ShimMime>().as_mut() }
-}
-
 /// # Safety
 ///
 /// `part` is NULL or a live part from `curl_mime_addpart`.
@@ -165,11 +154,19 @@ pub unsafe extern "C" fn curl_mime_init(_easy: *mut CURL) -> *mut curl_mime {
 }
 const _: ffi::proto::curl_mime_init = curl_mime_init;
 
-/// Append a part to `mime`.
-fn add_part(mime: &mut ShimMime) -> Option<NonNull<ShimPart>> {
-    mime.parts.try_reserve(1).ok()?;
+/// Append a part to `mime`. The part keeps `mime` itself, not a pointer
+/// made from a reference to it: one would be invalidated by the push of
+/// the part into the tree's list through that reference's parent.
+///
+/// # Safety
+///
+/// `mime` is a live tree no reference is held to.
+unsafe fn add_part(mime: NonNull<ShimMime>) -> Option<NonNull<ShimPart>> {
+    // SAFETY: as the caller guarantees.
+    let tree = unsafe { &mut *mime.as_ptr() };
+    tree.parts.try_reserve(1).ok()?;
     let part = try_box(ShimPart {
-        mime: NonNull::from(&mut *mime),
+        mime,
         name: None,
         filename: None,
         mime_type: None,
@@ -181,7 +178,7 @@ fn add_part(mime: &mut ShimMime) -> Option<NonNull<ShimPart>> {
     })
     .ok()?;
     let part = NonNull::from(Box::leak(part));
-    mime.parts.try_push(part).expect("reserved above");
+    tree.parts.try_push(part).expect("reserved above");
     Some(part)
 }
 
@@ -190,11 +187,11 @@ fn add_part(mime: &mut ShimMime) -> Option<NonNull<ShimPart>> {
 /// `mime` is NULL or a live tree.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_mime_addpart(mime: *mut curl_mime) -> *mut curl_mimepart {
-    // SAFETY: as the caller guarantees.
-    let Some(mime) = (unsafe { tree(mime) }) else {
+    let Some(mime) = NonNull::new(mime.cast::<ShimMime>()) else {
         return ptr::null_mut();
     };
-    add_part(mime).map_or(ptr::null_mut(), |p| p.as_ptr().cast())
+    // SAFETY: as the caller guarantees.
+    unsafe { add_part(mime) }.map_or(ptr::null_mut(), |p| p.as_ptr().cast())
 }
 const _: ffi::proto::curl_mime_addpart = curl_mime_addpart;
 
@@ -539,7 +536,10 @@ pub unsafe extern "C" fn curl_mime_subparts(
     if !rewind_tree(tree) {
         return CURLE_SEND_FAIL_REWIND;
     }
-    tree.parent = Parent::Part(NonNull::from(&mut *p));
+    // The part itself, not a pointer made from `p`: the write through `p`
+    // below would invalidate one.
+    let at = NonNull::new(part.cast::<ShimPart>()).expect("a part was found at it");
+    tree.parent = Parent::Part(at);
     p.content = PartContent::Subparts(sub);
     CURLE_OK
 }
@@ -729,9 +729,9 @@ fn copy_tree(from: &ShimMime) -> Option<NonNull<ShimMime>> {
             // SAFETY: a tree's parts live as long as it does.
             let src = unsafe { p.as_ref() };
             // SAFETY: just made and owned here.
-            let mut dst = add_part(unsafe { &mut *to.as_ptr() })?;
+            let at = unsafe { add_part(to) }?;
             // SAFETY: as above.
-            let dst = unsafe { dst.as_mut() };
+            let dst = unsafe { &mut *at.as_ptr() };
             dst.content = match &src.content {
                 PartContent::None => PartContent::None,
                 PartContent::Data(d) => PartContent::Data(d.clone()),
@@ -745,7 +745,7 @@ fn copy_tree(from: &ShimMime) -> Option<NonNull<ShimMime>> {
                     // SAFETY: as above.
                     let sub = copy_tree(unsafe { sub.as_ref() })?;
                     // SAFETY: just made.
-                    unsafe { (*sub.as_ptr()).parent = Parent::Part(NonNull::from(&mut *dst)) };
+                    unsafe { (*sub.as_ptr()).parent = Parent::Part(at) };
                     PartContent::Subparts(sub)
                 }
             };
@@ -1060,14 +1060,14 @@ mod tests {
     use curl_core::options::UploadSource;
 
     use super::{
-        MimeTree, ShimMime, basename, curl_mime_addpart, curl_mime_data, curl_mime_data_cb,
-        curl_mime_encoder, curl_mime_filedata, curl_mime_free, curl_mime_init, curl_mime_name,
-        curl_mime_subparts,
+        MimeTree, PartContent, ShimMime, basename, curl_mime_addpart, curl_mime_data,
+        curl_mime_data_cb, curl_mime_encoder, curl_mime_filedata, curl_mime_free, curl_mime_init,
+        curl_mime_name, curl_mime_subparts, part_at,
     };
     use crate::easy::{self, curl_easy_cleanup, curl_easy_duphandle, curl_easy_init};
     use crate::ffi::{
         self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_OK, CURLE_READ_ERROR,
-        CURLE_SEND_FAIL_REWIND, curl_mime,
+        CURLE_SEND_FAIL_REWIND, curl_mime, curl_mimepart,
     };
     use crate::setopt::curl_easy_setopt;
 
@@ -1307,6 +1307,48 @@ mod tests {
             curl_mime_free(m);
             curl_easy_cleanup(a);
             curl_easy_cleanup(b);
+        }
+    }
+
+    /// Whose subparts a part holds, and which part a tree is under, as
+    /// each was set, through trees and parts made and attached in turn:
+    /// the pointers each keeps of the other are as valid as the ones the
+    /// application holds (Tree Borrows, under Miri).
+    #[test]
+    fn parts_and_trees_keep_valid_pointers_to_each_other() {
+        // SAFETY: live trees and parts throughout.
+        unsafe {
+            let mime = curl_mime_init(ptr::null_mut());
+            let part = curl_mime_addpart(mime);
+            let second = curl_mime_addpart(mime);
+            let sub = curl_mime_init(ptr::null_mut());
+            let subpart = curl_mime_addpart(sub);
+            let subsub = curl_mime_init(ptr::null_mut());
+            assert_eq!(curl_mime_subparts(part, sub), CURLE_OK);
+            assert_eq!(curl_mime_subparts(subpart, subsub), CURLE_OK);
+            // A tree under itself is refused: its root is reached through
+            // each part's tree and each tree's part.
+            assert_eq!(
+                curl_mime_subparts(curl_mime_addpart(subsub), mime),
+                CURLE_BAD_FUNCTION_ARGUMENT
+            );
+            assert_eq!(held(part), sub);
+            assert_eq!(held(subpart), subsub);
+            assert!(held(second).is_null());
+            curl_mime_free(mime);
+        }
+    }
+
+    /// The subparts a part holds, or NULL.
+    ///
+    /// # Safety
+    ///
+    /// `p` is a live part.
+    unsafe fn held(p: *mut curl_mimepart) -> *mut curl_mime {
+        // SAFETY: as the caller guarantees.
+        match unsafe { &part_at(p).unwrap().content } {
+            PartContent::Subparts(have) => have.as_ptr().cast::<curl_mime>(),
+            _ => ptr::null_mut(),
         }
     }
 

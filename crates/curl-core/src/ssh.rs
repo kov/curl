@@ -411,7 +411,8 @@ pub trait Session: fmt::Debug + Send {
     /// Open `path`, closing any file open before.
     fn open(&mut self, path: &[u8], mode: OpenMode, perms: u32) -> Result<(), SftpStatus>;
     fn has_file(&self) -> bool;
-    fn close_file(&mut self);
+    /// Close the file open, if one is (`sftp_close`).
+    fn close_file(&mut self) -> Result<(), Failed>;
     fn seek(&mut self, offset: u64) -> Result<(), SftpStatus>;
     fn fstat(&mut self) -> Result<Attrs, AttrsError>;
     fn file_nonblocking(&mut self);

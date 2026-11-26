@@ -36,8 +36,8 @@ use crate::options::{CreateDirs, Lines, Resume, SshAuthTypes};
 use crate::progress::rate::Way;
 use crate::report::Timer;
 use crate::ssh::{
-    Aio, AttrChange, AttrsError, Auth, Blocking, KeyType, KnownHosts, Methods, NotDone, OpenMode,
-    PollFlags, Rc, ScpRequest, ScpWay, Session, SftpStatus,
+    Aio, AttrChange, AttrsError, Auth, Blocking, Failed, KeyType, KnownHosts, Methods, NotDone,
+    OpenMode, PollFlags, Rc, ScpRequest, ScpWay, Session, SftpStatus,
 };
 use crate::trace;
 use crate::upload::Upload;
@@ -608,7 +608,8 @@ impl SshConn {
         let s = self.session();
         s.set_blocking(Blocking::No);
         s.free_aio();
-        s.close_file();
+        // A broken transfer's close is not looked at, as C's is not.
+        if let Err(Failed) = s.close_file() {}
         s.sftp_free();
         self.reading = None;
         self.writing = false;
@@ -621,7 +622,8 @@ impl SshConn {
     fn session_disconnect(&mut self, says: &mut dyn Says) {
         let s = self.session();
         s.scp_free();
-        s.close_file();
+        // Nor is the goodbye's.
+        if let Err(Failed) = s.close_file() {}
         s.sftp_free();
         s.disconnect();
         self.home = None;
@@ -1071,15 +1073,25 @@ impl Request {
                 State::SftpDownloadInit => self.sftp_download_init(cx, sc),
                 State::SftpDownloadStat => self.sftp_download_stat(cx, sc),
                 State::SftpClose => {
-                    sc.session().close_file();
+                    let closed = sc.session().close_file();
                     self.path = None;
-                    cx.ssh(format_args!("SFTP DONE done"));
-                    match sc.next {
-                        Some(next) if next != State::SftpClose => {
-                            sc.to(cx, next);
-                            sc.next = Some(State::SftpClose);
+                    if closed.is_err() {
+                        // A close that fails fails the transfer, as what
+                        // failed before or as SSH's failure, and the
+                        // session ends (`myssh_in_SFTP_CLOSE`).
+                        let text = sc.error_text();
+                        let kind = sc.actual.err().unwrap_or(ErrorKind::Ssh);
+                        trace::fail_with(cx, kind, &[b"Failed to close SFTP file: ", &text]);
+                        flow = sc.goto_error(cx, kind);
+                    } else {
+                        cx.ssh(format_args!("SFTP DONE done"));
+                        match sc.next {
+                            Some(next) if next != State::SftpClose => {
+                                sc.to(cx, next);
+                                sc.next = Some(State::SftpClose);
+                            }
+                            _ => sc.to(cx, State::Stop),
                         }
-                        _ => sc.to(cx, State::Stop),
                     }
                 }
                 State::SftpShutdown => sc.sftp_shutdown(cx),

@@ -891,7 +891,8 @@ impl Session for Libsession {
             OpenMode::Append => sys::O_WRONLY | sys::O_CREAT | sys::O_APPEND,
             OpenMode::Write => sys::O_WRONLY,
         };
-        self.close_file();
+        // A file left open by a transfer that broke is not looked at.
+        if let Err(Failed) = self.close_file() {}
         self.file = self.on_path(path, ptr::null_mut(), |sftp, p| {
             // SAFETY: the SFTP session, and a C string libssh reads.
             unsafe { sys::sftp_open(sftp, p, flags, mode_t(perms)) }
@@ -907,11 +908,17 @@ impl Session for Libsession {
         !self.file.is_null()
     }
 
-    fn close_file(&mut self) {
-        if !self.file.is_null() {
-            // SAFETY: the open file, closed once: its pointer is cleared.
-            unsafe { sys::sftp_close(self.file) };
-            self.file = ptr::null_mut();
+    fn close_file(&mut self) -> Result<(), Failed> {
+        if self.file.is_null() {
+            return Ok(());
+        }
+        // SAFETY: the open file, closed once: its pointer is cleared.
+        let rc = unsafe { sys::sftp_close(self.file) };
+        self.file = ptr::null_mut();
+        if rc == sys::SSH_OK {
+            Ok(())
+        } else {
+            Err(Failed)
         }
     }
 
@@ -994,7 +1001,8 @@ impl Session for Libsession {
 
     fn sftp_free(&mut self) {
         self.free_aio();
-        self.close_file();
+        // A file still open as the session goes is not looked at.
+        if let Err(Failed) = self.close_file() {}
         // C leaves a listing cut short open, and its memory with it.
         self.closedir();
         if !self.sftp.is_null() {

@@ -372,3 +372,19 @@ witness: curl-core proto::ssh::tests::a_download_from_the_end_starts_at_its_last
         Resume::AtEnd if size >= 1 => Ok(size - 1),
 --- new
         Resume::AtEnd if size >= 1 => Ok(size),
+
+=== an SFTP file whose close fails is a transfer that succeeded (libssh)
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::an_sftp_file_whose_close_fails_fails_the_transfer
+--- old
+                    if closed.is_err() {
+--- new
+                    if closed.is_err() && false {
+
+=== a failed SFTP close with no failure before it fails as another than SSH's (libssh)
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::tests::an_sftp_file_whose_close_fails_fails_the_transfer
+--- old
+                        let kind = sc.actual.err().unwrap_or(ErrorKind::Ssh);
+--- new
+                        let kind = sc.actual.err().unwrap_or(ErrorKind::RecvError);

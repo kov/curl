@@ -96,8 +96,9 @@ struct World {
     link_without_flag: bool,
     /// What the session says a call that would wait waits for.
     poll: PollFlags,
-    /// The SCP channel's close fails.
+    /// The SCP channel's close fails, and an SFTP file's.
     scp_close_fails: bool,
+    file_close_fails: bool,
     /// The calls, by name, that wait every time they are made.
     stuck: Vec<&'static str>,
 }
@@ -653,8 +654,16 @@ impl Session for FakeSession {
     fn has_file(&self) -> bool {
         self.file.is_some()
     }
-    fn close_file(&mut self) {
-        self.file = None;
+    fn close_file(&mut self) -> Result<(), Failed> {
+        let Some(_) = self.file.take() else {
+            return Ok(());
+        };
+        let mut w = self.w();
+        if w.file_close_fails {
+            w.call("close_file fails", &[]);
+            return Err(Failed);
+        }
+        Ok(())
     }
     fn seek(&mut self, offset: u64) -> Result<(), SftpStatus> {
         self.w().call("seek", &[offset.to_string().as_bytes()]);
@@ -2582,6 +2591,29 @@ fn an_scp_close_that_waits_is_waited_on() {
     assert!(w.waiting.is_empty());
     assert!(w.calls.contains(&"scp_close".to_owned()), "{:?}", w.calls);
     assert_eq!(w.files, [(b"/tmp/f".to_vec(), b"over scp".to_vec())]);
+}
+
+/// An SFTP file that fails to close fails the transfer with SSH's
+/// failure, said with the library's words, after the body; the commands
+/// to send after it are not sent, and the session ends
+/// (`myssh_in_SFTP_CLOSE`).
+#[test]
+fn an_sftp_file_whose_close_fails_fails_the_transfer() {
+    let w = world_with(&[("/home/u/f", "x")], |w| w.file_close_fails = true);
+    let (result, body, said, calls) = run_in(&w, "sftp://u@127.0.0.1:PORT/~/f", |o| {
+        let line = o.line.make_mut().unwrap();
+        line.postquote
+            .set([&b"rename /home/u/f /home/u/h"[..]])
+            .unwrap();
+    });
+    assert_eq!(result, Err(ErrorKind::Ssh), "{said}");
+    assert_eq!(body, b"x");
+    assert!(
+        said.contains("Failed to close SFTP file: fake failure"),
+        "{said}"
+    );
+    assert!(calls.contains(&"close_file fails".to_owned()), "{calls:?}");
+    assert!(!calls.iter().any(|c| c.starts_with("rename ")), "{calls:?}");
 }
 
 /// An SCP channel that fails to close fails the upload with SSH's

@@ -2159,6 +2159,10 @@ fn unit2606_first_chain() {
 struct Pieces {
     left: std::collections::VecDeque<&'static [u8]>,
     reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Sends take nothing while set, as a full socket's.
+    send_blocks: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The bytes sends passed on.
+    sent: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl crate::conn::layer::Part<crate::conn::layer::Below<'_>> for Pieces {
@@ -2179,6 +2183,10 @@ impl crate::conn::layer::Layer for Pieces {
         let Some(piece) = self.left.pop_front() else {
             return Ok(Recv::WouldBlock);
         };
+        // An empty piece is the peer's close.
+        if piece.is_empty() {
+            return Ok(Recv::Eof);
+        }
         buf[..piece.len()].copy_from_slice(piece);
         Ok(Recv::Data(
             std::num::NonZeroUsize::new(piece.len()).unwrap(),
@@ -2191,7 +2199,15 @@ impl crate::conn::layer::Layer for Pieces {
         below: crate::conn::layer::Below<'_>,
         bytes: &[u8],
     ) -> std::io::Result<Sent> {
-        below.send(cx, bytes)
+        use std::sync::atomic::Ordering;
+        if self.send_blocks.load(Ordering::Relaxed) {
+            return Ok(Sent::WouldBlock);
+        }
+        let sent = below.send(cx, bytes)?;
+        if let Sent::Bytes(n) = sent {
+            self.sent.fetch_add(n.get(), Ordering::Relaxed);
+        }
+        Ok(sent)
     }
 }
 
@@ -2201,6 +2217,56 @@ impl crate::conn::layer::Layer for Pieces {
 /// rooms, and the count of receives.
 fn h2_shutting(
     pieces: &[&'static [u8]],
+) -> (
+    crate::conn::shutdown::ShutdownSet,
+    FakeNet,
+    crate::conn::buf::Rooms,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    Instant,
+) {
+    h2_shutting_as(pieces, H2Shutting::default())
+}
+
+/// How [`h2_shutting_as`] sets its connection up beyond the pieces.
+#[derive(Default)]
+struct H2Shutting {
+    /// What came behind the upgrade, for the session to read first.
+    held: &'static [u8],
+    /// Sends below take nothing while set.
+    send_blocks: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The bytes sends below passed on.
+    sent: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The session broke before the shutdown.
+    broken: bool,
+    /// The set's trace, HTTP/2's lines.
+    trace: Option<Written>,
+    /// Added without running it first.
+    unrun: bool,
+}
+
+/// What the set's trace was given.
+#[derive(Clone, Default)]
+struct Written(std::sync::Arc<curl_alloc::Lock<Vec<u8>>>);
+
+impl crate::handler::TextSink for Written {
+    fn write(&self, text: &[u8]) {
+        self.0.lock().unwrap().extend_from_slice(text);
+    }
+}
+
+impl Written {
+    fn lines(&self) -> Vec<String> {
+        String::from_utf8(self.0.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+fn h2_shutting_as(
+    pieces: &[&'static [u8]],
+    how: H2Shutting,
 ) -> (
     crate::conn::shutdown::ShutdownSet,
     FakeNet,
@@ -2223,6 +2289,8 @@ fn h2_shutting(
     let pieces = Pieces {
         left: pieces.iter().copied().collect(),
         reads: reads.clone(),
+        send_blocks: how.send_blocks.clone(),
+        sent: how.sent.clone(),
     };
     stream
         .layers_mut()
@@ -2231,6 +2299,10 @@ fn h2_shutting(
     let (mut h2, _) =
         crate::proto::http2::H2Conn::open(&crate::http2::fake::FakeH2, &[], None).unwrap();
     h2.session().upgrade(b"", false).unwrap();
+    h2.hold(how.held).unwrap();
+    if how.broken {
+        h2.set_broken();
+    }
     conn.put_h2(Box::new(h2));
     let (_, slot, _) = lease.into_parts();
     let ConnSlot::Open(conn) = *slot.expect("held above") else {
@@ -2238,10 +2310,19 @@ fn h2_shutting(
     };
     let shared = crate::time::SharedClock::new(Box::new(clock.clone())).unwrap();
     let mut set = crate::conn::shutdown::ShutdownSet::new(shared);
+    if let Some(written) = how.trace {
+        let components = crate::components::Components::new().unwrap();
+        components.set(
+            crate::components::Component::Http2,
+            crate::components::Level::Info,
+        );
+        let sink = crate::handler::Handler::text(written).unwrap();
+        set.trace_internally(crate::trace::Internal::to(components, sink));
+    }
     let mut room = crate::conn::buf::Rooms::default();
     let shutting = crate::conn::shutdown::Shutting::start(conn, now);
     set.add(shutting, 8, &mut net, &mut room);
-    assert!(set.take_dirty(), "a new one runs at once");
+    assert!(how.unrun || set.take_dirty(), "a new one runs at once");
     (set, net, room, reads, now)
 }
 
@@ -2271,6 +2352,103 @@ fn an_h2_shutdown_reads_once_a_pass_and_runs_again_for_held_input() {
     );
     assert_eq!(set.len(), 0, "done, and closed");
     assert!(!set.is_dirty());
+}
+
+/// What came behind the upgrade is read first as the connection shuts
+/// down: the server's settings said, its GOAWAY kept, so that its close
+/// next is one with GOAWAY (`cf_h2_shutdown`, `h2_progress_ingress`).
+#[test]
+fn an_h2_shutdown_reads_what_came_behind_the_upgrade_first() {
+    let written = Written::default();
+    let how = H2Shutting {
+        held: b"S 5\nG 0 0\n",
+        trace: Some(written.clone()),
+        ..H2Shutting::default()
+    };
+    let (mut set, mut net, mut room, _, now) = h2_shutting_as(&[b""], how);
+    set.perform(&mut net, now, &mut room);
+    assert_eq!(set.len(), 0, "done, and closed");
+    let lines = written.lines();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("* [HTTP/2] Process "))
+        .unwrap_or_else(|| panic!("{lines:#?}"));
+    assert_eq!(
+        lines[at..at + 9],
+        [
+            "* [HTTP/2] Process 10 bytes in connection buffer",
+            "* [HTTP/2] [0] <- FRAME[SETTINGS, len=6]",
+            "* [HTTP/2] [0] MAX_CONCURRENT_STREAMS: 5",
+            "* [HTTP/2] [0] ENABLE_PUSH: TRUE",
+            "* [HTTP/2] [0] notify MAX_CONCURRENT_STREAMS: 5",
+            "* [HTTP/2] [0] <- FRAME[GOAWAY, error=0, reason='', last_stream=0]",
+            "* [HTTP/2] [0] ingress: connection closed",
+            "* [HTTP/2] server closed with GOAWAY",
+            "* [HTTP/2] [0] ingress: done",
+        ],
+        "{lines:#?}"
+    );
+}
+
+/// A session already broken has no goodbye to say: its shutdown is done
+/// at once, nothing sent and nothing read (`cf_h2_shutdown`).
+#[test]
+fn a_broken_h2_session_shuts_down_at_once() {
+    use std::sync::atomic::Ordering;
+    let written = Written::default();
+    let how = H2Shutting {
+        broken: true,
+        trace: Some(written.clone()),
+        ..H2Shutting::default()
+    };
+    let (mut set, mut net, mut room, reads, now) = h2_shutting_as(&[b"S\n"], how);
+    set.perform(&mut net, now, &mut room);
+    assert_eq!(set.len(), 0, "done, and closed");
+    assert_eq!(reads.load(Ordering::Relaxed), 0, "nothing read");
+    let lines = written.lines();
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("GOAWAY") || l.contains("ingress")),
+        "{lines:#?}"
+    );
+}
+
+/// Before its GOAWAY is submitted, the session's shutdown waits on
+/// nothing: the set runs it at once (`cf_h2_adjust_pollset` with no
+/// `sent_goaway`).
+#[test]
+fn an_h2_shutdown_not_begun_waits_on_nothing() {
+    let how = H2Shutting {
+        unrun: true,
+        ..H2Shutting::default()
+    };
+    let (mut set, mut net, mut room, _, _) = h2_shutting_as(&[b"S\n"], how);
+    let polled: Vec<Events> = set.pollsets().map(|(_, e)| e).collect();
+    assert_eq!(polled, [], "nothing to wait on yet");
+    set.close_all(&mut net, &mut room);
+}
+
+/// A GOAWAY the socket would not take waits to be written, the session
+/// still reading: the shutdown waits on both ways (`cf_h2_adjust_pollset`,
+/// its output held in `outbufq`).
+#[test]
+fn an_h2_shutdown_waits_to_write_what_it_could_not_send() {
+    use std::sync::atomic::Ordering;
+    let how = H2Shutting::default();
+    how.send_blocks.store(true, Ordering::Relaxed);
+    let (blocks, sent) = (how.send_blocks.clone(), how.sent.clone());
+    let (mut set, mut net, mut room, _, now) = h2_shutting_as(&[b"S\n"], how);
+    set.perform(&mut net, now, &mut room);
+    assert_eq!(set.len(), 1, "the GOAWAY waits");
+    let polled: Vec<Events> = set.pollsets().map(|(_, e)| e).collect();
+    assert_eq!(polled, [Events::IN | Events::OUT], "to read, and to write");
+    // Once the socket takes it, what was held goes, though the session
+    // has nothing new to write.
+    blocks.store(false, Ordering::Relaxed);
+    set.perform(&mut net, now, &mut room);
+    assert!(sent.load(Ordering::Relaxed) > 0, "the GOAWAY went");
+    set.close_all(&mut net, &mut room);
 }
 
 /// A session that still wants to read, with nothing held below, waits on

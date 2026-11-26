@@ -671,3 +671,37 @@ features: test-util
 --- new
         let events = stream.shutdown_pollset(self.shut, Events::NONE);
 
+
+=== an HTTP/2 shutdown never reads what came behind the upgrade
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_reads_what_came_behind_the_upgrade_first
+--- old
+        let held = self.take_held();
+        if !held.is_empty() {
+--- new
+        let held = self.take_held();
+        if false {
+
+=== a broken HTTP/2 session still says its goodbye
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core conn::pool::tests::a_broken_h2_session_shuts_down_at_once
+--- old
+        if self.closed || self.broken() {
+            return Ok(true);
+        }
+        if !self.sent_goaway {
+--- new
+        if self.closed {
+            return Ok(true);
+        }
+        if !self.sent_goaway {
+
+=== an HTTP/2 shutdown forgets the peer's GOAWAY
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_reads_what_came_behind_the_upgrade_first
+--- old
+        if let Some(g) = goaway {
+            self.goaway = Some(g);
+        }
+--- new
+        let _ = goaway;

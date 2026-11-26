@@ -1126,6 +1126,40 @@ fn a_share_s_connection_lent_elsewhere_is_kept_alive_as_asked() {
     }
 }
 
+/// A read that comes to nothing yet, its stream still open, while what
+/// it leaves to send cannot go, fails with the send's failure: C's
+/// `cf_h2_recv` lets an egress failure replace a `CURLE_AGAIN` (upstream
+/// 2b59a7fcda). Here the answer to the server's PING, after the
+/// response's first DATA, meets a connection gone.
+#[test]
+fn a_read_that_got_nothing_yet_fails_as_its_send_fails() {
+    let talk = Conversation::replies(&[b"S\nH 1 0\n:status: 200\n\nD 1 2 0\naaP\n"], false)
+        .per_send()
+        .breaking_after(1);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(with_h2());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"http/2");
+    e.set_components(Some(c));
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.http.version = HttpVersion::Http2Prior;
+    });
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::SendError),
+        "{:?}",
+        ran.seen.text()
+    );
+    assert_eq!(ran.seen.body(), b"aa");
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l.starts_with("[HTTP/2] [1] cf_recv(len=16384) -> 55, 0,")),
+        "{text:?}"
+    );
+}
+
 /// An idle connection whose PING cannot be sent is closed by the upkeep
 /// (`conn_upkeep`'s `cpool_conn_close`): the next transfer makes another.
 #[test]
@@ -3389,9 +3423,11 @@ fn a_failed_read_fails_every_stream_on_the_connection() {
 
 /// A connection reset fails the transfer reading with 56, its read's
 /// line said and what it leaves to send tried; the other finds the
-/// connection's end, and its send failing on the closed connection is
-/// what its read returns, 55, as C's `cf_h2_recv` lets its egress's
-/// failure stand; a stream reset once its transfer is done is no easy's.
+/// connection's end, its stream cut short, 18, which its send failing on
+/// the closed connection does not replace: C's `cf_h2_recv` lets an
+/// egress failure stand only for a read that came to nothing yet
+/// (upstream 2b59a7fcda); a stream reset once its transfer is done is no
+/// easy's.
 #[test]
 fn a_reset_connection_fails_the_others_as_their_sends_fail() {
     let talk = Conversation::replies(
@@ -3412,7 +3448,7 @@ fn a_reset_connection_fails_the_others_as_their_sends_fail() {
     let reader = results.iter().position(|r| *r == Err(ErrorKind::RecvError));
     let reader = reader.unwrap_or_else(|| panic!("{results:?} {texts:?}"));
     let other = 1 - reader;
-    assert_eq!(results[other], Err(ErrorKind::SendError), "{texts:?}");
+    assert_eq!(results[other], Err(ErrorKind::PartialFile), "{texts:?}");
     let (r, o) = (2 * reader + 1, 2 * other + 1);
     let lines = &texts[reader];
     let failed = "Failed receiving HTTP2 data: 56(Failure when receiving data from the peer)\n";
@@ -3427,7 +3463,7 @@ fn a_reset_connection_fails_the_others_as_their_sends_fail() {
     ] {
         assert!(said(lines, &line), "{line:?} in {lines:?}");
     }
-    let read = format!("[HTTP/2] [{o}] cf_recv(len=16384) -> 55, 0,");
+    let read = format!("[HTTP/2] [{o}] cf_recv(len=16384) -> 18, 0,");
     assert!(lines.iter().any(|l| l.starts_with(&read)), "{lines:?}");
 }
 

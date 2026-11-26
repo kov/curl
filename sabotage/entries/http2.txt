@@ -861,15 +861,13 @@ witness: curl-core proto::http::tests::h2::a_failed_read_fails_every_stream_on_t
             with_session(lease, |h2, _| h2.set_broken());
 --- new
 
-=== a send's failure gives way to what the stream came to
+=== a send's failure replaces a read's own failure
 file: crates/curl-core/src/proto/http/h2.rs
 witness: curl-core proto::http::tests::h2::a_reset_connection_fails_the_others_as_their_sends_fail
 --- old
-            Err(e) => Err(e),
-            Ok(()) => came,
+            (Err(e), Ok(StreamRecv::Again)) => Err(e),
 --- new
-            Err(e) if came.is_ok() => Err(e),
-            _ => came,
+            (Err(e), _) => Err(e),
 
 === a done transfer's stream reset is traced as still its own
 file: crates/curl-core/src/proto/http/h2.rs

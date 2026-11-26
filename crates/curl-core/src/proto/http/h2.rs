@@ -1071,11 +1071,11 @@ impl Request {
         // What the stream came to is read before what the reading left to
         // send goes, as C's `cf_h2_recv` asks the stream before its
         // egress: a reset the client sends then does not undo a response
-        // already whole. A failure to send is what the call returns,
-        // whatever the stream came to.
-        let came = match self.h2_egress(cx, lease) {
-            Err(e) => Err(e),
-            Ok(()) => came,
+        // already whole. A failure to send replaces only nothing yet: an
+        // earlier failure stands, and so does a stream that closed whole.
+        let came = match (self.h2_egress(cx, lease), came) {
+            (Err(e), Ok(StreamRecv::Again)) => Err(e),
+            (_, came) => came,
         };
         let code = match &came {
             Ok(StreamRecv::Closed) => 0,

@@ -42,6 +42,12 @@ fn an_oack_is_read() {
             tsize: None
         })
     );
+    // A size of none is an empty file's, digits ending it or not.
+    for p in [&b"tsize\x000\0"[..], b"tsize\x000z\0"] {
+        let (got, said) = oack(p, 512, false);
+        assert_eq!(got.unwrap().tsize, Some(0), "{p:?}");
+        assert_eq!(said.last().unwrap(), "tsize parsed from OACK (0)");
+    }
     // A size that is no number is passed over.
     let (got, _) = oack(b"tsize\0x\0", 512, false);
     assert_eq!(got.unwrap().tsize, None);
@@ -78,7 +84,6 @@ fn a_bad_oack_is_refused() {
             b"blksize\x002048\0",
             "server requested blksize larger than allocated (2048)",
         ),
-        (b"tsize\x000z\0", "invalid tsize -:z:- value in OACK packet"),
     ] {
         let (got, _) = oack(p, 1024, false);
         assert_eq!(got.unwrap_err().to_string(), want, "{p:?}");

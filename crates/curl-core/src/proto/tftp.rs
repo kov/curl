@@ -114,8 +114,6 @@ pub(crate) enum OackRefused {
     Zero,
     TooSmall,
     PastRequested(u64),
-    /// A size of none, and what followed its digits.
-    NoSize(Vec<u8>),
 }
 
 impl fmt::Display for OackRefused {
@@ -136,11 +134,6 @@ impl fmt::Display for OackRefused {
             OackRefused::PastRequested(n) => {
                 write!(f, "server requested blksize larger than allocated ({n})")
             }
-            OackRefused::NoSize(rest) => write!(
-                f,
-                "invalid tsize -:{}:- value in OACK packet",
-                curl_alloc::Lossy(rest)
-            ),
         }
     }
 }
@@ -215,15 +208,9 @@ pub(crate) fn parse_oack(
             ));
         } else if option.eq_ignore_ascii_case(b"tsize")
             && !uploading
-            && let Some((tsize, rest)) = number(value, i64::MAX as u64)
+            && let Some((tsize, _)) = number(value, i64::MAX as u64)
         {
-            if tsize == 0 {
-                let mut shown = Vec::new();
-                shown
-                    .try_extend_from_slice(rest)
-                    .map_err(|_| OackRefused::Malformed)?;
-                return Err(OackRefused::NoSize(shown));
-            }
+            // A size of none is an empty file's.
             say(format_args!("tsize parsed from OACK ({tsize})"));
             oack.tsize = Some(tsize);
         }

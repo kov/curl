@@ -104,3 +104,13 @@ witness: curl-core proto::tftp::tests::over_the_wire::a_socket_bound_to_a_port_f
         if lease.conn().bound_local() {
 --- new
         if false && lease.conn().bound_local() {
+
+=== an OACK's size of none refuses the download
+file: crates/curl-core/src/proto/tftp.rs
+witness: curl-core proto::tftp::tests::an_oack_is_read
+--- old
+            // A size of none is an empty file's.
+--- new
+            if tsize == 0 {
+                return Err(OackRefused::Malformed);
+            }

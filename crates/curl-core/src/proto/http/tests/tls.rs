@@ -193,7 +193,7 @@ fn a_step_that_stops_with_input_held_marks_the_transfer_dirty_as_c() {
     // not the socket, says nothing of it.
     let stop = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty";
     let held = "[MULTI] [PERFORMING] pollset[] has POLLIN, but there is still buffered input -> mark as dirty";
-    let wait = "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=1";
+    let wait = "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2";
     let mut want = Vec::new();
     for step in 1..=7 {
         want.push(stop);

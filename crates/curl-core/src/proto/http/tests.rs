@@ -7360,7 +7360,7 @@ fn an_empty_body_says_the_request_went() {
 
 /// An error response that stops the body waiting for a 100 stops the
 /// wait's timer with it (`cr_exp100_done`): with the rest of the response
-/// still to come, nothing is due.
+/// still to come, only the connect limit armed at the leg's start is due.
 #[test]
 fn a_body_stopped_while_awaiting_a_100_stops_its_timer() {
     let (mut m, _talk, _) = server(&[b"HTTP/1.1 404 Nope\r\nContent-Length: 5\r\n\r\n"], false);
@@ -7376,7 +7376,7 @@ fn a_body_stopped_while_awaiting_a_100_stops_its_timer() {
         m.perform(&mut NoEvents).unwrap();
     }
     assert!(m.info_read().is_none(), "the body is still to come");
-    assert_eq!(m.timeout(), None);
+    assert_eq!(m.timeout(), Some(Duration::from_secs(300)), "not the 100's");
 }
 
 /// A head that fills the request's buffer leaves its body to the passes

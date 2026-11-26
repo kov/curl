@@ -2132,9 +2132,9 @@ fn a_body_in_flight_waits_for_its_acknowledgement() {
     assert_eq!(
         said[..4],
         [
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
         ]
     );
@@ -2409,8 +2409,9 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [TCP] adjust_pollset, !connected, POLLOUT fd=1001
         [0-0] [HAPPY-EYEBALLS] adjust_pollset -> 0, 2 socks
         [0-0] [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
-        [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 OUT], timeouts=1
+        [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 OUT], timeouts=2
         [0-0] [TIMER] [TIMEOUT] expires in 9900000us
+        [0-0] [TIMER] [CONNECTTIMEOUT] expires in 299900000us
         [0-0] [TIMER] [TIMEOUT] gives multi timeout in 9900ms
         [0-0] [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=9900
         [0-0] [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
@@ -2513,7 +2514,7 @@ fn a_tcp_second_leading_answers_for_the_connection() {
         [0-0] [SSL] adjust_pollset, POLLIN fd=1001
         [0-0] [TCP] adjust_pollset, !active, POLLIN fd=1001
         [0-0] [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
-        [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 IN], timeouts=1
+        [0-0] [MULTI] [CONNECTING] pollset[fd=1000 IN, fd=1001 IN], timeouts=2
         ",
     );
     assert_eq!(&text[from..=to], &want[..], "{text:#?}");
@@ -4839,11 +4840,11 @@ fn a_tunnelled_body_in_flight_waits_for_its_acknowledgement() {
     assert_eq!(
         said,
         [
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 81, 0".to_owned(),
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=3".to_owned(),
             "[HTTP/3] [0] cf_send(len=34612) -> 0, 34612".to_owned(),
-            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=1".to_owned(),
+            "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=2".to_owned(),
         ]
     );
     let s = script.lock().unwrap();

@@ -3238,7 +3238,7 @@ fn a_paused_download_waits_on_nothing() {
         .collect();
     let paused = pollsets
         .iter()
-        .filter(|l| l.ends_with("pollset[], timeouts=1, paused 0/1 (r/w)"))
+        .filter(|l| l.ends_with("pollset[], timeouts=2, paused 0/1 (r/w)"))
         .count();
     // Paused for its five runs, each but the last, which unpauses it,
     // waiting on nothing: C's line, its send pause before its receive's

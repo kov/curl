@@ -741,9 +741,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::ftp::tests::the_connect_limit_counts_while_the_data_connection_is_unmade
 features: test-util,debug-hooks
 --- old
-        .map_or(Phase::Transferring, Phase::SecondConnecting);
+        .map_or(Phase::Transferring, Phase::SecondConnecting)
 --- new
-        .map_or(Phase::Transferring, |_| Phase::Transferring);
+        .map_or(Phase::Transferring, |_| Phase::Transferring)
 
 === FTP's wait for its data connection is timed by the multi
 file: crates/curl-core/src/proto/mod.rs

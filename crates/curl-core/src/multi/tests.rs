@@ -185,16 +185,14 @@ fn the_timer_hears_of_add_and_remove() {
     let id = m.add(Box::new(easy("stall://a")), (), &mut ev).unwrap();
     assert_eq!(ev.timer, [SET_NOW], "inside the add");
     m.perform(&mut ev).unwrap();
-    assert_eq!(ev.timer, [SET_NOW, TimerChange::Clear]);
+    // Its connect limit, the default's, from the leg's start.
+    let connect = TimerChange::Set(Duration::from_secs(300));
+    assert_eq!(ev.timer, [SET_NOW, connect]);
     let other = m.add(Box::new(easy("stall://b")), (), &mut ev).unwrap();
     m.remove(other, &mut ev).unwrap().status.unwrap();
-    assert_eq!(
-        ev.timer[2..],
-        [SET_NOW, TimerChange::Clear],
-        "inside the remove"
-    );
+    assert_eq!(ev.timer[2..], [SET_NOW, connect], "inside the remove");
     m.remove(id, &mut ev).unwrap().status.unwrap();
-    assert_eq!(ev.timer.len(), 4, "no change, no call");
+    assert_eq!(ev.timer[4..], [TimerChange::Clear], "the last one's gone");
 }
 
 #[test]
@@ -1680,7 +1678,10 @@ fn an_established_connection_forgets_the_next_attempt() {
     assert_eq!(m.timeout(), next, "the next attempt's");
     clock.advance(Duration::from_millis(5));
     m.perform(&mut NoEvents).unwrap();
-    assert_eq!(m.timeout(), None, "the body still to come");
+    // The body still to come: only the connect limit, armed at the leg's
+    // start, is left.
+    let left = Duration::from_secs(300) - Duration::from_millis(5);
+    assert_eq!(m.timeout(), Some(left), "the next attempt's forgotten");
 }
 
 /// A transfer driven through `socket_action` alone, watching only what
@@ -5195,7 +5196,7 @@ fn a_transfer_let_out_of_pending_is_in_connect_at_once() {
         .unwrap();
     let let_out = [
         "[MULTI] [PENDING] -> [CONNECT]\n",
-        "[MULTI] [CONNECT] pollset[], timeouts=0, paused 0/0 (r/w)\n",
+        "[MULTI] [CONNECT] pollset[], timeouts=1, paused 0/0 (r/w)\n",
     ];
     assert_eq!(trace_of(&waiting[0])[before[0]..], let_out);
     // The wait is traced on the last transfer it collected.

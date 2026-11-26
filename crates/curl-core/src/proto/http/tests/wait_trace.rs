@@ -99,10 +99,14 @@ fn a_request_s_waits_are_traced_as_c() {
             "[MULTI] [INIT] pollset[], timeouts=0, paused 0/0 (r/w)
             [MULTI] [INIT] multi_wait(fds=1, timeout=0) tinternal=0
             [TCP] adjust_pollset, !connected, POLLOUT fd=1000
-            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=0
-            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=-1
-            [MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=0
-            [MULTI] [PERFORMING] multi_wait(fds=2, timeout=1000) tinternal=-1"
+            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=1
+            [TIMER] [CONNECTTIMEOUT] expires in 300000000us
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms
+            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=300000
+            [MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=1
+            [TIMER] [CONNECTTIMEOUT] expires in 300000000us
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms
+            [MULTI] [PERFORMING] multi_wait(fds=2, timeout=1000) tinternal=300000"
         )
     );
 }
@@ -154,16 +158,21 @@ fn a_race_s_waits_are_traced_as_c() {
             "[MULTI] [INIT] pollset[], timeouts=0, paused 0/0 (r/w)
             [MULTI] [INIT] multi_wait(fds=1, timeout=0) tinternal=0
             [TCP] adjust_pollset, !connected, POLLOUT fd=1000
-            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=1
+            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=2
             [TIMER] [HAPPY_EYEBALLS] expires in 200000us
+            [TIMER] [CONNECTTIMEOUT] expires in 300000000us
             [TIMER] [HAPPY_EYEBALLS] gives multi timeout in 200ms
             [MULTI] [CONNECTING] multi_wait(fds=2, timeout=200) tinternal=200
             [TCP] adjust_pollset, !connected, POLLOUT fd=1000
             [TCP] adjust_pollset, !connected, POLLOUT fd=1001
-            [MULTI] [CONNECTING] pollset[fd=1000 OUT, fd=1001 OUT], timeouts=0
-            [MULTI] [CONNECTING] multi_wait(fds=3, timeout=1000) tinternal=-1
-            [MULTI] [PERFORMING] pollset[fd=1001 IN], timeouts=0
-            [MULTI] [PERFORMING] multi_wait(fds=2, timeout=1000) tinternal=-1"
+            [MULTI] [CONNECTING] pollset[fd=1000 OUT, fd=1001 OUT], timeouts=1
+            [TIMER] [CONNECTTIMEOUT] expires in 299800000us
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 299800ms
+            [MULTI] [CONNECTING] multi_wait(fds=3, timeout=1000) tinternal=299800
+            [MULTI] [PERFORMING] pollset[fd=1001 IN], timeouts=1
+            [TIMER] [CONNECTTIMEOUT] expires in 299799000us
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 299799ms
+            [MULTI] [PERFORMING] multi_wait(fds=2, timeout=1000) tinternal=299799"
         )
     );
 }
@@ -228,8 +237,9 @@ fn a_transfer_run_by_events_is_traced_as_c() {
             "[MULTI] [INIT] added to multi, mid=1, running=1, total=2
             [MULTI] [INIT] multi_run_dirty
             [TCP] adjust_pollset, !connected, POLLOUT fd=1000
-            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=0
+            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=1
             socket cb: socket 1000 ADDED as OUT
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms
             [MULTI] [CONNECTING] multi_run_dirty
             [MULTI] [MSGSENT] pollset[], timeouts=0, paused 0/0 (r/w)
             socket cb: socket 1000 REMOVED
@@ -286,7 +296,7 @@ fn input_held_is_marked_as_events_assess_the_transfer() {
         .collect();
     let stop = "[MULTI] [PERFORMING] sendrecv_dl() no EAGAIN/pending data, mark as dirty";
     let held = "[MULTI] [PERFORMING] pollset[] has POLLIN, but there is still buffered input -> mark as dirty";
-    let wait = "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=0";
+    let wait = "[MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=1";
     let mut want = Vec::new();
     for step in 1..=7 {
         want.push(stop);
@@ -367,13 +377,19 @@ fn a_tunnel_s_waits_are_traced_as_c() {
             "[MULTI] [INIT] pollset[], timeouts=0, paused 0/0 (r/w)
             [MULTI] [INIT] multi_wait(fds=1, timeout=0) tinternal=0
             [TCP] adjust_pollset, !connected, POLLOUT fd=1000
-            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=0
-            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=-1
+            [MULTI] [CONNECTING] pollset[fd=1000 OUT], timeouts=1
+            [TIMER] [CONNECTTIMEOUT] expires in 300000000us
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms
+            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=300000
             [TCP] adjust_pollset, !active, POLLIN fd=1000
-            [MULTI] [CONNECTING] pollset[fd=1000 IN], timeouts=0
-            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=-1
-            [MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=0
-            [MULTI] [PERFORMING] multi_wait(fds=2, timeout=1000) tinternal=-1"
+            [MULTI] [CONNECTING] pollset[fd=1000 IN], timeouts=1
+            [TIMER] [CONNECTTIMEOUT] expires in 300000000us
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms
+            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=300000
+            [MULTI] [PERFORMING] pollset[fd=1000 IN], timeouts=1
+            [TIMER] [CONNECTTIMEOUT] expires in 300000000us
+            [TIMER] [CONNECTTIMEOUT] gives multi timeout in 300000ms
+            [MULTI] [PERFORMING] multi_wait(fds=2, timeout=1000) tinternal=300000"
         )
     );
 }
@@ -450,9 +466,9 @@ fn a_wait_counts_the_waker_only_when_it_waits_as_c() {
         expect(
             "[MULTI] [INIT] multi_wait(fds=0, timeout=0) tinternal=0
             [MULTI] [INIT] multi_wait(fds=2, timeout=0) tinternal=0
-            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=10) tinternal=-1
-            [MULTI] [CONNECTING] multi_wait(fds=3, timeout=10) tinternal=-1
-            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=10) tinternal=-1"
+            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=10) tinternal=300000
+            [MULTI] [CONNECTING] multi_wait(fds=3, timeout=10) tinternal=299990
+            [MULTI] [CONNECTING] multi_wait(fds=2, timeout=10) tinternal=299980"
         )
     );
 }

@@ -156,7 +156,7 @@ impl Deadlines {
     }
 
     /// A new leg starts at `now` (C's SETUP state): both limits are armed
-    /// from it. The total limit is still judged from the transfer's start,
+    /// from it, the connect limit's default where none is set. The total limit is still judged from the transfer's start,
     /// so it wakes the transfer later than it is due; C does the same.
     /// Returns the timers armed, and when each fires, in the order C
     /// arms them (`multistate_setup`).
@@ -167,11 +167,11 @@ impl Deadlines {
                 self.arm_in(TimerKind::Total, now, total.duration()),
             )
         });
-        let connect = self.connect.map(|connect| {
-            let at = self.arm_in(TimerKind::Connect, now, connect.duration());
-            (TimerKind::Connect, at)
-        });
-        [total, connect]
+        // Armed with the default without a limit of the application's: a
+        // transfer still connecting past DO is woken by it.
+        let limit = self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration);
+        let at = self.arm_in(TimerKind::Connect, now, limit);
+        [total, Some((TimerKind::Connect, at))]
     }
 
     /// Arm `kind` to fire `wait` after `now`, replacing its last arming.

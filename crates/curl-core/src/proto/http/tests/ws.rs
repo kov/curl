@@ -751,3 +751,43 @@ fn the_switch_is_said_as_the_next_step_starts() {
         "{states:#?}"
     );
 }
+
+/// A WebSocket's transfer, from a server that sends `replies` and keeps
+/// its connection open, with a connect limit of a second.
+fn ws_limited(replies: &[&[u8]]) -> Ran {
+    let (mut m, talk, _) = server(replies, false);
+    get(&mut m, "/", talk, |o| {
+        let url = format!("ws://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+    })
+}
+
+/// A WebSocket is still connecting until its 101 comes: a server that
+/// never answers the request runs out the connect limit, counted from the
+/// transfer's start (`state.still_connecting`, upstream f4afa5f739).
+#[test]
+fn a_websocket_awaiting_its_101_is_still_connecting() {
+    let ran = ws_limited(&[]);
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    let said = "Operation timed out after 1000 milliseconds with 0 bytes received";
+    assert!(
+        ran.seen.text().iter().any(|l| l.starts_with(said)),
+        "{:?}",
+        ran.seen.text()
+    );
+}
+
+/// Once the 101 has switched it, the connect limit no longer counts: an
+/// open WebSocket runs to its total limit.
+#[test]
+fn a_switched_websocket_is_past_its_connect_limit() {
+    let ran = ws_limited(&[SWITCH]);
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    let said = "Operation timed out after 10000 milliseconds ";
+    assert!(
+        ran.seen.text().iter().any(|l| l.starts_with(said)),
+        "{:?}",
+        ran.seen.text()
+    );
+}

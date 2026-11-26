@@ -299,6 +299,10 @@ impl Request {
         lease: &mut ConnLease,
         rest: &[u8],
     ) -> Result<usize, ErrorKind> {
+        // Connected, whether or not the switch then succeeds.
+        if let Some(w) = self.websocket.as_mut() {
+            w.connecting = false;
+        }
         // C's client does not check the server's `Sec-WebSocket-Accept`.
         trace::info(cx, format_args!("[WS] Received 101, switch to WebSocket"));
         let raw = cx.easy().options().ws.raw;

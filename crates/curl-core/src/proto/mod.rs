@@ -1403,6 +1403,16 @@ impl ProtoState {
         }
     }
 
+    /// The transfer still counts as connecting past DO, its connect limit
+    /// on it: a WebSocket's switch not yet taken up
+    /// (`state.still_connecting`).
+    pub(crate) fn still_connecting(&self) -> bool {
+        match self {
+            ProtoState::Http(r) => r.still_connecting(),
+            _ => false,
+        }
+    }
+
     /// Since when a connect of the request's own goes on, past DO: an FTP
     /// data connection's not made yet (C's `connect_start_ms`).
     pub(crate) fn second_connecting(&self) -> Option<crate::time::Instant> {

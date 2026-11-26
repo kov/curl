@@ -202,3 +202,30 @@ witness: curl-core proto::http::tests::ws::an_empty_frame_paused_on_is_given_aga
                 Took::Part(0) => {}
 --- new
                 Took::Part(0) => held.consume(0),
+
+=== a WebSocket awaiting its 101 is timed as past its connect
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::ws::a_websocket_awaiting_its_101_is_still_connecting
+--- old
+    if proto.still_connecting() {
+--- new
+    if proto.still_connecting() && proto.second_connecting().is_some() {
+
+=== a WebSocket switched by its 101 is still timed as connecting
+file: crates/curl-core/src/proto/http/ws.rs
+witness: curl-core proto::http::tests::ws::a_switched_websocket_is_past_its_connect_limit
+--- old
+            w.connecting = false;
+--- new
+            let _ = w;
+
+=== the connect limit is armed only where the application sets one
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::tests::the_timer_hears_of_add_and_remove
+features: test-util
+--- old
+        let limit = self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration);
+--- new
+        let Some(limit) = self.connect.map(TimeLimit::duration) else {
+            return [total, None];
+        };

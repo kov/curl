@@ -111,6 +111,10 @@ struct Websocket {
     /// The application uploads (`set.method == HTTPREQ_PUT`): once
     /// switched, what it gives is sent, as frames unless raw.
     uploads: bool,
+    /// No 101 has taken up the switch yet: until one does, the transfer
+    /// is still connecting, whatever its state, as far as its time limits
+    /// go (`state.still_connecting`).
+    connecting: bool,
 }
 
 /// The HTTP versions a request may speak (`CURL_HTTP_V1x`, `CURL_HTTP_V2x`,
@@ -740,6 +744,8 @@ impl Request {
         }
         request.websocket = Some(Websocket {
             uploads: cx.easy().options().method == Method::Upload,
+            // One that only connects never asks (`ws_setup_conn`).
+            connecting: cx.easy().options().connect_only.requests(),
         });
         Ok(request)
     }
@@ -1115,6 +1121,12 @@ impl Request {
             self.outgoing,
             Sending::Idle | Sending::Done | Sending::Aborted
         )
+    }
+
+    /// A WebSocket's switch is still to be taken up: the transfer counts
+    /// as connecting (`Curl_is_connecting`).
+    pub(crate) fn still_connecting(&self) -> bool {
+        self.websocket.is_some_and(|w| w.connecting)
     }
 
     /// When a body waiting for a 100 is sent anyway.

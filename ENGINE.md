@@ -1256,15 +1256,19 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
 ```
 
 - **The C behaviour is ported**: `start_leg` arms `Total` and `Connect` from the leg's start
-  (C arms EXPIRE_TIMEOUT and EXPIRE_CONNECTTIMEOUT at every SETUP, multi.c:2497), and
+  (C arms EXPIRE_TIMEOUT and EXPIRE_CONNECTTIMEOUT at every SETUP, `multistate_setup`), and
   `time_left` judges the total limit from `Starts::op` and the connect limit (300 s when unset)
   from `Starts::single` (connect.c:70), in C's whole-millisecond arithmetic, where a limit
-  reached exactly counts as passed by 1 ms. The connect timer is armed only when the limit is
-  set, as in C. A timer stays armed after its instant until an expiry pass consumes it
+  reached exactly counts as passed by 1 ms. The connect timer is armed at every leg, with the
+  300 s default when no limit is set, as in C. A timer stays armed after its instant until an expiry pass consumes it
   (`add_next_timeout`), so a timer armed in the past still wakes the transfer at once. The N
   in the error text follows C's two checks: the multi-level check reports the time since
   `Starts::single` while connecting and since `Starts::op` after (multi.c:1820), the check at the
   end of a receive/send pass always since `Starts::single` (transfer.c:382-393).
+- **A WebSocket is still connecting until its 101**: past DO, a request whose switch no 101
+  has taken up yet (`ProtoState::still_connecting`, C's `state.still_connecting`) is timed in
+  `Phase::Connecting`, its connect limit from `Starts::single` and its error's N since then.
+  One that only connects never asks, and is not.
 - **A connect past DO counts the connect limit from its own start**: while an FTP data
   connection is not made, `time_left` takes `Phase::SecondConnecting` with the instant it
   started (C's `connect_start_ms`, connect.c:141), so the multi's check sees the connect limit

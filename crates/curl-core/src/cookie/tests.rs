@@ -321,6 +321,9 @@ fn reads_netscape_lines_as_c() {
         example.com\tFALSE\t/\tFALSE\tsoon\tbad\tz\n\
         example.com\tFALSE\t/\tFALSE\t0\tctl\t\x01\n\
         example.com\tFALSE\t/\tFALSE\t0\ttoo\tmany\tfields\n\
+        \tFALSE\t/\tFALSE\t0\tnodomain\tv\n\
+        .\tFALSE\t/\tFALSE\t0\tdot\tv\n\
+        example.com\tFALSE\t/\tFALSE\t0\t\tnoname\n\
         \n";
     jar.load(file, false, false, None, NOW, &mut 0, |_| {})
         .unwrap();

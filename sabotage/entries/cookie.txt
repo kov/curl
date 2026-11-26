@@ -478,3 +478,27 @@ witness: curl-core proto::http::tests::the_application_s_cookie_string_stays_wit
                 if !http.headers.replaces(b"Cookie") && self.base.gate().trusted().is_some() =>
 --- new
                 if self.base.gate().trusted().is_some() =>
+
+=== a cookie file's line with no domain is kept
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::reads_netscape_lines_as_c
+--- old
+                    if domain.is_empty() {
+                        return Ok(Parsed::Dropped(None));
+--- new
+                    if domain.is_empty() {
+                        let _ = ();
+
+=== a cookie file's line with no name is kept
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::reads_netscape_lines_as_c
+--- old
+                    if field.is_empty() {
+                        return Ok(Parsed::Dropped(None));
+                    }
+                    name = field;
+--- new
+                    if field.is_empty() {
+                        let _ = ();
+                    }
+                    name = field;

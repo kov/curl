@@ -850,7 +850,14 @@ impl Jar {
                 fields += 1;
             }
             match fields {
-                0 => domain = field.strip_prefix(b".").unwrap_or(field),
+                // One leading dot is dropped; nothing left of the domain,
+                // or no name, drops the line.
+                0 => {
+                    domain = field.strip_prefix(b".").unwrap_or(field);
+                    if domain.is_empty() {
+                        return Ok(Parsed::Dropped(None));
+                    }
+                }
                 1 => co.tailmatch = is_prefix_of_ignore_case(field, b"TRUE"),
                 3 => {
                     co.secure = false;
@@ -866,6 +873,9 @@ impl Jar {
                     Number::None | Number::Overflow => return Ok(Parsed::Dropped(None)),
                 },
                 5 => {
+                    if field.is_empty() {
+                        return Ok(Parsed::Dropped(None));
+                    }
                     name = field;
                     co.prefix = Prefix::of(field);
                 }

@@ -120,6 +120,12 @@ fn acceptor() -> SslAcceptor {
         .unwrap();
     cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
         .unwrap();
+    // The host is matched only by an alternative name, never the CN.
+    let san = openssl::x509::extension::SubjectAlternativeName::new()
+        .dns("localhost")
+        .build(&cert.x509v3_context(None, None))
+        .unwrap();
+    cert.append_extension(san).unwrap();
     cert.sign(&key, MessageDigest::sha256()).unwrap();
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
     acceptor.set_private_key(&key).unwrap();

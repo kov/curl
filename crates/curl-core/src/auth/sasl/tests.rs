@@ -981,8 +981,7 @@ mod gssapi_gss;
 /// A password given passes GSS-API's GSSAPI over, which would log in as
 /// whoever holds the Kerberos ticket: the next mechanism both ends allow
 /// is chosen. GSSAPI is chosen without a password, or with one when it
-/// alone is preferred. C chooses GSSAPI whatever the password
-/// (DIVERGENCE.md).
+/// alone is preferred (`sasl_choose_krb5`; tests 5033 to 5037).
 #[test]
 fn a_password_passes_gss_api_s_gssapi_over() {
     let gss = Security::Gss(crate::gss::testing::Scripted::leaked());

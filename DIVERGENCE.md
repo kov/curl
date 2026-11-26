@@ -886,13 +886,6 @@ so: weaknesses kept because C has them.
   (`crates/curl-core/src/proto/http/tests/negotiate.rs`) and
   `delegation_to_the_origin_does_not_reach_the_socks_proxy`
   (`crates/curl-core/src/proto/http/tests/socks_gss.rs`).
-- **A mail login given a password does not log in by Kerberos ticket.** With a non-empty
-  password, SASL passes GSS-API's GSSAPI over for the next mechanism both ends allow, unless the
-  login options prefer it alone (`AUTH=GSSAPI`); without a password it is chosen as before, and
-  SSPI's GSSAPI, which uses the credentials given, is unchanged. C chooses GSSAPI whenever the
-  server offers it and a GSS-API library is there (`sasl_choose_krb5`), and so logs in as
-  whoever holds the ticket, not as the user named. Upstream: #23851, PR #23943. Pinned by
-  `a_password_passes_gss_api_s_gssapi_over` (`crates/curl-core/src/auth/sasl/tests.rs`).
 - **The FTP account goes only where the login may.** `CURLOPT_FTP_ACCOUNT` and
   `CURLOPT_FTP_ALTERNATIVE_TO_USER` reach the login only when the request's credential gate
   trusts its origin: the first origin, or any with `CURLOPT_UNRESTRICTED_AUTH`. C reads both

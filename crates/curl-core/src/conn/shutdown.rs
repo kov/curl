@@ -102,6 +102,10 @@ pub(crate) enum Tried {
     Done,
     /// Its layers wait for the socket.
     Waiting,
+    /// Its session waits, holding input already that a poll of the socket
+    /// cannot see: the next pass is to run at once, as C marks its
+    /// internal handle dirty.
+    Again,
     /// Its layers wait, but it closes all the same, unfinished (`once`):
     /// what a try says only within, as `Done`.
     Cut,
@@ -249,6 +253,7 @@ impl Shutting {
             // C's terminate leaves its filters unfinished: a forced close.
             Tried::Cut => Tried::Done,
             Tried::Waiting => Tried::Waiting,
+            Tried::Again => Tried::Again,
         };
         if let Some(t) = trace {
             let done = u8::from(tried == Tried::Done);
@@ -295,7 +300,19 @@ impl Shutting {
         if awaits {
             return Tried::Waiting;
         }
-        self.conn.goodbye(&mut cx);
+        // The session's goodbye first, its layers' once it is done; one
+        // that fails ends it (`cshutdn_cfchain_try_once`). A QUIC
+        // session's is not waited on.
+        let session = self.conn.goodbye(&mut cx);
+        if let Transport::Stream(_) = self.conn.transport {
+            match session {
+                Ok(Handshake::Waiting) if self.once => return Tried::Cut,
+                Ok(Handshake::Waiting) if self.conn.goodbye_reads_held() => return Tried::Again,
+                Ok(Handshake::Waiting) => return Tried::Waiting,
+                Ok(Handshake::Done) => {}
+                Err(_) => return Tried::Done,
+            }
+        }
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
@@ -366,7 +383,7 @@ impl Shutting {
             let line = self.conn.line().expect("a goodbye awaits on a line");
             return Some((stream.socket(), line.goodbye_wants()));
         }
-        let events = stream.shutdown_pollset(self.shut);
+        let events = stream.shutdown_pollset(self.shut, self.conn.goodbye_wants());
         (!events.is_empty()).then(|| (stream.socket(), events))
     }
 
@@ -668,14 +685,18 @@ impl ShutdownSet {
         let mut i = 0;
         while i < self.conns.len() {
             let trace = self.trace.as_ref();
-            if self.conns[i]
-                .shutting
-                .try_once(now, Some(&self.clock), trace, Some(&mut *room))
-                == Tried::Done
-            {
+            let tried =
+                self.conns[i]
+                    .shutting
+                    .try_once(now, Some(&self.clock), trace, Some(&mut *room));
+            if tried == Tried::Done {
                 let entry = self.conns.remove(i);
                 self.closed(entry, net, room);
                 continue;
+            }
+            // Run again at once, as C's internal handle marked dirty.
+            if tried == Tried::Again {
+                self.dirty = true;
             }
             let mut ms = self.conns[i].shutting.left_ms(now);
             // An answer awaited is given up on when due, a whole

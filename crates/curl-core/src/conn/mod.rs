@@ -2257,13 +2257,34 @@ impl Conn {
         Some(WsLend(self))
     }
 
-    /// Say goodbye from the top as it shuts down: its session's, which
-    /// goes as the connection takes it, never waited on; its layers' are
-    /// the stream's (`cf_h2_shutdown`).
-    pub(crate) fn goodbye(&mut self, cx: &mut dyn LayerCx) {
+    /// Move its session's goodbye on from the top as it shuts down
+    /// (`cf_h2_shutdown`): whether the session is done, as it says; one
+    /// with no session is. Its layers' are the stream's.
+    pub(crate) fn goodbye(
+        &mut self,
+        cx: &mut dyn LayerCx,
+    ) -> Result<layer::Handshake, crate::error::ErrorKind> {
         use part::Part as _;
-        if let (Some(session), Some(carrier)) = self.split() {
-            let _done = session.shutdown(cx, carrier);
+        match self.split() {
+            (Some(session), Some(carrier)) => session.shutdown(cx, carrier),
+            _ => Ok(layer::Handshake::Done),
+        }
+    }
+
+    /// What its session waits on as it shuts down, nothing once done or
+    /// with no session.
+    pub(crate) fn goodbye_wants(&self) -> io::Events {
+        self.session
+            .session()
+            .map_or(io::Events::NONE, mux::Session::shutdown_wants)
+    }
+
+    /// Its session's goodbye has input to read already, which a poll of
+    /// the socket cannot see: its next pass is to run at once.
+    pub(crate) fn goodbye_reads_held(&mut self) -> bool {
+        match self.split() {
+            (Some(session), Some(carrier)) => session.shutdown_reads_held(carrier),
+            _ => false,
         }
     }
 

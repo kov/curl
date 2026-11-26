@@ -765,32 +765,240 @@ impl<'a> ConnPart<Carrier<'a>> for H2Conn {
         }
     }
 
-    /// Say goodbye as the connection shuts down, once, and send what the
-    /// connection takes of it now (`cf_h2_shutdown`): a peer that closed
-    /// hears nothing. What does not go now goes with the connection. Its
-    /// end is said once, as C's connection says it of its filter
+    /// Say goodbye as the connection shuts down and move the session on
+    /// until it is done (`cf_h2_shutdown`): GOAWAY once, then, each
+    /// pass, what the session wants sent and one receive of what it wants
+    /// read, until it wants neither and its output is gone, or the peer
+    /// closed; a peer that closed hears nothing. Its end is said once,
+    /// as C's connection says it of its filter
     /// (`Curl_cshutdn_try_once_idx`).
     fn shutdown(
         &mut self,
         cx: &mut dyn LayerCx,
         mut below: Carrier<'a>,
     ) -> Result<Handshake, ErrorKind> {
-        if std::mem::replace(&mut self.shut, true) {
+        if self.shut {
             return Ok(Handshake::Done);
         }
-        if !self.closed && !self.sent_goaway {
-            self.sent_goaway = true;
-            if self
-                .session
-                .goaway(H2Error::NO_ERROR, b"shutdown\0")
-                .is_ok()
-            {
-                let sent = self.egress(&mut Bare(cx), &mut below);
-                drop(sent);
+        let passed = self.shutdown_pass(cx, &mut below);
+        self.shut = passed != Ok(false);
+        match passed {
+            Ok(true) => {
+                cx.of(Component::Http2, format_args!("shut down successfully"));
+                Ok(Handshake::Done)
+            }
+            Ok(false) => {
+                cx.of(Component::Http2, format_args!("shut down not done yet"));
+                Ok(Handshake::Waiting)
+            }
+            Err(kind) => {
+                let code = kind.number();
+                cx.of(
+                    Component::Http2,
+                    format_args!("shut down failed with {code}"),
+                );
+                Err(kind)
             }
         }
-        cx.of(Component::Http2, format_args!("shut down successfully"));
-        Ok(Handshake::Done)
+    }
+}
+
+impl H2Conn {
+    /// One pass of the shutdown: whether it is done.
+    fn shutdown_pass(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        below: &mut Carrier<'_>,
+    ) -> Result<bool, ErrorKind> {
+        if self.closed || self.broken() {
+            return Ok(true);
+        }
+        if !self.sent_goaway {
+            self.sent_goaway = true;
+            if let Err(e) = self.session.goaway(H2Error::NO_ERROR, b"shutdown\0") {
+                return Err(cx.fails(
+                    ErrorKind::SendError,
+                    format_args!("nghttp2_submit_goaway() failed: {}({})", e.text, e.code),
+                ));
+            }
+        }
+        if self.session.wants().write || !self.out.is_empty() {
+            match self.egress(&mut Bare(cx), below) {
+                Ok(_) => {}
+                Err(EgressFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+                Err(EgressFailed::Session(_) | EgressFailed::Send) => {
+                    return Err(ErrorKind::SendError);
+                }
+            }
+        }
+        if self.session.wants().read {
+            self.shutdown_ingress(cx, below)?;
+        }
+        let wants = self.session.wants();
+        Ok(self.closed || (!wants.read && !wants.write && self.out.is_empty()))
+    }
+
+    /// Read what the peer sent as the connection shuts down: what came
+    /// behind an upgrade first, then one receive, however short, for the
+    /// session to read; the next is the next pass's (`h2_progress_ingress`
+    /// once GOAWAY is sent, upstream d0031b97b2).
+    fn shutdown_ingress(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        below: &mut Carrier<'_>,
+    ) -> Result<(), ErrorKind> {
+        if self.broken() {
+            cx.of(
+                Component::Http2,
+                format_args!("[0] ingress: session is closed"),
+            );
+            return Err(ErrorKind::Http2);
+        }
+        let held = self.take_held();
+        if !held.is_empty() {
+            let n = held.len();
+            cx.of(
+                Component::Http2,
+                format_args!("Process {n} bytes in connection buffer"),
+            );
+            self.feed_bare(cx, &held)?;
+        }
+        if !self.closed {
+            let (got, fed) = crate::conn::buf::lending(cx, below, |cx, below| {
+                let got = below.recv(cx, CHUNK);
+                let fed = match got {
+                    Ok(Recv::Data(n)) => {
+                        let n = n.get();
+                        cx.of(
+                            Component::Http2,
+                            format_args!("[0] ingress: read {n} bytes"),
+                        );
+                        let mut rx = std::mem::take(below.rx_mut());
+                        let fed = self.feed_bare(cx, rx.filled());
+                        let all = rx.filled().len();
+                        rx.consume(all);
+                        *below.rx_mut() = rx;
+                        fed
+                    }
+                    _ => Ok(()),
+                };
+                (got, fed)
+            })
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+            match got {
+                Ok(Recv::WouldBlock) => {}
+                Ok(Recv::Eof) => {
+                    cx.of(
+                        Component::Http2,
+                        format_args!("[0] ingress: connection closed"),
+                    );
+                    self.closed = true;
+                }
+                Ok(Recv::Data(_)) => {
+                    fed?;
+                    // The session reads all it is given.
+                    cx.of(
+                        Component::Http2,
+                        format_args!("[0] ingress: nw-in buffered 0"),
+                    );
+                }
+                Err(e) => {
+                    let kind = match e {
+                        crate::conn::RecvFailed::OutOfMemory => ErrorKind::OutOfMemory,
+                        crate::conn::RecvFailed::Os(_) => ErrorKind::RecvError,
+                    };
+                    let code = kind.number();
+                    let text = kind.message();
+                    return Err(cx.fails(
+                        kind,
+                        format_args!("Failed receiving HTTP2 data: {code}({text})"),
+                    ));
+                }
+            }
+        }
+        if self.closed {
+            let how = if self.goaway.is_some() {
+                "with GOAWAY"
+            } else {
+                "abruptly"
+            };
+            // The connection closes already: C's `connclose` changes
+            // nothing here.
+            cx.of(Component::Http2, format_args!("server closed {how}"));
+        }
+        cx.of(Component::Http2, format_args!("[0] ingress: done"));
+        Ok(())
+    }
+
+    /// Have the session read `bytes` with no transfer to hear it: its
+    /// frames traced, a GOAWAY kept, a change of its settings traced. A
+    /// failed read breaks the session (`h2_process_pending_input`).
+    fn feed_bare(&mut self, cx: &mut dyn LayerCx, bytes: &[u8]) -> Result<(), ErrorKind> {
+        use crate::http2::{Event, Heard};
+        let said = &mut self.max_said;
+        let mut goaway = None;
+        let read = self.session.recv(bytes, &mut |event| {
+            trace_frame(&mut *cx, &event);
+            match event {
+                Event::GoAway { last_stream, error } => {
+                    goaway = Some(GoAway {
+                        last: last_stream,
+                        error,
+                    });
+                }
+                Event::Settings {
+                    max_concurrent,
+                    enable_push,
+                } => {
+                    // No transfer waits for room on a connection that
+                    // closes: a changed limit tells no one.
+                    let _changed = trace_settings(&mut *cx, said, max_concurrent, enable_push);
+                }
+                _ => {}
+            }
+            Heard::Fine
+        });
+        if let Some(g) = goaway {
+            self.goaway = Some(g);
+        }
+        if let Err(e) = read {
+            self.broken = true;
+            let n = e.code;
+            let text = e.text;
+            return Err(cx.fails(
+                ErrorKind::RecvError,
+                format_args!("nghttp2 recv error {n}: {text}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// What the session waits on while it shuts down, before the layers
+    /// below shut down theirs: to read while it wants to, to write while
+    /// it wants to or has output left (`cf_h2_adjust_pollset` with
+    /// `sent_goaway`); nothing once done.
+    pub(crate) fn shutdown_wants(&self) -> Events {
+        if !self.sent_goaway || self.shut {
+            return Events::NONE;
+        }
+        let wants = self.session.wants();
+        let mut events = Events::NONE;
+        if wants.read {
+            events = events | Events::IN;
+        }
+        if wants.write || !self.out.is_empty() {
+            events = events | Events::OUT;
+        }
+        events
+    }
+
+    /// The shutdown wants to read and what is below already holds input
+    /// a poll of the socket cannot see: the next pass is to run at once
+    /// (`h2_progress_ingress`'s `Curl_multi_mark_dirty` with
+    /// `sent_goaway`).
+    pub(crate) fn shutdown_reads_held(&self, below: Carrier<'_>) -> bool {
+        use crate::conn::layer::Lower as _;
+        !self.shut && self.sent_goaway && self.session.wants().read && below.data_pending()
     }
 }
 

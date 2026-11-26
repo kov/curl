@@ -170,8 +170,9 @@ witness: curl-core proto::http::tests::h2::an_idle_connection_s_frames_are_read_
 file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core proto::http::tests::h2::a_connection_shutting_down_says_goaway
 --- old
-        self.conn.goodbye(&mut cx);
+        let session = self.conn.goodbye(&mut cx);
 --- new
+        let session = Ok::<_, crate::error::ErrorKind>(Handshake::Done);
 
 === a request told HTTP/1.1 is required asks for HTTP/2 again
 file: crates/curl-core/src/multi/state.rs
@@ -1496,3 +1497,28 @@ witness: curl-core conn::h2proxy::tests::a_proxy_s_flood_of_frames_gives_the_oth
 --- new
             TUNNEL_WINDOW as usize
         };
+
+=== the HTTP/2 shutdown is done once GOAWAY is sent
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_waits_for_the_peer_before_its_layers
+features: test-util
+--- old
+        Ok(self.closed || (!wants.read && !wants.write && self.out.is_empty()))
+--- new
+        Ok(true)
+
+=== the HTTP/2 shutdown reads on while the peer has more
+file: crates/curl-core/src/proto/http2.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_reads_once_a_pass_and_runs_again_for_held_input
+features: test-util
+--- old
+        if self.session.wants().read {
+            self.shutdown_ingress(cx, below)?;
+        }
+--- new
+        for _ in 0..2 {
+            if self.session.wants().read {
+                self.shutdown_ingress(cx, below)?;
+            }
+        }
+

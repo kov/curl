@@ -567,7 +567,7 @@ impl DataConn {
             Some(Phase::Listening { sock, .. }) => (None, Some((sock.socket(), Events::IN))),
             Some(Phase::Up { stream, shaken, .. }) => {
                 let events = match self.shut {
-                    Some(shut) => stream.shutdown_pollset(shut),
+                    Some(shut) => stream.shutdown_pollset(shut, Events::NONE),
                     // A handshake waits for what its layer says.
                     None if !*shaken => stream.adjust_pollset(Events::IN),
                     None if transfer.is_empty() => Events::NONE,

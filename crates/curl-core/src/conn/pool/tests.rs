@@ -2131,7 +2131,7 @@ fn unit2606_first_chain() {
             let Transport::Stream(stream) = &conn.transport else {
                 panic!("not a stream");
             };
-            stream.shutdown_pollset(0)
+            stream.shutdown_pollset(0, Events::NONE)
         } else {
             slot.adjust_pollset(if xfer_io { Events::IN } else { Events::NONE }, None)
         };
@@ -2151,4 +2151,140 @@ fn unit2606_first_chain() {
         now,
     );
     pool.close_idle(&mut net, now);
+}
+
+/// Gives each of its reads in turn, one a receive, and holds input while
+/// any is left: the filter of C's unit 2642.
+#[derive(Debug)]
+struct Pieces {
+    left: std::collections::VecDeque<&'static [u8]>,
+    reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::conn::layer::Part<crate::conn::layer::Below<'_>> for Pieces {
+    fn data_pending(&self, _: crate::conn::layer::Below<'_>) -> bool {
+        !self.left.is_empty()
+    }
+}
+
+impl crate::conn::layer::Layer for Pieces {
+    fn recv(
+        &mut self,
+        _: &mut dyn crate::conn::layer::LayerCx,
+        _: crate::conn::layer::Below<'_>,
+        buf: &mut [u8],
+    ) -> std::io::Result<Recv> {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(piece) = self.left.pop_front() else {
+            return Ok(Recv::WouldBlock);
+        };
+        buf[..piece.len()].copy_from_slice(piece);
+        Ok(Recv::Data(
+            std::num::NonZeroUsize::new(piece.len()).unwrap(),
+        ))
+    }
+
+    fn send(
+        &mut self,
+        cx: &mut dyn crate::conn::layer::LayerCx,
+        below: crate::conn::layer::Below<'_>,
+        bytes: &[u8],
+    ) -> std::io::Result<Sent> {
+        below.send(cx, bytes)
+    }
+}
+
+/// A set shutting down an HTTP/2 connection whose session still wants
+/// to read, an upgrade having opened stream 1, which nothing reads; what
+/// is below gives `pieces`, one a receive. With the set, its network and
+/// rooms, and the count of receives.
+fn h2_shutting(
+    pieces: &[&'static [u8]],
+) -> (
+    crate::conn::shutdown::ShutdownSet,
+    FakeNet,
+    crate::conn::buf::Rooms,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    Instant,
+) {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+    up(&mut lease, &mut net, now);
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let Some(ConnSlot::Open(conn)) = lease.conn.as_deref_mut() else {
+        panic!("not up");
+    };
+    let Transport::Stream(stream) = &mut conn.transport else {
+        panic!("not a stream");
+    };
+    let pieces = Pieces {
+        left: pieces.iter().copied().collect(),
+        reads: reads.clone(),
+    };
+    stream
+        .layers_mut()
+        .push(curl_alloc::try_box(pieces).unwrap())
+        .unwrap();
+    let (mut h2, _) =
+        crate::proto::http2::H2Conn::open(&crate::http2::fake::FakeH2, &[], None).unwrap();
+    h2.session().upgrade(b"", false).unwrap();
+    conn.put_h2(Box::new(h2));
+    let (_, slot, _) = lease.into_parts();
+    let ConnSlot::Open(conn) = *slot.expect("held above") else {
+        unreachable!("open above");
+    };
+    let shared = crate::time::SharedClock::new(Box::new(clock.clone())).unwrap();
+    let mut set = crate::conn::shutdown::ShutdownSet::new(shared);
+    let mut room = crate::conn::buf::Rooms::default();
+    let shutting = crate::conn::shutdown::Shutting::start(conn, now);
+    set.add(shutting, 8, &mut net, &mut room);
+    assert!(set.take_dirty(), "a new one runs at once");
+    (set, net, room, reads, now)
+}
+
+/// An HTTP/2 connection shutting down while its session still wants to
+/// read takes one receive a pass, short as it may be, and runs again at
+/// once while what is below holds more; the peer's GOAWAY read on the
+/// next pass ends it (C's unit 2642, upstream d0031b97b2;
+/// `cf_h2_shutdown`).
+#[test]
+fn an_h2_shutdown_reads_once_a_pass_and_runs_again_for_held_input() {
+    use std::sync::atomic::Ordering;
+    // SETTINGS, then a GOAWAY that serves none of the client's streams.
+    let (mut set, mut net, mut room, reads, now) = h2_shutting(&[b"S\n", b"G 0 0\n"]);
+    set.perform(&mut net, now, &mut room);
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        1,
+        "one receive, however short"
+    );
+    assert_eq!(set.len(), 1);
+    assert!(set.take_dirty(), "held input runs it again at once");
+    set.perform(&mut net, now, &mut room);
+    assert_eq!(
+        reads.load(Ordering::Relaxed),
+        2,
+        "the GOAWAY on the next pass"
+    );
+    assert_eq!(set.len(), 0, "done, and closed");
+    assert!(!set.is_dirty());
+}
+
+/// A session that still wants to read, with nothing held below, waits on
+/// the socket, its layers' goodbyes not begun: the connection stays in
+/// the set, and is not run again before its socket says.
+#[test]
+fn an_h2_shutdown_waits_for_the_peer_before_its_layers() {
+    use std::sync::atomic::Ordering;
+    let (mut set, mut net, mut room, reads, now) = h2_shutting(&[b"S\n"]);
+    set.perform(&mut net, now, &mut room);
+    assert_eq!(reads.load(Ordering::Relaxed), 1);
+    assert_eq!(set.len(), 1, "the session waits");
+    assert!(!set.is_dirty(), "on the socket");
+    let polled: Vec<Events> = set.pollsets().map(|(_, e)| e).collect();
+    assert_eq!(polled, [Events::IN], "to read, as the session wants");
+    set.close_all(&mut net, &mut room);
 }

@@ -355,7 +355,19 @@ witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
         if awaits {
             return Tried::Waiting;
         }
-        self.conn.goodbye(&mut cx);
+        // The session's goodbye first, its layers' once it is done; one
+        // that fails ends it (`cshutdn_cfchain_try_once`). A QUIC
+        // session's is not waited on.
+        let session = self.conn.goodbye(&mut cx);
+        if let Transport::Stream(_) = self.conn.transport {
+            match session {
+                Ok(Handshake::Waiting) if self.once => return Tried::Cut,
+                Ok(Handshake::Waiting) if self.conn.goodbye_reads_held() => return Tried::Again,
+                Ok(Handshake::Waiting) => return Tried::Waiting,
+                Ok(Handshake::Done) => {}
+                Err(_) => return Tried::Done,
+            }
+        }
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
@@ -365,7 +377,19 @@ witness: curl-core multi::shutdown_tests::a_protocol_says_its_goodbye_once
         if self.awaits_answer(&mut cx) {
             return Tried::Waiting;
         }
-        self.conn.goodbye(&mut cx);
+        // The session's goodbye first, its layers' once it is done; one
+        // that fails ends it (`cshutdn_cfchain_try_once`). A QUIC
+        // session's is not waited on.
+        let session = self.conn.goodbye(&mut cx);
+        if let Transport::Stream(_) = self.conn.transport {
+            match session {
+                Ok(Handshake::Waiting) if self.once => return Tried::Cut,
+                Ok(Handshake::Waiting) if self.conn.goodbye_reads_held() => return Tried::Again,
+                Ok(Handshake::Waiting) => return Tried::Waiting,
+                Ok(Handshake::Done) => {}
+                Err(_) => return Tried::Done,
+            }
+        }
         let socket = self.conn.socket_component();
         match &mut self.conn.transport {
             Transport::Stream(stream) => match stream.shutdown(&mut cx, socket, &mut self.shut) {
@@ -610,3 +634,40 @@ features: test-util
     }
 
     /// A line of the set's on its trace.
+
+=== an HTTP/2 shutdown holding input below waits for the socket
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_reads_once_a_pass_and_runs_again_for_held_input
+features: test-util
+--- old
+                Ok(Handshake::Waiting) if self.conn.goodbye_reads_held() => return Tried::Again,
+--- new
+                Ok(Handshake::Waiting) if self.conn.goodbye_reads_held() => return Tried::Waiting,
+
+=== a shutdown to run again at once does not make the set dirty
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_reads_once_a_pass_and_runs_again_for_held_input
+features: test-util
+--- old
+            if tried == Tried::Again {
+--- new
+            if tried == Tried::Cut {
+
+=== the layers shut down while the HTTP/2 session still waits
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_waits_for_the_peer_before_its_layers
+features: test-util
+--- old
+                Ok(Handshake::Waiting) => return Tried::Waiting,
+--- new
+                Ok(Handshake::Waiting) => {}
+
+=== a waiting HTTP/2 shutdown polls nothing for its session
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core conn::pool::tests::an_h2_shutdown_waits_for_the_peer_before_its_layers
+features: test-util
+--- old
+        let events = stream.shutdown_pollset(self.shut, self.conn.goodbye_wants());
+--- new
+        let events = stream.shutdown_pollset(self.shut, Events::NONE);
+

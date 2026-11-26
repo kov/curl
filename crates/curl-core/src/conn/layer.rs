@@ -995,15 +995,16 @@ impl LayerStack {
     }
 
     /// What the layers not shut down yet wait on, `shut` from the top
-    /// being done: each says, from the top, with nothing wanted to start
-    /// from; a layer shut down says nothing (`Curl_conn_cf_adjust_pollset`).
-    pub(crate) fn shutdown_pollset(&self, shut: usize) -> Events {
+    /// being done: each says, from the top, with what the session above
+    /// wants, `above`, to start from; a layer shut down says nothing
+    /// (`Curl_conn_cf_adjust_pollset`).
+    pub(crate) fn shutdown_pollset(&self, shut: usize, above: Events) -> Events {
         self.layers
             .iter()
             .flat_map(|l| l.iter())
             .rev()
             .skip(shut)
-            .fold(Events::NONE, |wanted, layer| layer.adjust_pollset(wanted))
+            .fold(above, |wanted, layer| layer.adjust_pollset(wanted))
     }
 
     /// Say, as `shutdown_pollset` asks them, what the layers not shut

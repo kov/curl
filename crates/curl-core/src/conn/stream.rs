@@ -263,10 +263,11 @@ impl Stream {
     }
 
     /// What it waits on while it shuts down, `shut` of its layers done:
-    /// what the others say, from the top, with nothing wanted to start
-    /// from (`Curl_conn_adjust_pollset` on a chain in shutdown).
-    pub(crate) fn shutdown_pollset(&self, shut: usize) -> Events {
-        self.layers.shutdown_pollset(shut)
+    /// what the others say, from the top, with what the session above
+    /// wants, `above`, to start from (`Curl_conn_adjust_pollset` on a
+    /// chain in shutdown).
+    pub(crate) fn shutdown_pollset(&self, shut: usize, above: Events) -> Events {
+        self.layers.shutdown_pollset(shut, above)
     }
 
     /// Say what its layers put in that pollset, as C's filters do.

@@ -3910,6 +3910,17 @@ as C's disconnect blocks; one in the set is not closed to make room for a new co
 which waits for it instead (above). A connection discarded as its transfer aborted tells the
 protocol it is dead, and nothing is said (`dead_connection`).
 
+**A session's goodbye.** An HTTP/2 session's shutdown is `cf_h2_shutdown`'s: GOAWAY once, then
+each pass what the session wants sent and one receive of what it wants read, however short
+(`h2_progress_ingress` with `sent_goaway`, upstream d0031b97b2), until it wants neither with
+its output gone, or the peer closed. The layers below start theirs only once it is done
+(`cshutdn_cfchain_try_once`), and a failure ends the shutdown. While it waits, the set polls
+for what the session wants, the layers adjusting that (`shutdown_pollset`'s `above`); input
+already held below that a poll cannot see makes the pass `Tried::Again`, which marks the set
+dirty so the next runs at once, as C marks its internal handle. With no stream open it wants
+nothing more once GOAWAY is out, so a connection whose transfers are done takes one pass. An
+HTTP/3 session's goodbye is not waited on: the datagram connection closes after the pass.
+
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is
 `ossl_shutdown` with C's `send_shutdown` set, once, and only after a handshake that was done: it

@@ -100,6 +100,26 @@ impl Mux for Session {
     }
 }
 
+impl Session {
+    /// What the session waits on as the connection shuts down, before the
+    /// layers below shut down theirs.
+    pub(crate) fn shutdown_wants(&self) -> super::io::Events {
+        match self {
+            Session::H2(h2) => h2.shutdown_wants(),
+            Session::H3(_) => super::io::Events::NONE,
+        }
+    }
+
+    /// Its shutdown's next pass is to run at once: it wants to read, and
+    /// what is below holds input already.
+    pub(crate) fn shutdown_reads_held(&self, below: Carrier<'_>) -> bool {
+        match self {
+            Session::H2(h2) => h2.shutdown_reads_held(below),
+            Session::H3(_) => false,
+        }
+    }
+}
+
 impl<'a> Part<Carrier<'a>> for Session {
     fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Carrier<'a>) -> Alive {
         match self {

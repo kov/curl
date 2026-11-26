@@ -916,9 +916,13 @@ impl<H: Host> Multi<H> {
         .map_err(|(refused, _)| refused)?;
         let easy = &self.slots.get(id).expect("just added").easy;
         // A connection the handle used itself, its last transfer having
-        // only connected, is closed as its own multi runs it again
-        // (`easy_perform`).
-        if let Some(last) = easy.last_conn.filter(|l| l.used && self.handle_own) {
+        // only connected, is closed as the handle joins any multi
+        // (`curl_multi_add_handle`, upstream caf13df768): here, where its
+        // own multi or a share keeps it. One its own multi kept as this
+        // one is another goes with that multi, dropped as the handle
+        // joins this one.
+        let reachable = self.handle_own || easy.shared(Kind::Connections).is_some();
+        if let Some(last) = easy.last_conn.filter(|l| l.used && reachable) {
             self.close_reserved(id, last.id, ev);
         }
         // Its last connection is forgotten as it joins (`last_cpid`).

@@ -741,3 +741,12 @@ features: debug-hooks
         if self.0.traces_internally
 --- new
         if false
+
+=== a share's connection the handle used stays as the handle joins another multi
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_shared_connection_the_handle_used_closes_as_it_joins_any_multi
+features: test-util
+--- old
+        let reachable = self.handle_own || easy.shared(Kind::Connections).is_some();
+--- new
+        let reachable = self.handle_own;

@@ -2861,6 +2861,57 @@ fn a_raw_send_on_a_share_s_connection_runs_out_of_its_lock() {
     assert_eq!(share.pool().len(), 1, "counted throughout");
 }
 
+/// A connection the handle used, kept by a share, is closed as the
+/// handle joins another multi, not only its own (`curl_multi_add_handle`
+/// with `data->conn`, upstream caf13df768): gone from the share's pool,
+/// its socket closed.
+#[test]
+fn a_shared_connection_the_handle_used_closes_as_it_joins_any_multi() {
+    use crate::conn::io::{Conversation, Peer};
+    use crate::multi::raw::RawIo;
+    use crate::options::ConnectOnly;
+    use crate::share::{Kind, Share};
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let talk = Conversation::replies(&[], false);
+    let closed = std::sync::Arc::new(AtomicU32::new(0));
+    let net = std::sync::Arc::new(curl_alloc::Lock::new(Closes(
+        FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone()),
+        closed.clone(),
+    )));
+    let env = || Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(OneNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut own: Multi = Multi::with_env(env()).unwrap();
+    own.make_handle_own();
+    let mut e = easy("http://127.0.0.1:1/");
+    e.options_mut().connect_only = ConnectOnly::Yes;
+    e.set_share(Some(share.clone())).unwrap();
+    e.perform_in(&mut own, crate::easy::Drive::Waits).unwrap();
+    assert_eq!(
+        own.send_raw_for(&mut e, b"one", &mut |_, _| {}),
+        Ok(RawIo::Bytes(3))
+    );
+    assert!(e.holds_connection());
+    let kept = share.pool().len();
+    assert_eq!(kept, 1);
+    let mut other: Multi = Multi::with_env(env()).unwrap();
+    let id = other.add(Box::new(e), (), &mut NoEvents).unwrap();
+    // Read out of the pool's lock, which a failing assertion would
+    // otherwise poison for the share's drop.
+    let kept = share.pool().len();
+    assert_eq!(kept, 0, "gone from the share");
+    assert_eq!(closed.load(Ordering::Relaxed), 1, "its socket closed");
+    other.remove(id, &mut NoEvents).unwrap();
+}
+
 /// A connection of a share's pool that a transfer does not give back,
 /// for it may not be reused, is closed through the transfer's network
 /// once the transfer is done with the pool: at once, not with the share.

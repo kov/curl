@@ -675,9 +675,8 @@ const GEN_DNS: c_int = 2;
 const GEN_IPADD: c_int = 7;
 
 /// The certificate names the peer (`ossl_verifyhost`): a subject
-/// alternative name of the peer's kind, or without any, the last common
-/// name. Each is matched by curl-core against the session's peer, whose
-/// match it gives.
+/// alternative name of the peer's kind, matched by curl-core against the
+/// session's peer, whose match it gives. Its common name is not looked at.
 fn verify_host(
     cert: &Cert,
     host: &[u8],
@@ -700,8 +699,6 @@ fn verify_host(
         TlsPeerKind::Name => GEN_DNS,
     };
     let mut matched = None;
-    let mut dns_name = false;
-    let mut ip_address = false;
     // SAFETY: the certificate; the names it gives, freed below.
     let names = unsafe {
         openssl_sys::X509_get_ext_d2i(
@@ -722,11 +719,6 @@ fn verify_host(
             // SAFETY: as above, alive while the stack is, freed below.
             let name = unsafe { &*name.cast::<openssl_sys::GENERAL_NAME>() };
             i += 1;
-            match name.type_ {
-                GEN_DNS => dns_name = true,
-                GEN_IPADD => ip_address = true,
-                _ => {}
-            }
             if name.type_ != target {
                 continue;
             }
@@ -763,24 +755,23 @@ fn verify_host(
     if let Some(matched) = matched {
         return Ok(matched);
     }
-    if dns_name || ip_address {
-        let what = match kind {
-            TlsPeerKind::Name => "hostname",
-            TlsPeerKind::Ipv4 => "IPv4 address",
-            TlsPeerKind::Ipv6 => "IPv6 address",
-        };
-        let shown = Shown(host, kind);
-        io.info(format_args!(
-            " subjectAltName does not match {what} {shown}"
-        ));
-        return Err(io.fail(
-            ErrorKind::PeerFailedVerification,
-            format_args!(
-                "SSL: no alternative certificate subject name matches target {what} '{shown}'"
-            ),
-        ));
-    }
-    common_name(cert, host, kind, io)
+    // No common name is looked at: only an alternative name names the
+    // peer (RFC 9525).
+    let what = match kind {
+        TlsPeerKind::Name => "hostname",
+        TlsPeerKind::Ipv4 => "IPv4 address",
+        TlsPeerKind::Ipv6 => "IPv6 address",
+    };
+    let shown = Shown(host, kind);
+    io.info(format_args!(
+        " subjectAltName does not match {what} {shown}"
+    ));
+    Err(io.fail(
+        ErrorKind::PeerFailedVerification,
+        format_args!(
+            "SSL: no alternative certificate subject name matches target {what} '{shown}'"
+        ),
+    ))
 }
 
 /// The bytes of an `ASN1_STRING`.
@@ -798,97 +789,6 @@ unsafe fn asn1_bytes<'a>(s: *const openssl_sys::ASN1_STRING) -> &'a [u8] {
         // SAFETY: the string's `len` bytes, alive as the caller says.
         unsafe { core::slice::from_raw_parts(data, len) }
     }
-}
-
-/// The certificate's last common name names the host (`ossl_verifyhost`'s
-/// fallback, for a certificate without alternative names).
-fn common_name(
-    cert: &Cert,
-    host: &[u8],
-    kind: TlsPeerKind,
-    io: &mut TlsCx<'_>,
-) -> Result<NameMatch, ErrorKind> {
-    // SAFETY: the certificate's subject, its own.
-    let name = unsafe { openssl_sys::X509_get_subject_name(cert.as_ptr()) };
-    let mut last = -1;
-    if !name.is_null() {
-        loop {
-            // SAFETY: the name, searched after the last entry found.
-            let j = unsafe {
-                openssl_sys::X509_NAME_get_index_by_NID(name, openssl_sys::NID_commonName, last)
-            };
-            if j < 0 {
-                break;
-            }
-            last = j;
-        }
-    }
-    let mut owned: *mut u8 = ptr::null_mut();
-    let mut cn: Option<&[u8]> = None;
-    let mut result = Ok(None);
-    if last >= 0 {
-        // SAFETY: an entry of the name, the name's own.
-        let entry = unsafe { openssl_sys::X509_NAME_get_entry(name, last) };
-        // SAFETY: the entry's data, its own.
-        let data = unsafe { openssl_sys::X509_NAME_ENTRY_get_data(entry) };
-        if !data.is_null() {
-            // SAFETY: the entry's string.
-            if unsafe { openssl_sys::ASN1_STRING_type(data) } == openssl_sys::V_ASN1_UTF8STRING {
-                // SAFETY: as above.
-                cn = Some(unsafe { asn1_bytes(data) });
-            } else {
-                // SAFETY: the string, converted into memory the library
-                // allocates, freed below.
-                let n = unsafe { openssl_sys::ASN1_STRING_to_UTF8(&mut owned, data) };
-                cn = match usize::try_from(n) {
-                    Ok(n) if !owned.is_null() => {
-                        // SAFETY: `n` bytes the library wrote at `owned`,
-                        // freed only below, after the last use.
-                        Some(unsafe { core::slice::from_raw_parts(owned, n) })
-                    }
-                    _ => Some(&[]),
-                };
-            }
-            match cn {
-                Some([]) => result = Err(ErrorKind::OutOfMemory),
-                Some(c) if c.contains(&0) => {
-                    result = Err(io.fail(
-                        ErrorKind::PeerFailedVerification,
-                        format_args!("SSL: illegal cert name field"),
-                    ));
-                }
-                _ => {}
-            }
-        }
-    }
-    if result.is_ok() {
-        result = match cn {
-            None => Err(io.fail(
-                ErrorKind::PeerFailedVerification,
-                format_args!("SSL: unable to obtain common name from peer certificate"),
-            )),
-            Some(c) => match hostcheck::check(io, CertName::CommonName(c)) {
-                None => Err(io.fail(
-                    ErrorKind::PeerFailedVerification,
-                    format_args!(
-                        "SSL: certificate subject name '{}' does not match target hostname '{}'",
-                        Text(c),
-                        Shown(host, kind)
-                    ),
-                )),
-                Some(matched) => {
-                    io.info(format_args!(" common name: {} (matched)", Text(c)));
-                    Ok(Some(matched))
-                }
-            },
-        };
-    }
-    if !owned.is_null() {
-        // SAFETY: what `ASN1_STRING_to_UTF8` allocated, freed once
-        // (`OPENSSL_free`).
-        unsafe { openssl_sys::CRYPTO_free(owned.cast(), c"".as_ptr(), 0) };
-    }
-    result.map(|matched| matched.expect("a common name matched where it passes"))
 }
 
 /// A session a handshake offers to resume, as the cache kept it

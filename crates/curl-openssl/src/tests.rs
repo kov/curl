@@ -162,7 +162,7 @@ mod leaks {
     use openssl::pkcs12::Pkcs12;
     use openssl::pkey::{PKey, Private};
     use openssl::stack::Stack;
-    use openssl::x509::extension::BasicConstraints;
+    use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
     use openssl::x509::{X509, X509Name};
 
     static LIBRARIES: Libraries = Libraries {
@@ -176,7 +176,8 @@ mod leaks {
     }
 
     /// A certificate for `subject`'s key, signed by `issuer` (itself if
-    /// none), a CA if `ca`.
+    /// none), a CA if `ca`, else naming `localhost` among its alternative
+    /// names.
     fn cert(
         subject: &X509Name,
         key: &PKey<Private>,
@@ -199,6 +200,12 @@ mod leaks {
         if ca {
             b.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
                 .unwrap();
+        } else {
+            let san = SubjectAlternativeName::new()
+                .dns("localhost")
+                .build(&b.x509v3_context(issuer.map(|(c, _)| &**c), None))
+                .unwrap();
+            b.append_extension(san).unwrap();
         }
         b.sign(issuer.map_or(key, |(_, k)| k), MessageDigest::sha256())
             .unwrap();
@@ -223,9 +230,9 @@ mod leaks {
     }
 
     impl Server {
-        /// Its certificate names `localhost` by a common name in a
-        /// BMPString, and has no alternative names, so the host check
-        /// converts the name to UTF-8.
+        /// Its certificate names `localhost` among its alternative names,
+        /// and by a common name in a BMPString, which the host check does
+        /// not read.
         pub(super) fn start() -> Server {
             let dir =
                 std::env::temp_dir().join(format!("curl-openssl-leaks-{}", std::process::id()));

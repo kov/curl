@@ -113,6 +113,11 @@ fn each_certificate_of_the_chain_is_said_by_its_level() {
         .unwrap();
     cert.set_not_after(&Asn1Time::days_from_now(2).unwrap())
         .unwrap();
+    let san = SubjectAlternativeName::new()
+        .dns("localhost")
+        .build(&cert.x509v3_context(None, None))
+        .unwrap();
+    cert.append_extension(san).unwrap();
     cert.sign(&key, MessageDigest::sha256()).unwrap();
     let cert = cert.build();
     let ca_file = certs_dir().join("levels-rsa.pem");

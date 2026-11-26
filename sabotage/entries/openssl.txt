@@ -632,3 +632,20 @@ witness: curl-openssl cache::tests::only_a_verified_peer_by_file_and_path_alone_
         && !identity.configured_by_handler()
 --- new
         && true
+
+=== a certificate without alternative names is taken as naming the host
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_common_name_alone_names_no_host
+--- old
+    if let Some(matched) = matched {
+        return Ok(matched);
+    }
+--- new
+    if let Some(matched) = matched.or_else(|| {
+        names
+            .is_null()
+            .then(|| hostcheck::check(io, CertName::CommonName(host)))
+            .flatten()
+    }) {
+        return Ok(matched);
+    }

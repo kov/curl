@@ -1,7 +1,7 @@
 //! The names in the peer's certificate (`ossl_verifyhost`,
-//! `ossl_infof_cert`): an alternative name of the host's kind, or without
-//! any the last common name, as it matches the host; and the subject and
-//! issuer as the trace shows them, within C's buffer.
+//! `ossl_infof_cert`): an alternative name of the host's kind as it
+//! matches the host, never a common name; and the subject and issuer as
+//! the trace shows them, within C's buffer.
 
 use openssl::asn1::Asn1Type;
 use openssl::x509::X509NameBuilder;
@@ -14,12 +14,8 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         an_address_alternative_name_names_the_address_alone,
     ),
     (
-        "without_alternative_names_the_last_common_name_is_matched",
-        without_alternative_names_the_last_common_name_is_matched,
-    ),
-    (
-        "a_common_name_with_a_zero_byte_is_refused",
-        a_common_name_with_a_zero_byte_is_refused,
+        "a_common_name_alone_names_no_host",
+        a_common_name_alone_names_no_host,
     ),
     (
         "a_name_too_long_for_c_s_buffer_is_not_shown",
@@ -128,9 +124,12 @@ fn an_address_alternative_name_names_the_address_alone() {
     );
 }
 
-/// The last common name is the one matched, whatever its string type: a
-/// BMPString's is converted to UTF-8 first.
-fn without_alternative_names_the_last_common_name_is_matched() {
+/// A certificate without alternative names names no host, whatever its
+/// common names say (RFC 9525): the one the host would match, the last of
+/// several, one of another string type, one with a zero byte inside, or
+/// an empty one. Each fails as one with alternative names none of which
+/// matches.
+fn a_common_name_alone_names_no_host() {
     let ca = certs("commonname", "unused", &[]);
     // A BMPString is given as its bytes, UTF-16BE.
     let bmp: String = "localhost".chars().flat_map(|c| ['\0', c]).collect();
@@ -141,41 +140,25 @@ fn without_alternative_names_the_last_common_name_is_matched() {
             ("CN", "elsewhere", Asn1Type::UTF8STRING),
             ("CN", "localhost", Asn1Type::PRINTABLESTRING),
         ]),
+        entries(&[("CN", "localhost\0.example", Asn1Type::UTF8STRING)]),
+        entries(&[("CN", "", Asn1Type::UTF8STRING)]),
     ] {
         let got = verified(&issued(&ca, &subject, None), "localhost");
-        assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
-        assert!(
-            said(&got, " common name: localhost (matched)"),
+        assert_eq!(
+            got.result,
+            Err(ErrorKind::PeerFailedVerification),
             "{:#?}",
             got.seen.lines
         );
-    }
-    let subject = entries(&[
-        ("CN", "localhost", Asn1Type::UTF8STRING),
-        ("CN", "elsewhere", Asn1Type::UTF8STRING),
-    ]);
-    let got = verified(&issued(&ca, &subject, None), "localhost");
-    assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
-    assert_eq!(
-        got.failure,
-        b"SSL: certificate subject name 'elsewhere' does not match target hostname 'localhost'"
-    );
-}
-
-/// A common name with a zero byte inside cannot be the host's, which C
-/// sees ending there: refused as illegal. An empty one fails as C's
-/// does, out of memory (27) and nothing said, whatever its string type.
-fn a_common_name_with_a_zero_byte_is_refused() {
-    let ca = certs("nulname", "unused", &[]);
-    let subject = entries(&[("CN", "localhost\0.example", Asn1Type::UTF8STRING)]);
-    let got = verified(&issued(&ca, &subject, None), "localhost");
-    assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
-    assert_eq!(got.failure, b"SSL: illegal cert name field");
-    for kind in [Asn1Type::UTF8STRING, Asn1Type::BMPSTRING] {
-        let subject = entries(&[("CN", "", kind)]);
-        let got = verified(&issued(&ca, &subject, None), "localhost");
-        assert_eq!(got.result, Err(ErrorKind::OutOfMemory), "{kind:?}");
-        assert_eq!(got.failure, b"", "{kind:?}");
+        assert_eq!(
+            got.failure,
+            b"SSL: no alternative certificate subject name matches target hostname 'localhost'"
+        );
+        assert!(
+            said(&got, " subjectAltName does not match hostname localhost"),
+            "{:#?}",
+            got.seen.lines
+        );
     }
 }
 

@@ -670,8 +670,8 @@ fn a_verified_get_reads_the_body() {
     );
 }
 
-/// The certificate must name the host: a name among its alternative
-/// names, or none of them the common name (`ossl_verifyhost`).
+/// The certificate must name the host among its alternative names
+/// (`ossl_verifyhost`): a common name naming it, without any, does not.
 fn a_name_the_certificate_lacks_fails_the_host_check() {
     let certs = certs("wrongname", "localhost", &["elsewhere.example"]);
     let (at, server) = serve(&certs);
@@ -686,15 +686,15 @@ fn a_name_the_certificate_lacks_fails_the_host_check() {
         &got,
         " subjectAltName does not match hostname localhost"
     ));
-    // With no alternative names, the common name is checked.
-    let certs = self::certs("cn", "elsewhere.example", &[]);
+    // With no alternative names, the common name is not read.
+    let certs = self::certs("cn", "localhost", &[]);
     let (at, server) = serve(&certs);
     let got = get("localhost", at, trusting(&certs));
     server.join().unwrap();
     assert_eq!(got.result, Err(ErrorKind::PeerFailedVerification));
     assert_eq!(
         got.failure,
-        b"SSL: certificate subject name 'elsewhere.example' does not match target hostname 'localhost'"
+        b"SSL: no alternative certificate subject name matches target hostname 'localhost'"
     );
 }
 

@@ -471,3 +471,12 @@ witness: curl-core proto::http1::request::tests::lines_with_an_empty_name_go_as_
     let asks = if start == stop { Asks::Nothing } else { asks };
 --- new
     let asks = if false { Asks::Nothing } else { asks };
+
+=== a 416 resumed at the end takes the end for offset 1
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::range::a_get_resumed_at_the_end_asks_from_minus_one
+features: test-util
+--- old
+                Resume::AtEnd => Some(-1),
+--- new
+                Resume::AtEnd => Some(1),

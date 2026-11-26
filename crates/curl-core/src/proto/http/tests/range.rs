@@ -101,8 +101,9 @@ fn a_response_to_a_range_is_taken_as_it_comes() {
 
 /// A GET resumed at the end (C's -1) asks for `bytes=-1-`, which no
 /// response's start matches: a body of unknown size is the whole document
-/// stored already, a 416 is read and dropped, a `Content-Range` with no
-/// start is the whole document, and anything else cannot resume.
+/// stored already, a 416 is read and dropped unless it gives a size, a
+/// `Content-Range` with no start is the whole document, and anything else
+/// cannot resume.
 #[test]
 fn a_get_resumed_at_the_end_asks_from_minus_one() {
     let at_end = |o: &mut Options| o.resume = Some(Resume::AtEnd);
@@ -146,6 +147,14 @@ fn a_get_resumed_at_the_end_asks_from_minus_one() {
             Ok(()),
             b"",
             None,
+        ),
+        // A 416's size is checked against the -1, which none is
+        // (`total != data->state.resume_from`).
+        (
+            b"HTTP/1.1 416 No\r\nContent-Range: bytes */1\r\nContent-Length: 4\r\n\r\nnope",
+            Err(ErrorKind::RangeError),
+            b"",
+            Some("Cannot resume: remote file size differs from offset\n"),
         ),
         (
             b"HTTP/1.1 200 OK\r\nContent-Range: */5\r\nContent-Length: 5\r\n\r\nhello",

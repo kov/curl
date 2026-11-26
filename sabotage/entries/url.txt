@@ -447,14 +447,6 @@ witness: curl-core url::tests::finds_a_byte_as_one_at_a_time
 --- new
             .any(|&n| has_below(word ^ (ONES * u64::from(n)) << 8, 1))
 
-=== a bracketed host ending inside its address is taken as one closed
-file: crates/curl-core/src/url/host.rs
-witness: curl-core url::host::tests::unit1675_ipv6_parse
---- old
-    let mut len = host[1..]
---- new
-    let mut len = host[1..host.len() - 1]
-
 === the second of two needles is looked for in words too
 file: crates/curl-core/src/url/mod.rs
 witness: curl-core url::tests::finds_a_byte_as_one_at_a_time

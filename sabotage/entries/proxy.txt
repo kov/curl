@@ -430,13 +430,16 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
 --- new
     let closes = t.answer.closes() || failed;
 
-=== a proxy closing after the tunnel waited is a mere disconnect
+=== a proxy closing after the tunnel waited aborts it
 file: crates/curl-core/src/multi/state/tunnel.rs
-witness: curl-core proto::http::tests::a_proxy_closing_after_a_wait_aborts_the_tunnel
+witness: curl-core proto::http::tests::a_proxy_closing_after_a_wait_is_connected_to_again
 --- old
-            tunnel(&mut s.handshake).authorized = false;
+        Ok(Ran::Idle) => Ok(Wake::Idle),
 --- new
-            let _ = &s;
+        Ok(Ran::Idle) => {
+            tunnel(&mut s.handshake).authorized = false;
+            Ok(Wake::Idle)
+        }
 
 === a tunnel's Digest is traced only once a header goes
 file: crates/curl-core/src/multi/state/tunnel.rs

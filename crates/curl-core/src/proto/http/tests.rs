@@ -6472,27 +6472,31 @@ fn a_progress_abort_ends_the_tunnel_at_once() {
 }
 
 /// The same close, read only after the tunnel waited on its socket for
-/// the answer, aborts it: the credentials are no longer held
-/// (`hd_proxy_auth`, freed as `cf_h1_proxy_connect` returns).
+/// the answer, is a mere disconnect too: the request's credentials are
+/// kept until the next request is made (`using_proxy_auth`, upstream
+/// 8eb9b4abd0). The C build against a proxy that pauses before its cut
+/// answer connects again and asks a third time.
 #[test]
-fn a_proxy_closing_after_a_wait_aborts_the_tunnel() {
+fn a_proxy_closing_after_a_wait_is_connected_to_again() {
     let first = Conversation::replies(&[DIGEST_407, DIGEST_STALE_CUT], true).late_replies();
-    let mut m = serving(Peer::Accepts, &[&first]);
-    let ran = get(&mut m, "/", first.clone(), tunneled_digest);
-    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+    let second = Conversation::replies(&[TUNNEL_UP, OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/", second.clone(), tunneled_digest);
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
     let said = ran.seen.text();
+    let closed = said
+        .iter()
+        .position(|l| l == "Proxy CONNECT connection closed\n");
+    let again = said.iter().position(|l| l == "Connect me again please\n");
+    assert!(closed.is_some() && closed < again, "{said:?}");
     assert!(
-        said.iter().any(|l| l == "Proxy CONNECT aborted\n"),
-        "{said:?}"
-    );
-    assert!(
-        !said
-            .iter()
-            .any(|l| l == "Proxy CONNECT connection closed\n"),
+        !said.iter().any(|l| l == "Proxy CONNECT aborted\n"),
         "{said:?}"
     );
     let text = String::from_utf8_lossy(&first.received()).into_owned();
     assert_eq!(text.matches("CONNECT ").count(), 2, "{text}");
+    let text = String::from_utf8_lossy(&second.received()).into_owned();
+    assert!(text.starts_with("CONNECT "), "{text}");
 }
 
 /// A 407 that offers again the method already sent is a refusal: its

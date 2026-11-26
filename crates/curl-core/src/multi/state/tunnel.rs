@@ -47,9 +47,8 @@ pub(crate) struct Tunnel {
     answer: Answer,
     /// The proxy's challenges, from its answer.
     challenges: Challenges,
-    /// `Proxy-Authorization` went with it, and the handshake has not
-    /// waited on its socket since: C holds the header (`hd_proxy_auth`)
-    /// only until `cf_h1_proxy_connect` returns.
+    /// `Proxy-Authorization` went with it, kept until the next request
+    /// is made (`using_proxy_auth`).
     authorized: bool,
     /// The proxy closed the connection on an answer it may be asked
     /// again: the next `CONNECT` goes over a new one
@@ -419,10 +418,7 @@ pub(super) fn step<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> Result<Wake, Failure> {
     match run(s, lent, cx) {
-        Ok(Ran::Idle) => {
-            tunnel(&mut s.handshake).authorized = false;
-            Ok(Wake::Idle)
-        }
+        Ok(Ran::Idle) => Ok(Wake::Idle),
         Ok(Ran::Again) => Ok(Wake::Again),
         Ok(Ran::Through) => {
             s.handshake = None;

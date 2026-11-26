@@ -90,6 +90,12 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # A connection is cut short (`once`) only where a share's pool evicted
+    # it and its protocol's goodbye awaits an answer, a line protocol's;
+    # the session a stream's goodbye waits on is HTTP/2's, which says no
+    # such goodbye, so the two never meet on one connection. (By line: the
+    # layers' guard below it, at the same column, is tested.)
+    'curl-core/src/conn/shutdown\.rs:309:43: replace match guard self\.once with false in Shutting::run_once$',
     # No early data taken leaves an empty skip with `>=`, which the first
     # send drops having skipped nothing: every send goes as without it.
     'curl-core/src/conn/tls\.rs:\d+:24: replace > with >= in TlsLayer::go_on$',

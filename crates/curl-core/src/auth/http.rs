@@ -1248,6 +1248,21 @@ mod tests {
         let (c, notes) = read(&[b"Digest nonce=\"1\"", b"Digest nonce=\"2\""], false);
         assert_eq!(notes, [HeardNote::DuplicateDigest]);
         assert!(!c.refused);
+        // A duplicate adds Digest to what is offered, and leaves the rest.
+        let (c, _) = read(
+            &[b"Basic", b"Digest nonce=\"1\"", b"Digest nonce=\"2\""],
+            false,
+        );
+        assert_eq!(c.offered, d | AuthMethods::BASIC);
+        // So does one read for SSPI, which keeps the challenge as it came.
+        let sspi = PeerAsked {
+            sspi_digest: true,
+            ..PeerAsked::DEFAULT
+        };
+        let mut c = Challenges::default();
+        c.read(b"Basic", &sspi).unwrap();
+        c.read(b"Digest nonce=\"1\"", &sspi).unwrap();
+        assert_eq!(c.offered, d | AuthMethods::BASIC);
         let (c, notes) = read(&[b"Digest\tnonce=\"1\""], false);
         assert!(notes.is_empty() && !c.refused(), "a tab before the pairs");
         assert!(

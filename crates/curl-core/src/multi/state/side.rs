@@ -158,7 +158,7 @@ impl SideSetup {
         enter_chain(
             machine,
             &plan,
-            Head::default(),
+            (Head::default(), None),
             under_way,
             cx,
             entered,

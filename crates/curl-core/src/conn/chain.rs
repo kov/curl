@@ -331,6 +331,34 @@ impl Chain {
         left
     }
 
+    /// The chain of an attempt the race makes below its happy eyeballs
+    /// filter (`a->chain`): `filters`, top first, each connected or not,
+    /// over `sock` once it is open.
+    pub(crate) fn attempt(filters: &[(Component, bool)], sock: Option<SocketKey>) -> Chain {
+        let mut chain = Chain::new();
+        for &(filter, connected) in filters {
+            chain.push(filter, connected);
+        }
+        chain.sock = sock;
+        chain
+    }
+
+    /// The chain as the race's winner is merged into it: every filter
+    /// above `filter`, which merged it, not connected yet
+    /// (`Curl_cfchain_merge`).
+    pub(crate) fn merged_at(&self, filter: Component) -> Chain {
+        let mut merged = *self;
+        if let Some(at) = self.filters[..self.len]
+            .iter()
+            .position(|&(f, _)| f == filter)
+        {
+            for slot in &mut merged.filters[..at] {
+                slot.1 = false;
+            }
+        }
+        merged
+    }
+
     /// What a second connection accepted from the server over `sock` is
     /// (`Curl_conn_tcp_listen_set`): its one filter.
     pub(crate) fn accepted(sock: SocketKey) -> Chain {
@@ -438,6 +466,16 @@ pub(crate) fn resolves_target(route: &NetRoute) -> bool {
 }
 
 impl Chain {
+    /// The chain as a part of another, whose parent holds it: an
+    /// attempt's.
+    pub(crate) fn as_part(&self) -> View<'_> {
+        View {
+            chain: self,
+            from: 0,
+            sub: true,
+        }
+    }
+
     /// The chain SETUP's filter is in, as its connect says it
     /// (`cf_setup_connect`): below the HTTPS connect filter, the sub-chain
     /// of that filter's attempt, from SETUP down; the whole chain without

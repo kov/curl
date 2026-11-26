@@ -222,6 +222,7 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [HAPPY-EYEBALLS] want to do more
         [HAPPY-EYEBALLS] check for next AAAA address: found
         [HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
+        [HAPPY-EYEBALLS] attempt [CHAIN]...[!HTTP/3][!UDP]
         Trying [::1]:{PORT}...
         [UDP] cf_socket_open() -> 0, fd=1000
         [UDP] QUIC socket 1000 connected: [::1:40000] -> [::1:{PORT}]
@@ -236,6 +237,7 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [UDP] adjust_pollset, !active, POLLIN fd=1000
         [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
         [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
+        [HAPPY-EYEBALLS] attempt [CHAIN]...[!HTTP/3][UDP]<fd=1000>
         [HTTP/3] fake QUIC session 1 trusts
         [HTTP/3] progress_ingress(socket)
         fake QUIC peer verified
@@ -248,6 +250,7 @@ fn a_quic_attempt_is_won_by_its_handshake() {
         [TIMER] [QUIC] set for 5000us
         [HTTP/3] connect -> 0, done=1
         [HAPPY-EYEBALLS] connect attempt #0 successful
+        [HAPPY-EYEBALLS] merged winner [CHAIN]...[!SETUP][HAPPY-EYEBALLS][HTTP/3][UDP]<fd=1000>
         [HAPPY-EYEBALLS] Connected to localhost (::1) port {PORT}
         [MULTI] [CONNECTING] [PGRS-CONNECT] added 1us
         [MULTI] [CONNECTING] [PGRS-APPCONNECT] added 1us
@@ -323,9 +326,11 @@ fn an_unverified_peer_fails_each_attempt_and_the_setup() {
         format!(
             "{looked}
             [HAPPY-EYEBALLS] starting first attempt for ipv{v} -> 0
+            [HAPPY-EYEBALLS] attempt [CHAIN]...[!HTTP/3][!UDP]
             [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
             {next}
             [HAPPY-EYEBALLS] adjust_pollset -> 0, 1 socks
+            [HAPPY-EYEBALLS] attempt [CHAIN]...[!HTTP/3][UDP]<fd=1000>
             fake QUIC peer not verified
             [HTTP/3] ingress, read_pkt -> ERR_FAKE (-502)
             [HTTP/3] start shutdown(err_type=0, err_code=502) -> 5
@@ -2457,8 +2462,10 @@ fn a_silent_quic_peer_gives_way_to_tcp_at_the_soft_timeout() {
         [HTTPS-CONNECT] HTTPS-RR not available
         [HTTPS-CONNECT] 2nd attempt uses h1 from wanted versions
         [TIMER] [ALPN_EYEBALLS] set for 100000us
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP]
         [HTTPS-CONNECT] connect -> 0, done=0
         [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [HAPPY-EYEBALLS] query connect reply: -1ms
         [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
         [HTTPS-CONNECT] connect -> 0, done=0
@@ -2535,6 +2542,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=2, dns=1
         [0-0] [HAPPY-EYEBALLS] check for next A address: found
         [0-0] [HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
+        [0-0] [HAPPY-EYEBALLS] attempt [CHAIN]...[!TCP]
         [0-0]   Trying 127.0.0.1:8990...
         [0-0] [TCP] cf_socket_open() -> 0, fd=1001
         [0-0] [TCP] local address 127.0.0.1 port 40001...
@@ -2556,6 +2564,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [TIMER] [TIMEOUT] gives multi timeout in 9900ms
         [0-0] [MULTI] [CONNECTING] multi_wait(fds=2, timeout=1000) tinternal=9900
         [0-0] [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [HAPPY-EYEBALLS] attempt [CHAIN]...[!HTTP/3][UDP]<fd=1000>
         [0-0] [HTTP/3] progress_ingress(socket)
         [0-0] [HTTP/3] ingress, recvmmsg -> EAGAIN
         [0-0] [HTTP/3] egress, collect and send packets, quantum=12000
@@ -2564,9 +2573,12 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
         [0-0] [DNS] get 1th result for 127.0.0.1:8990, family=2, dns=1
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1
+        [0-0] [HTTPS-CONNECT] h1 [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [0-0] [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
+        [0-0] [HAPPY-EYEBALLS] attempt [CHAIN]...[!TCP]<fd=1001>
         [0-0] [TCP] connected on fd=1001
         [0-0] [HAPPY-EYEBALLS] connect attempt #0 successful
+        [0-0] [HAPPY-EYEBALLS] merged winner [CHAIN]...[!SETUP][HAPPY-EYEBALLS][TCP]<fd=1001>
         [0-0] [HAPPY-EYEBALLS] Connected to 127.0.0.1 (127.0.0.1) port 8990
         [0-0] [TIMER] [HAPPY_EYEBALLS] cleared
         [0-0] [SETUP] added SSL filter for origin
@@ -2578,6 +2590,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [SSL] cf_connect() -> 0, done=1
         [0-0] [SETUP] query ALPN
         [0-0] [SSL] query ALPN: returning 'http/1.1'
+        [0-0] [HTTPS-CONNECT] merged winner [CHAIN][!DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1001>
         [0-0] [HTTPS-CONNECT] connect -> 0, done=1
         [0-0] [DNS] connected filter chain below
         [0-0] [DNS] Curl_conn_connect(block=0) -> 0, done=1
@@ -2850,9 +2863,11 @@ fn a_late_quic_peer_wins_after_the_leading_tcp_attempt_failed() {
         [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
         [HTTPS-CONNECT] connect -> 0, done=0
         [HTTPS-CONNECT] adjust_pollset -> 0, 2 socks
+        [HTTPS-CONNECT] h1 [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [TCP] destroy
         [HTTPS-CONNECT] connect -> 0, done=0
         [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
+        [HTTPS-CONNECT] merged winner [CHAIN][!DNS][HTTPS-CONNECT][SETUP][HAPPY-EYEBALLS][HTTP/3][UDP]<fd=1000>
         [HTTPS-CONNECT] connect -> 0, done=1
         [HTTPS-CONNECT] removing connected setup filter
         [HTTPS-CONNECT] destroy
@@ -3902,6 +3917,32 @@ fn a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection() {
             "[MULTI] [CONNECTING] reduced to [CHAIN][H3-PROXY][UDP]<fd=1000>",
         ]
     );
+    // The attempt is said at each of its connects, the proxy's filter
+    // connected once its QUIC handshake is done; the call that made the
+    // handshake goes on to ask for the tunnel without saying it again
+    // (`cf_ip_attempt_connect` over `cf_h3_proxy_connect`), as C's tool
+    // says it through h2o.
+    let attempt = lines(
+        &ran,
+        &[
+            "[HAPPY-EYEBALLS] attempt",
+            "[HAPPY-EYEBALLS] merged",
+            "[H3-PROXY] handshake complete",
+            "[H3-PROXY] [0] CONNECT start",
+        ],
+    );
+    let attempt: Vec<&str> = attempt.iter().map(String::as_str).collect();
+    assert_eq!(
+        attempt,
+        [
+            "[HAPPY-EYEBALLS] attempt [CHAIN]...[!H3-PROXY][!UDP]",
+            "[HAPPY-EYEBALLS] attempt [CHAIN]...[!H3-PROXY][UDP]<fd=1000>",
+            "[H3-PROXY] handshake complete after 0ms, remote transport[max_udp_payload=1452, initial_max_data=786432]",
+            "[H3-PROXY] [0] CONNECT start for origin.example:80",
+            "[HAPPY-EYEBALLS] attempt [CHAIN]...[H3-PROXY][UDP]<fd=1000>",
+            "[HAPPY-EYEBALLS] merged winner [CHAIN][!DNS][!SETUP][HAPPY-EYEBALLS][H3-PROXY][UDP]<fd=1000>",
+        ]
+    );
 }
 
 /// The origin's answer taken in by the HTTP/3 proxy's connection as the
@@ -4631,8 +4672,13 @@ fn a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout() {
                      Upgrade: connect-udp\r\nCapsule-Protocol: ?1\r\n\r\n";
     let want = expect(
         "
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP]
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         CONNECT-UDP tunnel established, response 101
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTPS-CONNECT] h3 inconclusive after 200, starting h1
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HTTP/3][CAPSULE][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         ",
     );
     let got = connect_udp_soft_timeout(switched);
@@ -4649,7 +4695,11 @@ fn a_connect_udp_tunnel_answered_holds_the_second_to_the_hard_timeout() {
 fn a_connect_udp_tunnel_unanswered_starts_the_second_at_the_soft_timeout() {
     let want = expect(
         "
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP]
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTPS-CONNECT] h3 has not seen any data after 100ms, starting h1
+        [HTTPS-CONNECT] h3 [CHAIN]...[!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]<fd=1000>
         ",
     );
     let got = connect_udp_soft_timeout(b"");

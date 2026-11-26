@@ -91,12 +91,15 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
         [HTTPS-CONNECT] HTTPS-RR not available
         [HTTPS-CONNECT] 1st attempt uses h1 from wanted versions
         [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] h1 [CHAIN]...[!SETUP]
         [SETUP] connect [CHAIN]...[!SETUP]
         [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [HTTPS-CONNECT] connect -> 0, done=0
         [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
+        [HTTPS-CONNECT] h1 [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [SETUP] connect [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
         [SETUP] connect [CHAIN]...[!SETUP][!SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
+        [HTTPS-CONNECT] merged winner [CHAIN][!DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTPS-CONNECT] connect -> 0, done=1
         [MULTI] [CONNECTING] connected [CHAIN][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTPS-CONNECT] removing connected setup filter
@@ -105,28 +108,34 @@ fn an_https_setup_to_an_address_asks_for_no_record() {
     assert_eq!(got, want);
 }
 
-/// SETUP says the chain it connects only while the multi's trace is on,
-/// as C's `Curl_cfchain_trc` asks `CURL_TRC_M_is_verbose`, though the
-/// line is SETUP's.
+/// The chains a setup goes through are said only while the multi's trace
+/// is on, as C's `Curl_cfchain_trc` asks `CURL_TRC_M_is_verbose`, though
+/// each line is its filter's: SETUP's as it connects, the HTTPS connect
+/// filter's attempt, the happy eyeballs filter's attempts, and each
+/// winner merged.
 #[test]
-fn the_setup_s_chain_is_said_only_with_the_multi_s_trace() {
+fn the_chains_are_said_only_with_the_multi_s_trace() {
     let said = |components: &[u8]| {
         let mut m = tls_server(1);
         let e = tracing(components);
         let ran = https_get(&mut m, e, &format!("https://127.0.0.1:{PORT}/"), |_| {});
         assert_eq!(ran.result, Ok(()));
-        let setup = lines(&ran, &["[SETUP] "]);
-        let connects = setup
-            .iter()
-            .filter(|l| l.starts_with("[SETUP] connect "))
-            .count();
-        (setup.len(), connects)
+        let all = lines(&ran, &["[SETUP] ", "[HTTPS-CONNECT] ", "[HAPPY-EYEBALLS] "]);
+        let count = |needle: &str| all.iter().filter(|l| l.contains(needle)).count();
+        let chains = [
+            count("[SETUP] connect [CHAIN]"),
+            count("[HTTPS-CONNECT] h1 [CHAIN]"),
+            count("[HAPPY-EYEBALLS] attempt [CHAIN]"),
+            count("[HAPPY-EYEBALLS] merged winner [CHAIN]"),
+            count("[HTTPS-CONNECT] merged winner [CHAIN]"),
+        ];
+        (all.len(), chains)
     };
-    let (setup, connects) = said(b"setup,https-connect");
-    assert!(setup > 0, "SETUP's other lines are said");
-    assert_eq!(connects, 0);
-    let (_, connects) = said(b"multi,setup,https-connect");
-    assert_eq!(connects, 4);
+    let (others, chains) = said(b"setup,https-connect,happy-eyeballs");
+    assert!(others > 0, "the filters' other lines are said");
+    assert_eq!(chains, [0; 5]);
+    let (_, chains) = said(b"multi,setup,https-connect,happy-eyeballs");
+    assert_eq!(chains, [4, 2, 2, 1, 1]);
 }
 
 /// A resolve of the library [`Ares`] stands for: a name's addresses,
@@ -282,11 +291,14 @@ fn an_https_setup_to_a_name_waits_for_its_record_once() {
         [HTTPS-CONNECT] HTTPS-RR not available
         [HTTPS-CONNECT] 1st attempt uses h1 from wanted versions
         [TIMER] [ALPN_EYEBALLS] set for 100000us
+        [HTTPS-CONNECT] h1 [CHAIN]...[!SETUP]
         [HTTPS-CONNECT] connect -> 0, done=0
         [HTTPS-CONNECT] adjust_pollset -> 0, 1 socks
         [DNS] cache lookup localhost:{PORT} queries=HTTPS -> 0 not found
         [DNS] cache negative name resolve for localhost:{PORT} type=HTTPS
         [HTTPS-CONNECT] HTTPS-RR not available
+        [HTTPS-CONNECT] h1 [CHAIN]...[!SETUP][!HAPPY-EYEBALLS]
+        [HTTPS-CONNECT] merged winner [CHAIN][!DNS][!DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]<fd=1000>
         [HTTPS-CONNECT] connect -> 0, done=1
         [DNS] connected filter chain below
         [DNS] connected filter chain below

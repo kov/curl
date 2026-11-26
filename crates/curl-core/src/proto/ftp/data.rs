@@ -12,7 +12,7 @@ use crate::multi::TransferCx;
 use curl_alloc::TryArc;
 
 use crate::components::Component;
-use crate::conn::chain::{Chain, SetupPoint};
+use crate::conn::chain::{Chain, Head, SetupPoint};
 use crate::conn::io::{Closer, Events, Net, Remote, Sock, Socket};
 use crate::conn::mux::Carrier;
 use crate::conn::shutdown::ConnSettings;
@@ -262,8 +262,16 @@ impl DataConn {
                             if let Progress::Resolved(found) = progress {
                                 crate::multi::state::side_resolved(cx, &m, found);
                             }
+                            let rank = cx.rank();
                             crate::multi::state::side_progress(cx, &route, &progress, || {
-                                m.dialed().remote().clone()
+                                let merged = Chain::of(
+                                    m.dialing(),
+                                    Head::default(),
+                                    m.reached(),
+                                    None,
+                                    false,
+                                );
+                                (m.dialed().remote().clone(), merged.on(rank))
                             });
                             self.phase = Some(Phase::Connecting(m, setup));
                             match progress {
@@ -281,7 +289,10 @@ impl DataConn {
                         }
                         Ok(Drove::Established(conn)) => {
                             if let Some(remote) = conn.remote() {
-                                crate::multi::state::side_won(cx, &route, remote);
+                                let he = Component::HappyEyeballs;
+                                let merged = conn.connected_chain().map(|c| c.on(cx.rank()));
+                                let merged = merged.expect("set up over the network").merged_at(he);
+                                crate::multi::state::side_won(cx, &route, remote, merged);
                             }
                             *chain = None;
                             self.up(cx, host, conn)?;

@@ -2,11 +2,16 @@
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_c_closes_it
 --- old
-        // it is made, and one failing now is dropped as it is made.
-        match r.check(cx, component, &self.route) {
+            dial: self.dial,
+        };
+        match r.check(cx, component, dialing) {
+            Checked::Pending => {}
 --- new
-        // it is made, and one failing now is dropped as it is made.
+            dial: self.dial,
+        };
+        let _ = &dialing;
         match Checked::Pending {
+            Checked::Pending => {}
 
 === the losers close before the winner is named
 file: crates/curl-core/src/conn/connect.rs

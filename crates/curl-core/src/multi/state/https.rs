@@ -17,7 +17,7 @@
 
 use super::RecordLookup;
 use super::names;
-use super::{Connecting, SetupLend, StepCx};
+use super::{Attempt, Connecting, SetupLend, StepCx};
 use crate::components::Component;
 use crate::conn::asyncs::Holder;
 use crate::conn::{ConnectMachine, Dial, NetRoute, Reply};
@@ -1286,6 +1286,20 @@ pub(super) fn second_due<H: Host>(
         super::trace_set(cx, TimerKind::AlpnEyeballs, at);
     }
     false
+}
+
+/// The name of attempt `a`'s version, for a setup the HTTPS connect
+/// filter heads (`b->name`).
+pub(super) fn baller(c: &Connecting, a: Attempt) -> Option<&'static str> {
+    let h = c.https.as_ref()?;
+    let alpn = match a {
+        Attempt::First => h.first,
+        Attempt::Second => match h.second {
+            Second::Due(alpn) | Second::Started(alpn) => Some(alpn),
+            Second::Unchosen | Second::None => None,
+        },
+    };
+    alpn.map(Alpn::name)
 }
 
 /// The second attempt starts: its version.

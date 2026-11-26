@@ -277,7 +277,8 @@ curl-core/src/
     tls.rs                   TlsLayer: the layer over a TLS library's session
     shutdown.rs, shutdown/   ShutdownSet, ConnSettings: connections saying goodbye
     chain.rs                 Chain: C's filter chain rendered for the trace from how
-                             far the setup got, the handshake under way and the route
+                             far the setup got, the handshake under way, the route
+                             and the socket
   deliver/                   BodyAccountant, ClientOut; held.rs: HeldOutput;
                              decode.rs: Gate, the decoders' chain;
                              pause.rs: Pause, PauseRequest, Directions
@@ -545,12 +546,18 @@ at the points C passes them, and after each step the state is brought to the one
 names; a request that failed stays where it failed, as C's is done with there. Traced: the
 changes, the times taken (`[PGRS-*]`), the transfer's coming and going, `[CPOOL]`'s new
 connection, `Curl_conn_setup`, `multi_done`'s lines, and the chain C's filters make
-(`Curl_conn_trc_filters`), rendered by `conn/chain.rs` from how far the setup got, the
-handshake under way and the route, as no filter object exists to name itself: `cf_setup_connect
-[0][…]` as SETUP's connect is entered (once a call of `Curl_conn_connect` finds the name resolved,
-again as it adds a filter and as it starts over), `connected [0][…]` and `reduced to [0][…]` as
-the connection is up, and `failed to connect [0][…]` before `connect failed -> N`, for a failed
-race and a failed handshake alike; `Curl_multi_will_close fd=N` as a drive closes a socket
+(`Curl_cfchain_trc`), rendered by `conn/chain.rs` from how far the setup got, the handshake
+under way, the route and the socket, as no filter object exists to name itself:
+`[CHAIN][…]<fd=N>`, `[CHAIN-1]` for a connection's second, `...` after the tag for an attempt's
+part of it, the socket once the chain holds it. Each line needs the multi's trace on as well as
+its own filter's: `[SETUP] connect …` as SETUP's connect is entered (once a call of
+`Curl_conn_connect` finds the name resolved, again as it adds a filter and as it starts over),
+from SETUP down below the HTTPS connect filter, which says its attempt's name and chain once a
+call before it (`h1 [CHAIN]...`); `[HAPPY-EYEBALLS] attempt [CHAIN]...` at each connect of an
+attempt, the first before its socket opens; `merged winner` as the race's winner joins the
+chain and as the HTTPS connect filter's does; then the multi's `connected [CHAIN]…` and
+`reduced to [CHAIN]…` as the connection is up, and `failed to connect [CHAIN]…` before `connect
+failed -> N`, for a failed race and a failed handshake alike; `Curl_multi_will_close fd=N` as a drive closes a socket
 (`DriveCx`), which a socket a connection keeps is not: C closes it on its internal handle, which
 says it on the internal trace. As a leg starts, its `.netrc` step's lines (`[NETRC] scanning`,
 `netrc: using credentials for`) and `transfer credentials:`, which says the credentials the
@@ -603,7 +610,7 @@ connected setup filter` and `destroy` as the connection is up. `HTTP-PROXY` and 
 trace their removal and `destroy` with it, and the tunnel's two filters (`HTTP-PROXY`,
 `H1-PROXY`) their `destroy` as a redial discards them. The `DNS` and `HAPPY-EYEBALLS` filters,
 setup filters as well, go with them in the chain's order (`Chain::going`).
-`HTTP-PROXY` says `CONNECT` (`CONNECT-UDP`) under each `cf_setup_connect` line while the tunnel
+`HTTP-PROXY` says `CONNECT` (`CONNECT-UDP`) under each `[SETUP] connect` line while the tunnel
 is to be made, and `installing subfilter for HTTP/x` once the proxy's ALPN, or its type, names
 the tunnel's protocol (`http_proxy_cf_connect`). Not traced: the `SOCKS` and `H1-PROXY`
 components' own lines: SOCKS's state changes, which name C's machine's states and source lines
@@ -681,7 +688,7 @@ certificate:` block, the trust anchors, the verification's lines; and the msg ca
 handshake lines (`TLSv1.3 (OUT), TLS handshake, Client hello (1):`) beside the record bytes as
 SSL data. `HTTPS-CONNECT`, the filter C puts above SETUP for an `https` origin with ALPN on and
 no forwarding proxy (`multi/state/https.rs`), is rendered in the chain with the DNS filter that
-asks for the origin's HTTPS-RR above the name's (`[0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]`, one
+asks for the origin's HTTPS-RR above the name's (`[CHAIN][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]`, one
 DNS filter for an address) and traces `added` in place of SETUP's, `connect, init`, `HTTPS-RR
 not available`, `1st attempt uses h1 from wanted versions`, its `connect -> R, done=D` at the end
 of each connect call (after `connect, all attempts failed` for a failure, whose chain C names

@@ -908,12 +908,13 @@ fn enter_setup<H: Host>(
 ) -> Option<Chain> {
     let head = head_of(c);
     let mut ask = c.record_ask;
+    let baller = https::baller(c, a);
     let setup = c.attempt(a)?;
     let under_way = c.handshake(a).map(Handshake::filter);
     let chain = enter_chain(
         setup,
         &c.route,
-        head,
+        (head, baller),
         under_way,
         cx,
         entered,
@@ -921,6 +922,16 @@ fn enter_setup<H: Host>(
     );
     c.record_ask = ask;
     Some(chain)
+}
+
+/// The HTTPS connect filter's attempt `name` is connected again, its
+/// chain from SETUP down said as the multi's trace says chains
+/// (`cf_hc_baller_connect`).
+fn baller_called<H: Host>(cx: &mut StepCx<'_, H>, name: &str, chain: &Chain) {
+    if trace::traces(cx, Component::Multi) {
+        let view = chain.setup_view();
+        trace::of(cx, Component::HttpsConnect, format_args!("{name} {view}"));
+    }
 }
 
 /// SETUP's connect entered over `chain`: its line, then, while the
@@ -936,14 +947,16 @@ fn setup_entered<H: Host>(cx: &mut StepCx<'_, H>, chain: Chain, udp: bool) {
 }
 
 /// `enter_setup` of the chain `setup` makes over `plan`, under `head`,
-/// with the handshake `under_way` started. The origin's TLS, added, puts
+/// with the handshake `under_way` started; the HTTPS connect filter's
+/// attempt named `baller`, if the filter heads it, said as the call
+/// enters it (`cf_hc_baller_connect`). The origin's TLS, added, puts
 /// in the filter asking for the origin's record in `ask` where it asks
 /// for one there: the transfer's own setup, which a second connection's
 /// is not.
 pub(super) fn enter_chain<H: Host>(
     setup: &ConnectMachine,
     plan: &NetRoute,
-    mut head: Head,
+    (mut head, baller): (Head, Option<&'static str>),
     under_way: Option<Component>,
     cx: &mut StepCx<'_, H>,
     entered: &mut bool,
@@ -958,7 +971,14 @@ pub(super) fn enter_chain<H: Host>(
         Chain::of(route, head, reached, under_way, installed).on(rank)
     };
     let udp = route.asks_udp();
-    let entry = |cx: &mut StepCx<'_, H>, chain: Chain| setup_entered(cx, chain, udp);
+    // Once in a call, as it first enters SETUP.
+    let mut baller = baller.filter(|_| !*entered);
+    let mut entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
+        if let Some(name) = baller.take() {
+            baller_called(cx, name, &chain);
+        }
+        setup_entered(cx, chain, udp);
+    };
     match reached {
         SetupPoint::Resolving => return chain(head, reached, None, true),
         SetupPoint::Racing { started: false } => {
@@ -1172,6 +1192,10 @@ fn connect_once<H: Host>(
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Connecting(Progress::Dialed)) => {
+            let machine = c.attempt(a).expect("the attempt that dialed");
+            let reached = machine.reached();
+            let merged = Chain::of(machine.dialing(), head_of(&c), reached, None, false);
+            winner_merged(cx, Component::HappyEyeballs, merged.on(cx.rank()));
             let remote = c.attempt_mut(a).dialed().remote().clone();
             eyeballs_won(cx, &c.route, &remote);
             (TransferState::Connecting(c), Wake::Again)
@@ -1195,6 +1219,9 @@ fn connect_once<H: Host>(
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Established { remote, local, at }) => {
+            let he = Component::HappyEyeballs;
+            let won = Chain::connected(c.lease.conn(), head_of(&c), false, Component::H1Proxy);
+            winner_merged(cx, he, won.on(cx.rank()).merged_at(he));
             eyeballs_won(cx, &c.route, &remote);
             let lost = c.loser(displaced);
             up(c, cx, Ends { remote, local }, at, false, lost)
@@ -1657,12 +1684,13 @@ pub(crate) struct SideDue {
 
 /// A second connection's setup over `route` moved on as `progress` says:
 /// what its waits ask of the transfer's timers noted for the step's end.
-/// `dialed` names the peer it dialed, if it did.
+/// `dialed` names the peer it dialed, if it did, and the chain its
+/// winner was merged into.
 pub(crate) fn side_progress<H: Host>(
     cx: &mut StepCx<'_, H>,
     route: &NetRoute,
     progress: &Progress,
-    dialed: impl FnOnce() -> Remote,
+    dialed: impl FnOnce() -> (Remote, Chain),
 ) {
     if let Progress::Resolved(_) = progress {
         // A resolve a library answered still arms it while its record is
@@ -1686,15 +1714,25 @@ pub(crate) fn side_progress<H: Host>(
             }
             due.name = retry.map_or(SideTimer::Clear, SideTimer::Arm);
         }
-        Progress::Dialed => side_won(cx, route, &dialed()),
+        Progress::Dialed => {
+            let (remote, merged) = dialed();
+            side_won(cx, route, &remote, merged);
+        }
         Progress::Failed => {}
     }
 }
 
-/// A second connection's attempt to `remote` connected: the race is over,
-/// said as the transfer's is; the connection is counted once it is up.
-pub(crate) fn side_won<H: Host>(cx: &mut StepCx<'_, H>, route: &NetRoute, remote: &Remote) {
+/// A second connection's attempt to `remote` connected, merged into the
+/// chain `merged`: the race is over, said as the transfer's is; the
+/// connection is counted once it is up.
+pub(crate) fn side_won<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    route: &NetRoute,
+    remote: &Remote,
+    merged: Chain,
+) {
     cx.side_due.eyeballs = SideTimer::Clear;
+    winner_merged(cx, Component::HappyEyeballs, merged);
     said_won(cx, route, remote);
 }
 
@@ -1903,6 +1941,33 @@ fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
     trace_set(cx, TimerKind::Eyeballs, at);
 }
 
+/// The filter of the tunnel `c`'s connection was set up through, if
+/// any: H1-PROXY or H2-PROXY.
+fn tunnel_of(c: &Connecting) -> Component {
+    c.lease
+        .query(LayerQuery::Tunnel)
+        .map_or(Component::H1Proxy, |a| match a {
+            LayerAnswer::Tunnel(filter) => filter,
+            _ => unreachable!("an answer of another question"),
+        })
+}
+
+/// `filter`'s winner is merged into the chain, now `merged`: said from
+/// the filter's own chain down, the attempt's below the HTTPS connect
+/// filter for the happy eyeballs filter (`Curl_cfchain_trc`'s `merged
+/// winner`), only while the multi's trace is on.
+pub(crate) fn winner_merged<H: Host>(cx: &mut StepCx<'_, H>, filter: Component, merged: Chain) {
+    if !trace::traces(cx, Component::Multi) {
+        return;
+    }
+    if filter == Component::HappyEyeballs {
+        let view = merged.setup_view();
+        trace::of(cx, filter, format_args!("merged winner {view}"));
+    } else {
+        trace::of(cx, filter, format_args!("merged winner {merged}"));
+    }
+}
+
 /// The race's attempt to `remote`, the peer `route` connects to first
 /// or the proxy a handshake goes through, connected: the race is over,
 /// and counted (`cf_ip_happy_connect`).
@@ -2023,6 +2088,12 @@ pub(super) fn up<H: Host>(
             head.h2 = true;
         }
     }
+    if c.https.is_some() {
+        let tunnel = tunnel_of(&c);
+        let won = Chain::connected(c.lease.conn(), head, preface, tunnel);
+        let hc = Component::HttpsConnect;
+        winner_merged(cx, hc, won.on(cx.rank()).merged_at(hc));
+    }
     https::call_ended(c.https, cx, Ok(true));
     let route = c.lease.conn().dialing().expect("set up over the network");
     let target = crate::conn::chain::resolves_target(route.route);
@@ -2093,13 +2164,7 @@ pub(super) fn up<H: Host>(
     cx.report_mut().set_primary(ends);
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
-    let tunnel = c
-        .lease
-        .query(LayerQuery::Tunnel)
-        .map_or(Component::H1Proxy, |a| match a {
-            LayerAnswer::Tunnel(filter) => filter,
-            _ => unreachable!("an answer of another question"),
-        });
+    let tunnel = tunnel_of(&c);
     // Over the route the winner dialed, which a race's second dials
     // otherwise than the plan's.
     let connected = Chain::connected(c.lease.conn(), head, preface, tunnel);

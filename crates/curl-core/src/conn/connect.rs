@@ -1634,7 +1634,11 @@ impl ConnectMachine {
         }
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
-        match r.check(cx, component, &self.route) {
+        let dialing = Dialing {
+            route: &self.route,
+            dial: self.dial,
+        };
+        match r.check(cx, component, dialing) {
             Checked::Pending => r.checked(cx),
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::OutOfMemory => return Err(ConnectError::OutOfMemory),
@@ -1715,7 +1719,11 @@ impl ConnectMachine {
         // The attempts running are checked again before the new one's
         // first connect (`goto evaluate`): one connecting now wins before
         // it is made, and one failing now is dropped as it is made.
-        match r.check(cx, component, &self.route) {
+        let dialing = Dialing {
+            route: &self.route,
+            dial: self.dial,
+        };
+        match r.check(cx, component, dialing) {
             Checked::Pending => {}
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::OutOfMemory => return Err(ConnectError::OutOfMemory),
@@ -1736,16 +1744,19 @@ impl ConnectMachine {
                 (Remote::Unix(peer), None)
             }
         };
-        if let Some(scope) = scope_found {
-            cx.info(format_args!(
-                "determined scope_id={scope} for link-local address from local interface"
-            ));
-        }
         let kind = if self.dialing().first_hop_quic() || self.dial == super::Dial::Udp {
             SocketKind::Datagram
         } else {
             SocketKind::Stream
         };
+        // Its first connect, before its socket is opened.
+        let (filters, n) = attempt_filters(self.dialing(), false);
+        attempt_said(cx, &filters[..n], None);
+        if let Some(scope) = scope_found {
+            cx.info(format_args!(
+                "determined scope_id={scope} for link-local address from local interface"
+            ));
+        }
         let opened = cx.open_socket(&mut remote, kind);
         let socket = match opened.socket {
             Ok(socket) => socket,
@@ -2634,9 +2645,20 @@ impl Racing {
     /// Each running attempt's socket checked for its connect, oldest
     /// first, as `cf_tcp_connect` checks it (`SOCKET_WRITABLE(sock, 0)`):
     /// the first decided ends the check. The race is over `route`.
-    fn check(&mut self, cx: &mut dyn ConnCx, component: Component, route: &NetRoute) -> Checked {
+    fn check(
+        &mut self,
+        cx: &mut dyn ConnCx,
+        component: Component,
+        dialing: Dialing<'_>,
+    ) -> Checked {
+        let route = dialing.route;
         for (i, a) in self.attempts.iter_mut().enumerate() {
             let socket = a.socket.socket();
+            // A tunnel's is said as the transfer drives it.
+            if !matches!(a.link, Link::Tunnel(_)) {
+                let (filters, n) = attempt_filters(dialing, true);
+                attempt_said(cx, &filters[..n], Some(socket.key()));
+            }
             // A QUIC attempt is decided by its handshake, its socket
             // connected from the start; a tunnel's, as the transfer
             // drives it.
@@ -2851,6 +2873,41 @@ fn discard(cx: &mut dyn ConnCx, component: Component, socket: Sock) {
     cx.of(component, format_args!("destroy"));
     cx.of(component, format_args!("cf_socket_close, fd={fd}"));
     cx.net().close(socket);
+}
+
+/// The filters of an attempt over `dialing`'s first hop, top first,
+/// `started` or not yet (`a->chain`), as its connect is entered: over
+/// QUIC, the QUIC filter, or the HTTP/3 proxy's, its handshake not done,
+/// over the UDP socket's, connected once it is open; else the socket's
+/// filter alone, connected as it wins. A tunnel through an HTTP/3 proxy,
+/// its handshake done, is said as the transfer drives it.
+fn attempt_filters(dialing: Dialing<'_>, started: bool) -> ([(Component, bool); 2], usize) {
+    let socket = dialing.socket_component();
+    if !dialing.first_hop_quic() {
+        return ([(socket, false); 2], 1);
+    }
+    let top = if dialing.route.proxy_over_quic() {
+        Component::H3Proxy
+    } else {
+        Component::Http3
+    };
+    ([(top, false), (socket, started)], 2)
+}
+
+/// The race's attempt over `filters` is connected again, or for the
+/// first time, its socket opened as `sock` (`cf_ip_attempt_connect`):
+/// its chain, a part of the race's, said only while the multi's trace
+/// is on, as C's `Curl_cfchain_trc` says chains.
+fn attempt_said(
+    cx: &mut dyn ConnCx,
+    filters: &[(Component, bool)],
+    sock: Option<super::io::SocketKey>,
+) {
+    if cx.traces(Component::Multi) {
+        let chain = super::chain::Chain::attempt(filters, sock).on(cx.rank());
+        let part = chain.as_part();
+        cx.of(Component::HappyEyeballs, format_args!("attempt {part}"));
+    }
 }
 
 /// An attempt to `remote` has its socket (`cf_socket_open`), with the

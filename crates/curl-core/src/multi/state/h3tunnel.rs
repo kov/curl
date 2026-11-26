@@ -11,6 +11,7 @@ use super::{Lent, StepCx};
 use crate::auth::http::Side;
 use crate::components::Component;
 use crate::conn::ConnectMachine;
+use crate::conn::chain::Chain;
 use crate::conn::h3proxy::{H3Proxy, TunnelState};
 use crate::conn::io::Socket;
 use crate::error::ErrorKind;
@@ -42,6 +43,16 @@ pub(super) fn drive<H: Host>(
 ) -> Result<Tunnels, OutOfMemory> {
     let udp = machine.dialing().asks_udp();
     for (i, p, socket) in machine.tunnels() {
+        // The attempt is connected again: its chain is the HTTP/3
+        // proxy's filter, its QUIC handshake done, over the UDP socket's
+        // (`cf_ip_attempt_connect`). A tunnel not asked for yet goes on
+        // in the call whose connect made the handshake, which said it.
+        if !p.unasked() && crate::trace::traces(cx, Component::Multi) {
+            let filters = [(Component::H3Proxy, true), (Component::Udp, true)];
+            let chain = Chain::attempt(&filters, Some(socket.key())).on(cx.rank());
+            let part = chain.as_part();
+            crate::trace::of(cx, Component::HappyEyeballs, format_args!("attempt {part}"));
+        }
         // Up as the pass before found it, the attempt is connected now
         // (`H3_TUNNEL_ESTABLISHED`): the request follows the `CONNECT`,
         // and what reads it starts over (`Curl_client_reset`).

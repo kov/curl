@@ -109,7 +109,7 @@ witness: curl-core conn::chain::tests::a_handshake_is_made_once
 
 === SETUP says its chain without the multi's trace on
 file: crates/curl-core/src/multi/state/side.rs
-witness: curl-core proto::http::tests::https_trace::the_setup_s_chain_is_said_only_with_the_multi_s_trace
+witness: curl-core proto::http::tests::https_trace::the_chains_are_said_only_with_the_multi_s_trace
 features: test-util
 --- old
     if trace::traces(cx, Component::Multi) {
@@ -154,3 +154,109 @@ features: test-util
             ConnRank::Second => ("-1", 1),
 --- new
             ConnRank::Second => ("", 1),
+
+=== a race's attempt is said without the multi's trace on
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::https_trace::the_chains_are_said_only_with_the_multi_s_trace
+features: test-util
+--- old
+    if cx.traces(Component::Multi) {
+        let chain = super::chain::Chain::attempt(filters, sock).on(cx.rank());
+--- new
+    if true {
+        let chain = super::chain::Chain::attempt(filters, sock).on(cx.rank());
+
+=== the HTTPS connect filter's attempt is said without the multi's trace on
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::https_trace::the_chains_are_said_only_with_the_multi_s_trace
+features: test-util
+--- old
+    if trace::traces(cx, Component::Multi) {
+        let view = chain.setup_view();
+        trace::of(cx, Component::HttpsConnect, format_args!("{name} {view}"));
+--- new
+    if true {
+        let view = chain.setup_view();
+        trace::of(cx, Component::HttpsConnect, format_args!("{name} {view}"));
+
+=== a merged winner is said without the multi's trace on
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::https_trace::the_chains_are_said_only_with_the_multi_s_trace
+features: test-util
+--- old
+    if !trace::traces(cx, Component::Multi) {
+        return;
+    }
+    if filter == Component::HappyEyeballs {
+--- new
+    if false {
+        return;
+    }
+    if filter == Component::HappyEyeballs {
+
+=== a QUIC attempt's UDP filter is not connected once its socket is open
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+features: test-util
+--- old
+    ([(top, false), (socket, started)], 2)
+--- new
+    ([(top, false), (socket, false)], 2)
+
+=== a new attempt's first connect is not said before its socket opens
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_socket
+features: test-util
+--- old
+        let (filters, n) = attempt_filters(self.dialing(), false);
+        attempt_said(cx, &filters[..n], None);
+--- new
+        let (filters, n) = attempt_filters(self.dialing(), false);
+        let _ = (filters, n);
+
+=== the HTTPS connect filter's attempt is said at each entry of SETUP, not once a call
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_an_address_asks_for_no_record
+features: test-util
+--- old
+    let mut baller = baller.filter(|_| !*entered);
+--- new
+    let mut baller = baller;
+
+=== the HTTPS connect filter's winner shows its DNS filters connected
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_an_address_asks_for_no_record
+features: test-util
+--- old
+        winner_merged(cx, hc, won.on(cx.rank()).merged_at(hc));
+--- new
+        winner_merged(cx, hc, won.on(cx.rank()));
+
+=== a connection up as its race is won shows its setup filters connected
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::http::tests::h3_trace::a_quic_attempt_is_won_by_its_handshake
+features: test-util
+--- old
+            winner_merged(cx, he, won.on(cx.rank()).merged_at(he));
+--- new
+            winner_merged(cx, he, won.on(cx.rank()));
+
+=== a tunnel just asked for says its attempt again in the call that made its handshake
+file: crates/curl-core/src/multi/state/h3tunnel.rs
+witness: curl-core proto::http::tests::h3_trace::a_tunnel_through_an_http3_proxy_is_a_stream_of_its_connection
+features: test-util
+--- old
+        if !p.unasked() && crate::trace::traces(cx, Component::Multi) {
+--- new
+        if crate::trace::traces(cx, Component::Multi) {
+
+=== a second connection's winner is not said
+file: crates/curl-core/src/multi/state/connecting.rs
+witness: curl-core proto::ftp::tests::the_data_connection_s_filters_name_its_socket
+features: test-util
+--- old
+    cx.side_due.eyeballs = SideTimer::Clear;
+    winner_merged(cx, Component::HappyEyeballs, merged);
+--- new
+    cx.side_due.eyeballs = SideTimer::Clear;
+    let _ = merged;

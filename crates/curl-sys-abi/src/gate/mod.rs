@@ -389,8 +389,10 @@ pub(crate) struct MultiStack {
     /// Callbacks running that let in only read-only easy calls: socket,
     /// timer and debug (`set_readonly`).
     readonly: Cell<u8>,
-    /// Notify callbacks running.
-    notifies: Cell<u8>,
+    /// The depth the innermost notify callback runs at, if one runs: a
+    /// call it makes itself comes at that depth, and one from inside a
+    /// call or callback under it deeper.
+    notify_at: Cell<Option<u8>>,
     /// Whether the sessions of its cache are going out, the application's
     /// function running: the core multi's mark, asked without reaching
     /// the multi, which a callback may hold. Taken once the first export
@@ -438,7 +440,10 @@ impl MultiStack {
         if rules.no_scache_lock && self.sessions_out.get().is_some_and(SessionsOut::here) {
             return Err(Recursive);
         }
-        let in_notify = rules.in_notify && self.notifies.get() > 0;
+        // Only a call the notify callback makes itself, none nested under
+        // a call it made (`mapi_in_ntfy_cb`: the notify callback the
+        // innermost of the call stack).
+        let in_notify = rules.in_notify && self.notify_at.get() == Some(self.depth.get());
         if !in_notify && !rules.recurse && self.depth.get() > 0 {
             return Err(Recursive);
         }
@@ -531,19 +536,22 @@ impl MultiStack {
         if counted {
             self.depth.set(self.depth.get() + 1);
         }
-        let (readonly, notifies) = match (frame, callback) {
-            (_, Callback::Debug) | (Frame::Event(_), _) => (1, 0),
-            (Frame::Transfer(_), _) => (0, 0),
-            (Frame::Notify(_), _) => (0, 1),
+        let readonly = match (frame, callback) {
+            (_, Callback::Debug) | (Frame::Event(_), _) => 1,
+            (Frame::Transfer(_) | Frame::Notify(_), _) => 0,
         };
         self.readonly.set(self.readonly.get() + readonly);
-        self.notifies.set(self.notifies.get() + notifies);
+        let notify_at = match frame {
+            Frame::Notify(_) => Some(self.depth.get()),
+            Frame::Event(_) | Frame::Transfer(_) => self.notify_at.get(),
+        };
+        let outer_notify = self.notify_at.replace(notify_at);
         let outer = self.frame.replace(Some(frame));
         // Panics abort, so the restore below always runs.
         let r = f();
         self.frame.set(outer);
+        self.notify_at.set(outer_notify);
         self.readonly.set(self.readonly.get() - readonly);
-        self.notifies.set(self.notifies.get() - notifies);
         if counted {
             self.depth.set(self.depth.get() - 1);
         }

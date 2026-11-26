@@ -4414,6 +4414,105 @@ unsafe extern "C" fn notify(m: *mut CURLM, kind: c_uint, easy: *mut CURL, data: 
     }
 }
 
+/// What the nested-call test's callbacks hold: the multi, the transfer
+/// the notify callback removes, a handle the closer tries to add, and
+/// what each call came to.
+struct Nested {
+    multi: *mut CURLM,
+    removed: *mut CURL,
+    stranger: *mut CURL,
+    remove: Option<ffi::CURLMcode>,
+    add_in_closer: Vec<ffi::CURLMcode>,
+}
+
+unsafe extern "C" fn removing_notify(_: *mut CURLM, kind: c_uint, _: *mut CURL, data: *mut c_void) {
+    // SAFETY: the test passes a `Nested`.
+    let n = unsafe { &mut *data.cast::<Nested>() };
+    if kind == ffi::CURLMNOTIFY_EASY_DONE as c_uint && n.remove.is_none() {
+        // SAFETY: the test's live handles.
+        n.remove = Some(unsafe { curl_multi_remove_handle(n.multi, n.removed) });
+    }
+}
+
+unsafe extern "C" fn adding_closer(data: *mut c_void, fd: ffi::curl_socket_t) -> c_int {
+    // SAFETY: the test passes a `Nested`.
+    let n = unsafe { &mut *data.cast::<Nested>() };
+    // SAFETY: the test's live handles.
+    n.add_in_closer
+        .push(unsafe { curl_multi_add_handle(n.multi, n.stranger) });
+    // SAFETY: the closer owns the descriptor.
+    unsafe { libc::close(fd) }
+}
+
+/// A call the notify callback may make is refused from a callback under
+/// a call it made: a socket closed as it removes a transfer, whose
+/// close function would reach the multi the removal holds
+/// (`mapi_in_ntfy_cb`, upstream 5a4d842e4b; #24145).
+#[cfg(unix)]
+#[test]
+fn a_call_from_a_callback_under_the_notify_callback_is_refused() {
+    let (path, url) = file("nested", b"done");
+    // A server that takes the connection and says nothing.
+    let quiet = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let stalled = std::ffi::CString::new(format!(
+        "http://127.0.0.1:{}/",
+        quiet.local_addr().unwrap().port()
+    ))
+    .unwrap();
+    let m = curl_multi_init();
+    let (a, b) = (curl_easy_init(), curl_easy_init());
+    let mut n = Nested {
+        multi: m,
+        removed: b,
+        stranger: curl_easy_init(),
+        remove: None,
+        add_in_closer: Vec::new(),
+    };
+    pointer(a, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(a, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    pointer(b, ffi::CURLOPT_URL, stalled.as_ptr().cast_mut());
+    let close = adding_closer as unsafe extern "C" fn(*mut c_void, ffi::curl_socket_t) -> c_int;
+    function(b, ffi::CURLOPT_CLOSESOCKETFUNCTION, close as *const ());
+    pointer(b, ffi::CURLOPT_CLOSESOCKETDATA, &raw mut n);
+    // SAFETY: live handles throughout, until their cleanups, and data
+    // that outlives them.
+    unsafe {
+        let f = removing_notify as NotifyFn as *mut c_void;
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_NOTIFYFUNCTION, f),
+            CURLM_OK
+        );
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_NOTIFYDATA, (&raw mut n).cast::<c_void>()),
+            CURLM_OK
+        );
+        let done = ffi::CURLMNOTIFY_EASY_DONE as c_uint;
+        assert_eq!(curl_multi_notify_enable(m, done), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, b), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, a), CURLM_OK);
+        let mut still = 0;
+        for _ in 0..50 {
+            assert_eq!(curl_multi_perform(m, &raw mut still), CURLM_OK);
+            if n.remove.is_some() {
+                break;
+            }
+        }
+        assert_eq!(n.remove, Some(CURLM_OK), "removed from the notify callback");
+        assert_eq!(
+            n.add_in_closer,
+            [ffi::CURLM_RECURSIVE_API_CALL],
+            "the closer ran inside the removal, and was refused"
+        );
+        assert_eq!(curl_multi_remove_handle(m, a), CURLM_OK);
+        curl_multi_cleanup(m);
+        curl_easy_cleanup(a);
+        curl_easy_cleanup(b);
+        curl_easy_cleanup(n.stranger);
+    }
+    std::fs::remove_file(path).unwrap();
+    drop(quiet);
+}
+
 type TimerFn = unsafe extern "C" fn(*mut CURLM, c_long, *mut c_void) -> c_int;
 type NotifyFn = unsafe extern "C" fn(*mut CURLM, c_uint, *mut CURL, *mut c_void);
 

@@ -28,10 +28,10 @@ witness: curl-sys-abi gate::tests::the_debug_callback_lets_in_only_reads
 file: crates/curl-sys-abi/src/gate/mod.rs
 witness: curl-sys-abi handle_tests::the_debug_function_may_only_read_its_handle
 --- old
-            (_, Callback::Debug) | (Frame::Event(_), _) => (1, 0),
+            (_, Callback::Debug) | (Frame::Event(_), _) => 1,
 --- new
-            (Frame::Event(_), _) => (1, 0),
-            (_, Callback::Debug) => (0, 0),
+            (Frame::Event(_), _) => 1,
+            (_, Callback::Debug) => 0,
 
 === a debug line traced outside a transfer lets in changes
 file: crates/curl-sys-abi/src/callbacks.rs
@@ -45,7 +45,7 @@ witness: curl-sys-abi handle_tests::a_debug_line_outside_a_transfer_lets_in_only
 file: crates/curl-sys-abi/src/gate/mod.rs
 witness: curl-sys-abi gate::tests::knows_the_callback_kinds
 --- old
-        let in_notify = rules.in_notify && self.notifies.get() > 0;
+        let in_notify = rules.in_notify && self.notify_at.get() == Some(self.depth.get());
 --- new
         let in_notify = false;
 
@@ -162,3 +162,11 @@ witness: curl-sys-abi gate::tests::knows_the_callback_kinds
             EasyCall::Pause => EasyRules { kills: false, recurse: true, readonly: false, no_scache_lock: false },
 --- new
             EasyCall::Pause => EasyRules { kills: false, recurse: true, readonly: true, no_scache_lock: false },
+
+=== a call the notify callback may make is let in from a callback nested under it
+file: crates/curl-sys-abi/src/gate/mod.rs
+witness: curl-sys-abi handle_tests::a_call_from_a_callback_under_the_notify_callback_is_refused
+--- old
+        let in_notify = rules.in_notify && self.notify_at.get() == Some(self.depth.get());
+--- new
+        let in_notify = rules.in_notify && self.notify_at.get().is_some();

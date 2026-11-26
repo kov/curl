@@ -660,7 +660,8 @@ fn fread(file: &mut File, buf: &mut [u8]) -> Result<usize, ReadFailed> {
 }
 
 /// Read a part's content as it is (`read_part_content`): at most one read
-/// that calls out (a handler, a file) per fill, as `hasread` says.
+/// that calls out (a handler, a file) per fill, as `hasread` says, and of
+/// a part of known size no more than its size.
 fn read_content(
     part: PartRef<'_>,
     src: &mut Source,
@@ -675,6 +676,16 @@ fn read_content(
         Last::Paused(at) if at == calls.lifts() => return Got::Pause,
         Last::Paused(_) | Last::Fine => {}
     }
+    // A part of known size reads no more than is left of it, though its
+    // file has grown since it was measured.
+    let buf = match src.size {
+        Some(size) => {
+            let left = size.saturating_sub(src.offset);
+            let n = usize::try_from(left).map_or(buf.len(), |left| left.min(buf.len()));
+            &mut buf[..n]
+        }
+        None => buf,
+    };
     let got = if src.size.is_some_and(|size| src.offset >= size) {
         // At the end of a part of known size: no read.
         Got::Bytes(0)

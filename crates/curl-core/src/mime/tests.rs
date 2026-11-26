@@ -741,6 +741,33 @@ fn a_file_is_read_as_it_is_sent() {
     std::fs::remove_dir(&dir).unwrap();
 }
 
+/// A file that grows after its part measured it is read to the size
+/// measured, no further, and the body is the size it said (unit3227).
+#[test]
+fn a_file_grown_since_it_was_measured_is_read_to_its_size() {
+    let dir = std::env::temp_dir().join(format!("curl-mime-grown-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("f.txt");
+    std::fs::write(&path, b"first").unwrap();
+    let data = FileData::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(data.size(), Some(5));
+    use std::io::Write as _;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"unexpected extra data")
+        .unwrap();
+    let mut r = reader(tree([named("f", Content::File(data))]));
+    let size = r.size();
+    let body = all(&mut r, &mut Script::default());
+    let text = String::from_utf8(body.clone()).unwrap();
+    assert!(text.contains("\r\n\r\nfirst\r\n--"), "{text}");
+    assert!(!text.contains("unexpected"), "{text}");
+    assert_eq!(size, Some(body.len() as u64));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// More than 40 levels is too large to make, as C's limit says.
 #[test]
 fn a_tree_too_deep_is_refused() {

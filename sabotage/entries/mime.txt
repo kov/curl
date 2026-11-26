@@ -331,3 +331,11 @@ witness: curl-sys-abi mime::tests::a_refused_tree_leaves_the_part_s_subparts
     let Some(sub) = sub else {
         return CURLE_OK;
     };
+
+=== a part of known size reads past it when its file has grown
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_file_grown_since_it_was_measured_is_read_to_its_size
+--- old
+            let n = usize::try_from(left).map_or(buf.len(), |left| left.min(buf.len()));
+--- new
+            let n = buf.len().max(usize::try_from(left).unwrap_or(0));

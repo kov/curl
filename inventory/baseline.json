@@ -1,5 +1,5 @@
 {
- "c-commit": "2e0ca8e120af6c977c27a6ba74b902bc395d2e51",
+ "c-commit": "c25939b488b24fc42c38c180c5f5427c33866160",
  "data": {
   "cmake-args": {
    "BUILD_TESTING": "ON",
@@ -28,11 +28,11 @@
   },
   "compiler": "/usr/bin/cc",
   "counts": {
-   "considered": 2181,
+   "considered": 2200,
    "failed": 1,
-   "ok": 2135,
-   "ran": 2136,
-   "skipped": 45
+   "ok": 2155,
+   "ran": 2156,
+   "skipped": 44
   },
   "curl-version": [
    "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.26.0 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
@@ -214,8 +214,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-11-20T13:38:02Z",
-   "started": "2026-11-20T13:35:04Z"
+   "finished": "2026-11-26T12:51:56Z",
+   "started": "2026-11-26T12:49:33Z"
   },
   "protocols": [
    "dict",
@@ -3306,6 +3306,18 @@
      "message": null,
      "outcome": "passed"
     },
+    "test_17_ssl_use::test_17_25_no_common_name_fallback[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_25_no_common_name_fallback[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_25_no_common_name_fallback[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
     "test_18_methods::test_18_01_delete[h2]": {
      "message": null,
      "outcome": "passed"
@@ -3451,6 +3463,14 @@
      "outcome": "passed"
     },
     "test_20_websockets::test_20_16_meta_large_callback": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_17_fail_upgrade": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_18_late_http_answer": {
      "message": null,
      "outcome": "passed"
     },
@@ -4364,7 +4384,7 @@
     }
    },
    "counts": {
-    "passed": 965,
+    "passed": 970,
     "skipped": 62
    },
    "exit-status": 0,
@@ -6826,6 +6846,9 @@
    "181": {
     "result": "ok"
    },
+   "1816": {
+    "result": "ok"
+   },
    "182": {
     "result": "ok"
    },
@@ -7394,6 +7417,9 @@
    "2089": {
     "result": "ok"
    },
+   "209": {
+    "result": "ok"
+   },
    "2090": {
     "result": "ok"
    },
@@ -7511,6 +7537,9 @@
     "result": "ok"
    },
    "215": {
+    "result": "ok"
+   },
+   "2155": {
     "result": "ok"
    },
    "216": {
@@ -7890,6 +7919,9 @@
    "2641": {
     "result": "ok"
    },
+   "2642": {
+    "result": "ok"
+   },
    "266": {
     "result": "ok"
    },
@@ -8002,6 +8034,9 @@
     "result": "ok"
    },
    "278": {
+    "result": "ok"
+   },
+   "2785": {
     "result": "ok"
    },
    "279": {
@@ -8244,6 +8279,12 @@
    "3040": {
     "result": "ok"
    },
+   "3041": {
+    "result": "ok"
+   },
+   "3042": {
+    "result": "ok"
+   },
    "305": {
     "result": "ok"
    },
@@ -8309,10 +8350,16 @@
    "315": {
     "result": "ok"
    },
+   "3150": {
+    "result": "ok"
+   },
    "316": {
     "result": "ok"
    },
    "317": {
+    "result": "ok"
+   },
+   "3173": {
     "result": "ok"
    },
    "318": {
@@ -8503,7 +8550,7 @@
    },
    "3283": {
     "failed-parts": [
-     "output (log/2/stderr3283)"
+     "output (log/3/stderr3283)"
     ],
     "result": "failed"
    },
@@ -8805,6 +8852,15 @@
    "3704": {
     "result": "ok"
    },
+   "3705": {
+    "result": "ok"
+   },
+   "3706": {
+    "result": "ok"
+   },
+   "3707": {
+    "result": "ok"
+   },
    "371": {
     "result": "ok"
    },
@@ -8868,6 +8924,9 @@
     "result": "ok"
    },
    "390": {
+    "result": "ok"
+   },
+   "3903": {
     "result": "ok"
    },
    "391": {
@@ -9299,6 +9358,9 @@
    "4997": {
     "result": "ok"
    },
+   "4998": {
+    "result": "ok"
+   },
    "5": {
     "result": "ok"
    },
@@ -9416,6 +9478,21 @@
    "5032": {
     "result": "ok"
    },
+   "5033": {
+    "result": "ok"
+   },
+   "5034": {
+    "result": "ok"
+   },
+   "5035": {
+    "result": "ok"
+   },
+   "5036": {
+    "result": "ok"
+   },
+   "5037": {
+    "result": "ok"
+   },
    "504": {
     "result": "ok"
    },
@@ -9527,9 +9604,7 @@
     "result": "ok"
    },
    "537": {
-    "class": "environment",
-    "reason": "test_rlimit problem:",
-    "result": "skipped"
+    "result": "ok"
    },
    "538": {
     "result": "ok"
@@ -11020,8 +11095,8 @@
    "* Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
    "* Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
    "* Disabled: resolv-threaded, win32-ca-searchpath, win32-ca-search-safe",
-   "* Host: pera",
-   "* System: Linux pera 7.1.8-200.fc44.aarch64 #1 SMP PREEMPT_DYNAMIC Mon Aug 10 03:37:58 UTC 2026 aarch64 GNU/Linux",
+   "* Host: banana",
+   "* System: Linux banana 7.2.9-201.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Oct  9 15:04:46 UTC 2026 x86_64 GNU/Linux",
    "* OS: linux",
    "* Perl: v5.42.3 (/usr/bin/perl)",
    "* Args: -a -n -j8",

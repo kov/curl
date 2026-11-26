@@ -1574,6 +1574,7 @@ impl Request {
             probe,
             get_or_head,
             sspi,
+            cx.easy().libraries().hashes(),
         );
         cx.report_mut().set_auth_used(auth.used);
         if forwarded {

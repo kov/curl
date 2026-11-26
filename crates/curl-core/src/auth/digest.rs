@@ -237,6 +237,15 @@ impl Digest {
         }
     }
 
+    /// Whether the build can answer it: it has the hash its algorithm
+    /// takes (C has SHA-512/256 only from its TLS library).
+    pub(crate) fn usable(&self, hashes: crate::tls::Hashes) -> bool {
+        match self.algo {
+            Some(Algorithm::Sha512_256) => hashes.sha512_256,
+            Some(Algorithm::Md5 | Algorithm::Sha256) | None => true,
+        }
+    }
+
     /// A nonce to answer.
     pub(crate) fn has_nonce(&self) -> bool {
         self.nonce.is_some()

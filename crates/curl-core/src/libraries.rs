@@ -143,6 +143,16 @@ impl Random for ForcedEntropy {
 }
 
 impl Libraries {
+    /// The hashes the build has, its TLS library's with the system's: C
+    /// has none of its own (`CURL_HAVE_SHA512_256` and the others).
+    pub(crate) fn hashes(&self) -> crate::tls::Hashes {
+        let tls = self
+            .tls
+            .as_ref()
+            .map_or(crate::tls::Hashes::NONE, |tls| tls.hashes());
+        crate::tls::Hashes::of_build(tls)
+    }
+
     /// SSPI, where it is the security library.
     pub(crate) fn sspi(&self) -> Option<&'static dyn Sspi> {
         self.security.and_then(Security::sspi)

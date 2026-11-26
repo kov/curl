@@ -118,10 +118,11 @@ impl Auth {
         probe: bool,
         get_or_head: bool,
         sspi: bool,
+        hashes: crate::tls::Hashes,
     ) -> AuthAsked {
         AuthAsked {
-            host: self.host.asked(host.0, host.1, sspi),
-            proxy: self.proxy.asked(proxy.0, proxy.1, sspi),
+            host: self.host.asked(host.0, host.1, sspi, hashes),
+            proxy: self.proxy.asked(proxy.0, proxy.1, sspi, hashes),
             probe,
             get_or_head,
             problem: self.problem,
@@ -539,8 +540,15 @@ impl PeerAuth {
 
     /// What a request to `origin` asks of its response's challenges,
     /// Digest SSPI's if `sspi`, as in C's Windows build
-    /// (`lib/vauth/digest_sspi.c`).
-    fn asked(&self, credentials: Option<Secret<'_>>, origin: &Peer, sspi: bool) -> PeerAsked {
+    /// (`lib/vauth/digest_sspi.c`), else the core's with the build's
+    /// `hashes`.
+    fn asked(
+        &self,
+        credentials: Option<Secret<'_>>,
+        origin: &Peer,
+        sspi: bool,
+        hashes: crate::tls::Hashes,
+    ) -> PeerAsked {
         PeerAsked {
             want: self.want,
             picked: self.picked.methods(),
@@ -552,6 +560,7 @@ impl PeerAuth {
             digest_nonce: ForPeer::holds_for(&self.digest, origin)
                 .is_some_and(DigestKind::answerable),
             sspi_digest: sspi,
+            hashes,
         }
     }
 
@@ -622,6 +631,9 @@ pub(crate) struct PeerAsked {
     digest_nonce: bool,
     /// Digest is SSPI's: a challenge is kept as it came.
     sspi_digest: bool,
+    /// The hashes the build has: a Digest challenge whose algorithm it
+    /// lacks is passed over.
+    hashes: crate::tls::Hashes,
 }
 
 impl PeerAsked {
@@ -641,6 +653,7 @@ impl PeerAsked {
         avail: AuthMethods::NONE,
         digest_nonce: false,
         sspi_digest: false,
+        hashes: crate::tls::Hashes::NONE,
     };
 }
 
@@ -730,6 +743,8 @@ pub(crate) enum HeardNote {
     Problem(AuthMethods),
     /// A second Digest challenge in one response.
     DuplicateDigest,
+    /// A Digest challenge whose algorithm the build lacks: passed over.
+    UnusableDigest,
 }
 
 impl Heard {
@@ -845,14 +860,15 @@ impl Challenges {
         open: &mut AuthMethods,
         heard: &mut Heard,
     ) -> Result<(), OutOfMemory> {
-        self.offered = self.offered | AuthMethods::DIGEST;
         if open.contains(AuthMethods::DIGEST) {
+            self.offered = self.offered | AuthMethods::DIGEST;
             heard.push(HeardNote::DuplicateDigest);
             return Ok(());
         }
-        *open = *open | AuthMethods::DIGEST;
         let rest = &value[AuthMethods::DIGEST.name().len()..];
         if asked.sspi_digest {
+            self.offered = self.offered | AuthMethods::DIGEST;
+            *open = *open | AuthMethods::DIGEST;
             // Kept as it came, the blanks after the name passed; one
             // after another a refusal unless stale, which keeps the first.
             let read = match rest.first() {
@@ -875,6 +891,16 @@ impl Challenges {
             // Nothing after the name, or a comma: no challenge.
             _ => (Digest::default(), Err(DigestError::Bad)),
         };
+        // An algorithm the build lacks: not offered, the challenge
+        // forgotten, so that a Digest one after it is read
+        // (`CURLE_NOT_BUILT_IN`, upstream 397689396f).
+        if !matches!(read, Err(DigestError::OutOfMemory)) && !digest.usable(asked.hashes) {
+            heard.push(HeardNote::UnusableDigest);
+            self.digest = Some(DigestRead::Own(Digest::default()));
+            return Ok(());
+        }
+        self.offered = self.offered | AuthMethods::DIGEST;
+        *open = *open | AuthMethods::DIGEST;
         match read {
             Ok(()) => {}
             Err(DigestError::OutOfMemory) => return Err(OutOfMemory),
@@ -1064,6 +1090,11 @@ pub(crate) mod arbitrary {
                     avail,
                     digest_nonce,
                     sspi_digest: false,
+                    hashes: crate::tls::Hashes {
+                        md5: true,
+                        sha256: true,
+                        sha512_256: digest_nonce,
+                    },
                 }
             },
         )
@@ -1107,6 +1138,7 @@ mod tests {
     use super::*;
     use crate::auth::creds::Credentials;
     use crate::conn::Scheme;
+    use crate::tls::Hashes;
 
     const HTTP: Scheme = Scheme::HTTP;
 
@@ -1126,7 +1158,9 @@ mod tests {
                 for note in c.read(v, &asked).unwrap().notes() {
                     match note {
                         HeardNote::Problem(m) => refused.push(m),
-                        HeardNote::DuplicateDigest => unreachable!("no Digest here"),
+                        HeardNote::DuplicateDigest | HeardNote::UnusableDigest => {
+                            unreachable!("no Digest here")
+                        }
                     }
                 }
             }
@@ -1141,6 +1175,50 @@ mod tests {
         assert_eq!(read(&[b"X a=\"Basic\""], none), (none, none, vec![]));
         assert_eq!(read(&[b"Bearer, Basic"], b), (none, b | br, vec![b]));
         assert_eq!(read(&[b"Basic", b"Bearer"], b), (br, b | br, vec![b]));
+    }
+
+    /// A Digest challenge whose algorithm the build lacks is passed over:
+    /// not offered, its challenge forgotten, no problem, so that the next
+    /// method offered, or a Digest challenge after it, is taken; a build
+    /// with the hash reads it (upstream 397689396f).
+    #[test]
+    fn a_digest_algorithm_the_build_lacks_is_passed_over() {
+        let read = |values: &[&[u8]], sha512_256| {
+            let asked = PeerAsked {
+                hashes: Hashes {
+                    md5: true,
+                    sha256: true,
+                    sha512_256,
+                },
+                ..PeerAsked::DEFAULT
+            };
+            let mut c = Challenges::default();
+            let mut notes = Vec::new();
+            for v in values {
+                notes.extend(c.read(v, &asked).unwrap().notes());
+            }
+            (c, notes)
+        };
+        let (d, b) = (AuthMethods::DIGEST, AuthMethods::BASIC);
+        let sha = b"Digest realm=\"r\", nonce=\"1\", algorithm=SHA-512-256";
+        let (c, notes) = read(&[sha, b"Basic realm=\"r\""], false);
+        assert_eq!(notes, [HeardNote::UnusableDigest]);
+        assert_eq!((c.open.unwrap(), c.offered, c.refused), (b, b, false));
+        assert!(
+            matches!(&c.digest, Some(DigestRead::Own(d)) if !d.has_nonce()),
+            "forgotten"
+        );
+        let (c, notes) = read(&[sha, b"Digest nonce=\"2\", algorithm=MD5"], false);
+        assert_eq!(
+            notes,
+            [HeardNote::UnusableDigest],
+            "the second is no duplicate"
+        );
+        assert_eq!((c.open.unwrap(), c.offered), (d, d));
+        assert!(matches!(&c.digest, Some(DigestRead::Own(d)) if d.has_nonce()));
+        let (c, notes) = read(&[sha], true);
+        assert!(notes.is_empty());
+        assert_eq!((c.open.unwrap(), c.offered), (d, d));
     }
 
     /// A Digest challenge is read whole, the first in a response only,
@@ -1599,9 +1677,12 @@ mod tests {
         let mut auth = PeerAuth::default();
         auth.start(AuthMethods::DIGEST);
         read(&mut auth);
-        assert_eq!(auth.asked(None, &a, false).avail, AuthMethods::DIGEST);
-        assert!(auth.asked(None, &a, false).digest_nonce);
-        assert!(!auth.asked(None, &b, false).digest_nonce);
+        assert_eq!(
+            auth.asked(None, &a, false, Hashes::NONE).avail,
+            AuthMethods::DIGEST
+        );
+        assert!(auth.asked(None, &a, false, Hashes::NONE).digest_nonce);
+        assert!(!auth.asked(None, &b, false, Hashes::NONE).digest_nonce);
         assert!(
             answers(&mut auth, &a, &right),
             "its own origin, in any case"
@@ -1628,7 +1709,7 @@ mod tests {
             ..Challenges::default()
         };
         auth.apply(None, false, challenges, &a, None).unwrap();
-        assert!(!auth.asked(None, &a, false).digest_nonce);
+        assert!(!auth.asked(None, &a, false, Hashes::NONE).digest_nonce);
         assert!(!answers(&mut auth, &a, &right), "no nonce to answer");
         // A pick leaves nothing open.
         let a_again = peer(b"a");
@@ -1640,7 +1721,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(auth.asked(None, &a, false).avail, AuthMethods::NONE);
+        assert_eq!(
+            auth.asked(None, &a, false, Hashes::NONE).avail,
+            AuthMethods::NONE
+        );
     }
 
     /// The handle's state as transfers read it: a problem acted on, until
@@ -1682,7 +1766,16 @@ mod tests {
             !auth.proxy_offers(&offered(AuthMethods::NONE)),
             "a refusal closes them"
         );
-        let asked = |auth: &Auth| auth.asked((None, &peer), (None, &peer), false, true, false);
+        let asked = |auth: &Auth| {
+            auth.asked(
+                (None, &peer),
+                (None, &peer),
+                false,
+                true,
+                false,
+                Hashes::NONE,
+            )
+        };
         assert!(!asked(&auth).host.done && !asked(&auth).proxy.done);
         auth.side(Side::Proxy).finish();
         assert!(asked(&auth).proxy.done && !asked(&auth).host.done);
@@ -1709,7 +1802,14 @@ mod tests {
                 AuthMethods::NONE,
                 ProxyGeneration::default(),
             );
-            let asked = auth.asked((Some(secret), &peer), (None, &peer), false, true, false);
+            let asked = auth.asked(
+                (Some(secret), &peer),
+                (None, &peer),
+                false,
+                true,
+                false,
+                Hashes::NONE,
+            );
             let offered = Offered {
                 host: offered(methods),
                 proxy: Challenges::default(),

@@ -626,6 +626,7 @@ fn line<H: Host>(
                 let note = match note {
                     HeardNote::Problem(method) => HeadNote::AuthProblem(method),
                     HeardNote::DuplicateDigest => HeadNote::DuplicateDigest,
+                    HeardNote::UnusableDigest => HeadNote::UnusableDigest,
                 };
                 trace::info(cx, format_args!("{note}"));
             }
@@ -718,7 +719,14 @@ pub(super) fn proxy_asked<H: Host>(lent: &Lent<'_>, cx: &StepCx<'_, H>) -> PeerA
     let sspi = cx.easy().libraries().sspi().is_some();
     cx.easy()
         .auth
-        .asked((None, peer), (secret, peer), false, true, sspi)
+        .asked(
+            (None, peer),
+            (secret, peer),
+            false,
+            true,
+            sspi,
+            cx.easy().libraries().hashes(),
+        )
         .proxy
 }
 
@@ -754,9 +762,14 @@ fn finish<H: Host>(
     let asked = {
         let (peer, secret, _) = proxy(lent.route);
         let sspi = cx.easy().libraries().sspi().is_some();
-        cx.easy()
-            .auth
-            .asked((None, peer), (secret, peer), false, true, sspi)
+        cx.easy().auth.asked(
+            (None, peer),
+            (secret, peer),
+            false,
+            true,
+            sspi,
+            cx.easy().libraries().hashes(),
+        )
     };
     // A Negotiate with the proxy that failed after its token went marks
     // the connection to close, which the next `CONNECT` then goes over a

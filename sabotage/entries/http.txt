@@ -1679,3 +1679,31 @@ witness: curl-core multi::state::https::tests::a_record_is_looked_up_here_only_w
             || p.socks(route.target())
 --- new
         p.socks(route.target())
+
+=== a Digest challenge the build cannot answer is taken as any other
+file: crates/curl-core/src/auth/http.rs
+witness: curl-core auth::http::tests::a_digest_algorithm_the_build_lacks_is_passed_over
+--- old
+        if !matches!(read, Err(DigestError::OutOfMemory)) && !digest.usable(asked.hashes) {
+--- new
+        if !matches!(read, Err(DigestError::OutOfMemory)) && !digest.usable(asked.hashes) && false {
+
+=== SHA-512/256 is taken as answerable whatever the build has
+file: crates/curl-core/src/auth/digest.rs
+witness: curl-core auth::http::tests::a_digest_algorithm_the_build_lacks_is_passed_over
+--- old
+            Some(Algorithm::Sha512_256) => hashes.sha512_256,
+--- new
+            Some(Algorithm::Sha512_256) => hashes.sha512_256 || true,
+
+=== a request reads its challenges with hashes its build does not have
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_digest_challenge_the_build_cannot_answer_gives_way_to_basic
+--- old
+            cx.easy().libraries().hashes(),
+--- new
+            crate::tls::Hashes {
+                sha512_256: true,
+                ..cx.easy().libraries().hashes()
+            },
+

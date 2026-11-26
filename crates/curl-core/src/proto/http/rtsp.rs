@@ -594,6 +594,7 @@ impl Request {
             probe,
             true,
             sspi,
+            cx.easy().libraries().hashes(),
         );
         cx.report_mut().set_auth_used(auth.used);
         auth_trace(cx, "Server", auth.used, credentials);

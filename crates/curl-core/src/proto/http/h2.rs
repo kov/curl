@@ -2169,10 +2169,14 @@ impl Request {
         cx.easy_mut().auth.start(want, proxy_want, generation);
         let sspi = cx.easy().libraries().sspi().is_some();
         let peer = request.base.peer();
-        let auth = cx
-            .easy()
-            .auth
-            .asked((None, peer), (None, peer), false, true, sspi);
+        let auth = cx.easy().auth.asked(
+            (None, peer),
+            (None, peer),
+            false,
+            true,
+            sspi,
+            cx.easy().libraries().hashes(),
+        );
         let options = cx.easy().options();
         let http = &options.http;
         let exchange = Exchange {

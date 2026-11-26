@@ -262,6 +262,7 @@ pub(super) fn challenged<H: Host>(
         let note = match note {
             HeardNote::Problem(method) => HeadNote::AuthProblem(method),
             HeardNote::DuplicateDigest => HeadNote::DuplicateDigest,
+            HeardNote::UnusableDigest => HeadNote::UnusableDigest,
         };
         trace::info(cx, format_args!("{note}"));
     }

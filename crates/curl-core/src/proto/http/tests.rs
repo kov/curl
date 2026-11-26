@@ -2933,6 +2933,27 @@ fn a_probe_let_through_is_made_again_with_its_body() {
     assert_eq!(ran.seen.body(), b"ok\n");
 }
 
+/// A build whose TLS library has no SHA-512/256, as here with none,
+/// passes a Digest challenge of it over for the Basic offered beside it,
+/// saying so (upstream 397689396f; C's mbedTLS build).
+#[test]
+fn a_digest_challenge_the_build_cannot_answer_gives_way_to_basic() {
+    let challenge = b"HTTP/1.1 401 No\r\n\
+        WWW-Authenticate: Digest realm=\"r\", nonce=\"n\", algorithm=SHA-512-256\r\n\
+        WWW-Authenticate: Basic realm=\"r\"\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[challenge, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST | AuthMethods::BASIC);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(text.contains("Authorization: Basic dTpw\r\n"), "{text}");
+    assert!(!text.contains("Authorization: Digest"), "{text}");
+    let said = "Ignoring unusable Digest algorithm.\n".to_string();
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+}
+
 /// A second 401 with a new nonce not called stale refuses the answer:
 /// the transfer ends there with the 401. Called stale, the request is
 /// answered again, the count started over (tests 65 and 153).

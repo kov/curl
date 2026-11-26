@@ -92,6 +92,8 @@ pub(crate) enum Note {
     AuthProblem(AuthMethods),
     /// A second Digest challenge, not read.
     DuplicateDigest,
+    /// A Digest challenge whose algorithm the build lacks, passed over.
+    UnusableDigest,
     /// What a challenge line has C say, given out one by one by
     /// `Notes::iter`.
     Heard(Heard),
@@ -140,6 +142,7 @@ impl Notes {
             let heard = heard.into_iter().flat_map(Heard::notes).map(|n| match n {
                 HeardNote::Problem(method) => Note::AuthProblem(method),
                 HeardNote::DuplicateDigest => Note::DuplicateDigest,
+                HeardNote::UnusableDigest => Note::UnusableDigest,
             });
             one.into_iter().chain(heard)
         })
@@ -162,6 +165,7 @@ impl fmt::Display for Note {
                 return write!(f, "{} authentication problem, ignoring.", method.name());
             }
             Note::DuplicateDigest => "Ignoring duplicate digest auth header.",
+            Note::UnusableDigest => "Ignoring unusable Digest algorithm.",
             Note::NeedRewind => "Need to rewind upload for next request",
             Note::CloseInstead(left, ongoing) => {
                 if *ongoing == Ongoing::Negotiate {

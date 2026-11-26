@@ -221,8 +221,8 @@ fn number(date: &[u8], at: usize, w: &mut When) -> Result<usize, BadDate> {
     }
     if w.year.is_none() {
         w.year = Some(match val {
-            71..100 => val + 1900,
-            0..=70 => val + 2000,
+            70..100 => val + 1900,
+            0..70 => val + 2000,
             _ => val,
         });
         return end;

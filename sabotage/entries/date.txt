@@ -20,9 +20,19 @@ witness: curl-core date::tests::lib517_dates
 file: crates/curl-core/src/date.rs
 witness: curl-core date::tests::lib517_dates
 --- old
-            71..100 => val + 1900,
+            70..100 => val + 1900,
 --- new
-            71..100 => val + 2000,
+            70..100 => val + 2000,
+
+=== a two-digit year of 70 is this century's
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::lib517_dates
+--- old
+            70..100 => val + 1900,
+            0..70 => val + 2000,
+--- new
+            71..100 => val + 1900,
+            0..71 => val + 2000,
 
 === leap days count the current year before March
 file: crates/curl-core/src/date.rs

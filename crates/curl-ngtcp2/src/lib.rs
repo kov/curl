@@ -1982,9 +1982,8 @@ unsafe extern "C" fn rand(dest: *mut u8, destlen: usize, _rand_ctx: *const sys::
     }
 }
 
-/// Write what the library gives of the qlog, with one write as C's
-/// (`qlog_callback`); a write that fails closes the file, and nothing
-/// more is written.
+/// Write what the library gives of the qlog, whole (`qlog_callback`); a
+/// write that fails closes the file, and nothing more is written.
 unsafe extern "C" fn qlog_write(
     user_data: *mut c_void,
     _flags: u32,
@@ -2001,10 +2000,17 @@ unsafe extern "C" fn qlog_write(
     };
     // SAFETY: the library's `datalen` bytes, alive for the call.
     let bytes = unsafe { bytes(data.cast(), datalen) };
-    // One write, its count not looked at, as C's `write`.
-    if let Err(_failed) = std::io::Write::write(&mut &*file, bytes) {
+    if !qlog_record(&*file, bytes) {
         *qlog = None;
     }
+}
+
+/// Write all of a qlog record to `out`, a short write followed by the
+/// rest and an interrupted one tried again, as C's `qlog_write_all`
+/// (upstream 307f08478d): whether it all went; a write that fails or
+/// takes nothing is the end.
+fn qlog_record(mut out: impl std::io::Write, bytes: &[u8]) -> bool {
+    out.write_all(bytes).is_ok()
 }
 
 /// A new connection id and its reset token (`cb_get_new_connection_id2`).
@@ -2390,6 +2396,57 @@ mod tests {
     #![allow(clippy::disallowed_macros, clippy::disallowed_methods)]
 
     use super::*;
+
+    /// A file that answers each write as its script says: interrupted,
+    /// taking at most so many bytes, or failing; then taking all.
+    struct Scripted {
+        got: Vec<u8>,
+        script: Vec<Option<std::io::Result<usize>>>,
+    }
+
+    impl std::io::Write for Scripted {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let step = if self.script.is_empty() {
+                None
+            } else {
+                self.script.remove(0)
+            };
+            let n = match step {
+                None => buf.len(),
+                Some(Ok(most)) => most.min(buf.len()),
+                Some(Err(e)) => return Err(e),
+            };
+            self.got.extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A qlog record goes whole: an interrupted write is tried again and
+    /// a short one followed by the rest; a write that fails, or takes
+    /// nothing, ends the qlog (`qlog_write_all`).
+    #[test]
+    fn a_qlog_record_is_written_whole() {
+        use std::io::{Error, ErrorKind};
+        let interrupted = || Some(Err(Error::from(ErrorKind::Interrupted)));
+        let mut out = Scripted {
+            got: Vec::new(),
+            script: vec![interrupted(), Some(Ok(1)), interrupted(), Some(Ok(2))],
+        };
+        assert!(qlog_record(&mut out, b"record"));
+        assert_eq!(out.got, b"record");
+        for failing in [Some(Ok(0)), Some(Err(Error::from(ErrorKind::WouldBlock)))] {
+            let mut out = Scripted {
+                got: Vec::new(),
+                script: vec![Some(Ok(2)), failing],
+            };
+            assert!(!qlog_record(&mut out, b"record"));
+            assert_eq!(out.got, b"re");
+        }
+    }
 
     fn body() -> Body {
         Body {

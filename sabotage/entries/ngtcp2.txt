@@ -39,3 +39,11 @@ witness: curl-ngtcp2 tests::the_contract_refuses_what_ngtcp2_forbids
         if rv < 0 && !goes_on {
 --- new
         if rv < sys::NGTCP2_ERR_FATAL {
+
+=== a qlog record is written with one write, its count not looked at
+file: crates/curl-ngtcp2/src/lib.rs
+witness: curl-ngtcp2 tests::a_qlog_record_is_written_whole
+--- old
+    out.write_all(bytes).is_ok()
+--- new
+    out.write(bytes).is_ok()

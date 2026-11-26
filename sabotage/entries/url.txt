@@ -140,6 +140,22 @@ witness: curl-core url::host::tests::unit1675_ipv6_parse
         let z = &host[1 + len + 1..];
         let z = z.strip_prefix(b"25").filter(|r| r.first().is_some_and(|&b| b != b']')).unwrap_or(z);
 
+=== a bracketed host is closed by whatever its last byte is
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::host::tests::unit1675_ipv6_parse
+--- old
+    if host.len() < 4 || host.last() != Some(&b']') {
+--- new
+    if host.len() < 4 {
+
+=== an IPv6 zone id may end at a bracket before the host's last
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::host::tests::unit1675_ipv6_parse
+--- old
+        if id == 0 || id + 1 != z.len() {
+--- new
+        if id == 0 || z.get(id) != Some(&b']') {
+
 === an IPv6 zone id longer than C allows is accepted
 file: crates/curl-core/src/url/host.rs
 witness: curl-core url::tests::branches_as_c_takes_them

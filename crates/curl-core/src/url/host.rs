@@ -320,12 +320,11 @@ const MAX_ZONE: usize = 15;
 /// Normalise a bracketed IPv6 host in place, taking out its zone id
 /// (`ipv6_parse`).
 pub(super) fn ipv6(host: &mut Bytes) -> Result<Option<Bytes>, UrlErrorKind> {
-    if host.len() < 4 {
+    if host.len() < 4 || host.last() != Some(&b']') {
         return Err(UrlErrorKind::BadIpv6);
     }
-    // The last byte stands for the closing bracket, whatever it is; but
-    // the address is counted to the end, as C's `strspn` counts it, so a
-    // host that ends inside its address (`[::1`) is refused.
+    // The address is counted to the end, as C's `strspn` counts it, so a
+    // host whose last bracket is not the address's own is refused.
     let inner = host.len() - 2;
     let mut len = host[1..]
         .iter()
@@ -344,7 +343,8 @@ pub(super) fn ipv6(host: &mut Bytes) -> Result<Option<Bytes>, UrlErrorKind> {
             .take_while(|&&b| !invalid_host_byte(b) && b != b']')
             .take(MAX_ZONE)
             .count();
-        if id == 0 || z.get(id) != Some(&b']') {
+        // The zone ends at the host's closing bracket, nowhere before it.
+        if id == 0 || id + 1 != z.len() {
             return Err(UrlErrorKind::BadIpv6);
         }
         zone = Some(copy(&z[..id])?);
@@ -458,15 +458,14 @@ mod tests {
     }
 
     /// unit1675's `ipv6_parse` table, read from its source, and hosts
-    /// ending other than in a bracket as the C build takes them through
-    /// `CURLUPART_HOST`: the last byte stands for the bracket, but an
-    /// address running to the end has none.
+    /// that end other than in a bracket, refused as the C build refuses
+    /// them through `CURLUPART_HOST`.
     #[test]
     fn unit1675_ipv6_parse() {
         let rows = crate::c_source::table("tests/unit/unit1675.c", "ipv6_test tests[]", |c| {
             panic!("{c}")
         });
-        assert_eq!(rows.len(), 7, "the table was read");
+        assert_eq!(rows.len(), 9, "the table was read");
         let text =
             |v: &crate::c_source::Value| v.bytes().map(|b| String::from_utf8(b.to_vec()).unwrap());
         for row in rows {
@@ -479,11 +478,16 @@ mod tests {
                 None => assert_eq!(v6(input), Err(UrlErrorKind::BadIpv6), "{input}"),
             }
         }
-        for bad in ["[0::1", "[::1.2.3.4", "[::", "[::1%eth0"] {
+        for bad in [
+            "[0::1",
+            "[::1.2.3.4",
+            "[::",
+            "[::1%eth0",
+            "[::1x",
+            "[::1%",
+            "[1::2x",
+        ] {
             assert_eq!(v6(bad), Err(UrlErrorKind::BadIpv6), "{bad}");
-        }
-        for (taken, host) in [("[::1x", "[::1]"), ("[::1%", "[::1]"), ("[1::2x", "[1::2]")] {
-            assert_eq!(v6(taken).unwrap(), (host.into(), None), "{taken}");
         }
     }
 

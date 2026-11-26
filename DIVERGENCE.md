@@ -820,21 +820,17 @@ so: weaknesses kept because C has them.
   disposition then leaves behind. Upstream: #23858, PR #23887. Pinned by
   `a_name_not_yet_final_empties_no_file` (`crates/curl-tool/tests/http.rs`).
 
-## Files C dates without opening them
+## The remote time set through the open file
 
-- **`--remote-time` dates only a file the transfer opened.** The time is set through the
-  transfer's own handle to its output file, written out first, before it closes (`futimens`,
-  `SetFileTime` on the handle). C sets it by name after the close whenever the output is a file
-  (`setfiletime` in `post_close_output`), whether or not the transfer opened it: a transfer that
-  ends well without opening its output, at a 304 or a time condition not met, gives the file
-  that name names the remote time, and with `-J` that name can be the one a redirect's
-  `Location:` gave. Measured 2026-11-24: `-O -J -L -R` answered by a 302 naming an existing
-  file with a `Last-Modified:` of 2100, then a 304, exits 0 on both, C's file dated 2100 and
-  the rewrite's left at its own time; `-R -z <later> -o out` of a `file:` URL gives C's `out`
-  the source's time, the rewrite's keeps its own. Where its close then fails, the transfer
-  fails, as on both, but the time has been set. Upstream: #23807. Pinned by
+- **`--remote-time` dates the output through the transfer's own handle, before it closes.**
+  Both date only a file the transfer opened (upstream #23807, 940b262312). The rewrite writes
+  the file out and sets the time on its handle (`futimens`, `SetFileTime`) before the close; C
+  closes the file, then sets the time by name (`setfiletime` in `post_close_output`), and only
+  if the close succeeded. Where the close fails, both fail the transfer (23), but the
+  rewrite's file has been dated and C's has not. No test has the close fail at that moment.
+  That both date only an opened file is pinned by
   `the_remote_time_dates_only_a_file_the_transfer_opened`
-  (`crates/curl-tool/tests/transfers.rs`).
+  (`crates/curl-tool/tests/transfers.rs`) and tests 3041 and 3042.
 
 ## Files C lets two transfers write
 

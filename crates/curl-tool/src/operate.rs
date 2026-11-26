@@ -3706,8 +3706,8 @@ fn finish(
             }
             let opened = stream.is_open_file();
             // The time is set through the file this transfer opened, before
-            // it closes; C sets it by name after the close, whether or not
-            // this transfer opened the file (`post_close_output`).
+            // it closes; C sets it by name after a close that succeeded
+            // (`post_close_output`).
             let dated = match easy.report().filetime() {
                 Some(t) if result.is_ok() && op.remote_time => stream.date(t).map(|r| (t, r)),
                 _ => None,

@@ -229,6 +229,10 @@ impl core::ops::Deref for Variable {
     }
 }
 
+/// The most bytes C's tool URL-encodes, as `curl_easy_escape` takes an
+/// `int` length: more is refused, with "too much data to URL encode".
+pub(crate) const ESCAPE_MAX: usize = 0x7fff_ffff;
+
 /// Where `needle` first is in `haystack`.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
@@ -271,6 +275,10 @@ fn functions_on(
             out.add(&json_quoted(c)?)?;
             b"json"
         } else if named(b"url") {
+            if c.len() > ESCAPE_MAX {
+                msgs.error(&[b"too much data to URL encode"]);
+                return Err(ParamError::ExpandError);
+            }
             if !c.is_empty() {
                 out.add(&curl_core::url::escape(c)?)?;
             }

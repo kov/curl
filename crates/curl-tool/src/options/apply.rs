@@ -2479,6 +2479,10 @@ fn url_encoded(text: &[u8], msgs: &Messages) -> Result<Vec<u8>, ParamError> {
             (&text[..0], content)
         }
     };
+    if content.len() > crate::vars::ESCAPE_MAX {
+        msgs.error(&[b"too much data to URL encode"]);
+        return Err(ParamError::BadUse);
+    }
     let escaped = curl_core::url::escape(&content)?;
     let mut out = Vec::new();
     if !name.is_empty() {

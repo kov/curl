@@ -1513,7 +1513,7 @@ fn a_file_says_it_is_set_up_to_move_nothing() {
     let at = |needle: &str| lines.iter().position(|l| l.starts_with(needle));
     let creds = at("[MULTI] [CONNECT] transfer credentials: -").expect("said");
     let queued = at("[MULTI] [CONNECT] [PGRS-POSTQUEUE] set").expect("marked");
-    let setup = at("[MULTI] [CONNECT] xfer_setup: recv_idx=-1, send_idx=-1").expect("said");
+    let setup = at("[MULTI] [CONNECT] xfer_setup: want_recv=0, want_send=0").expect("said");
     let named = at("[MULTI] [CONNECT] [PGRS-NAMELOOKUP]").expect("marked");
     assert!(
         creds < queued && queued < setup && setup < named,

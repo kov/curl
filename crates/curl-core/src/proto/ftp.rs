@@ -2272,9 +2272,17 @@ impl Request {
         self.initiating = false;
         if self.upload {
             upload::announce_size(cx, self.infilesize);
-            crate::multi::mstate::xfer_setup_at(cx, None, Some(1));
+            let ways = crate::deliver::Directions {
+                recv: false,
+                send: true,
+            };
+            crate::multi::mstate::xfer_setup(cx, ways);
         } else {
-            crate::multi::mstate::xfer_setup_at(cx, Some(1), None);
+            let ways = crate::deliver::Directions {
+                recv: true,
+                send: false,
+            };
+            crate::multi::mstate::xfer_setup(cx, ways);
             if let Some(size) = self.receive.size().filter(|&s| s > 0) {
                 self.base.pipeline.announce_size(cx, Some(size));
             }

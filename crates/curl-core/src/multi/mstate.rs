@@ -64,22 +64,13 @@ pub(crate) fn trace<H: Host>(cx: &mut StepCx<'_, H>, args: std::fmt::Arguments<'
     }
 }
 
-/// The request is set up to move bytes the `ways` given over the
-/// connection's first socket, said as C says it (`xfer_setup`, its
-/// `recv_idx` and `send_idx`, -1 for a way not taken).
+/// The request is set up to move bytes the `ways` given, said as C
+/// says it (`xfer_setup`, the connection's `want_recv` and `want_send`).
 pub(crate) fn xfer_setup<H: Host>(cx: &mut StepCx<'_, H>, ways: crate::deliver::Directions) {
-    let index = |taken: bool| taken.then_some(0);
-    xfer_setup_at(cx, index(ways.recv), index(ways.send));
-}
-
-/// `xfer_setup`, each way over the connection's socket at its index, 1
-/// for its second (FTP's data connection), or none.
-pub(crate) fn xfer_setup_at<H: Host>(cx: &mut StepCx<'_, H>, recv: Option<u8>, send: Option<u8>) {
-    let index = |at: Option<u8>| at.map_or(-1, i16::from);
-    let (recv, send) = (index(recv), index(send));
+    let (recv, send) = (u8::from(ways.recv), u8::from(ways.send));
     trace(
         cx,
-        format_args!("xfer_setup: recv_idx={recv}, send_idx={send}"),
+        format_args!("xfer_setup: want_recv={recv}, want_send={send}"),
     );
 }
 

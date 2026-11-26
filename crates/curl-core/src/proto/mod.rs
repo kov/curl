@@ -1281,14 +1281,14 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => false,
             // POP3 never says its transfer has no socket, so the
-            // connection's stays its to receive on (`recv_idx`), body or
+            // connection's stays its to receive on (`want_recv`), body or
             // not.
             ProtoState::Http(_) | ProtoState::Pop3(_) => true,
             // A literal to read, a body to send, or the answer after
             // either (`imap_done`'s FETCH_FINAL and APPEND_FINAL).
             ProtoState::Imap(ref r) => r.exchanges(),
-            // A mail's body to send, as the connection's `recv_idx` and
-            // `send_idx` say.
+            // A mail's body to send, as the connection's `want_recv` and
+            // `want_send` say.
             ProtoState::Smtp(ref r) => r.exchanges(),
             // Data to move over the second connection.
             ProtoState::Ftp(ref r) => r.exchanges(),

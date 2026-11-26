@@ -397,7 +397,7 @@ mod over_the_wire {
             .lines()
             .filter_map(|l| l.find("xfer_setup").map(|at| &l[at..]))
             .collect();
-        assert_eq!(setups, ["xfer_setup: recv_idx=0, send_idx=-1"]);
+        assert_eq!(setups, ["xfer_setup: want_recv=1, want_send=0"]);
     }
 
     #[test]

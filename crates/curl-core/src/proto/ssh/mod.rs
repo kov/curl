@@ -802,7 +802,7 @@ impl Request {
     }
 
     /// Whether the request, once made, moves bytes: its body to read or
-    /// send (`recv_idx`, `send_idx`).
+    /// send (`want_recv`, `want_send`).
     pub(crate) fn exchanges(&self) -> bool {
         self.ways.recv || self.ways.send
     }

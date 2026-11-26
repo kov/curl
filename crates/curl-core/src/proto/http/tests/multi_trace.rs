@@ -72,7 +72,7 @@ fn a_request_is_traced_through_c_s_states() {
         [MULTI] [CONNECTING] reduced to [CHAIN][TCP]<fd=1000>
         [MULTI] [CONNECTING] -> [PROTOCONNECT]
         [MULTI] [PROTOCONNECT] -> [DO]
-        [MULTI] [DO] xfer_setup: recv_idx=0, send_idx=0
+        [MULTI] [DO] xfer_setup: want_recv=1, want_send=1
         [MULTI] [DO] -> [DID]
         [MULTI] [DID] [PGRS-PRETRANSFER] added Nus
         [MULTI] [DID] [PGRS-POSTRANSFER] added Nus
@@ -115,7 +115,7 @@ fn a_redirect_starts_over_from_setup() {
             [MULTI] [CONNECT] -> [CONNECTING]
             [MULTI] [CONNECTING] -> [PROTOCONNECT]
             [MULTI] [PROTOCONNECT] -> [DO]
-            [MULTI] [DO] xfer_setup: recv_idx=0, send_idx=0
+            [MULTI] [DO] xfer_setup: want_recv=1, want_send=1
             [MULTI] [DO] -> [DID]
             [MULTI] [DID] [PGRS-PRETRANSFER] added Nus
             [MULTI] [DID] [PGRS-POSTRANSFER] added Nus

@@ -126,7 +126,7 @@ pub(crate) struct ImapConn {
     /// (`ir_supported`).
     ir_offered: bool,
     /// The last transfer on it set up nothing to exchange after its
-    /// request (`recv_idx` and `send_idx` both -1, which
+    /// request (`want_recv` and `want_send` both off, which
     /// `Curl_xfer_setup_nop` leaves on the connection): the next one that
     /// sets up nothing either goes from DID to DONE.
     no_socket: bool,

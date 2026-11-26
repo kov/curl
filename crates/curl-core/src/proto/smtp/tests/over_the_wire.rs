@@ -983,7 +983,7 @@ fn from<'t>(text: &'t str, what: &str) -> Vec<&'t str> {
 }
 
 /// A transfer that sets up nothing to move after its request leaves the
-/// connection so, as C's `recv_idx` and `send_idx` stay on it: a command
+/// connection so, as C's `want_recv` and `want_send` stay on it: a command
 /// after it goes from DID to DONE; one after a mail, to PERFORMING. The
 /// second's needle connection is let go as C lets it go.
 #[test]
@@ -995,7 +995,7 @@ fn what_the_last_transfer_set_up_stays_with_the_connection() {
     assert_eq!(ran.result, Ok(()), "{}", ran.text);
     assert_eq!(
         from(&ran.text, "xfer_setup"),
-        ["xfer_setup: recv_idx=-1, send_idx=-1"]
+        ["xfer_setup: want_recv=0, want_send=0"]
     );
     assert_eq!(from(&ran.text, "[DID] -> "), ["[DID] -> [DONE]"]);
     let ran = tracing(&mut m, &plain(), URL, b"multi,smtp", |_| {});
@@ -1015,7 +1015,7 @@ fn what_the_last_transfer_set_up_stays_with_the_connection() {
     assert_eq!(ran.result, Ok(()), "{}", ran.text);
     assert_eq!(
         from(&ran.text, "xfer_setup"),
-        ["xfer_setup: recv_idx=-1, send_idx=0"]
+        ["xfer_setup: want_recv=0, want_send=1"]
     );
     let ran = tracing(&mut m, &plain(), URL, b"multi", |_| {});
     assert_eq!(ran.result, Ok(()), "{}", ran.text);
@@ -1251,7 +1251,7 @@ fn the_request_says_what_it_is_set_up_to_move() {
     assert_eq!(
         said(&ran.text),
         [
-            "[MULTI] [DOING] xfer_setup: recv_idx=-1, send_idx=0",
+            "[MULTI] [DOING] xfer_setup: want_recv=0, want_send=1",
             "[MULTI] [PERFORMING] [PGRS-POSTRANSFER]",
         ],
         "{}",
@@ -1700,7 +1700,7 @@ fn a_command_done_in_doing_says_so_once() {
         .filter(|l| l.contains("xfer_setup") || l.contains("smtp_doing") || l.contains("DO phase"))
         .collect();
     let end: Vec<&str> = [
-        "[MULTI] [DOING] xfer_setup: recv_idx=-1, send_idx=-1",
+        "[MULTI] [DOING] xfer_setup: want_recv=0, want_send=0",
         "DO phase is complete",
         "[SMTP] smtp_doing() -> 0, done=1",
     ]

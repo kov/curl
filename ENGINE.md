@@ -563,7 +563,7 @@ says it on the internal trace. As a leg starts, its `.netrc` step's lines (`[NET
 `netrc: using credentials for`) and `transfer credentials:`, which says the credentials the
 handle's last request set out with (C's `state.creds` before the new ones replace it, kept on
 the `Easy` as `Shown`, through `reset`), except where a file was asked for and the credentials
-leave it nothing to change; then POSTQUEUE. `xfer_setup: recv_idx=…, send_idx=…` is said where
+leave it nothing to change; then POSTQUEUE. `xfer_setup: want_recv=…, want_send=…` is said where
 C sets the request up (`Curl_xfer_setup_*`): HTTP's request, both ways, before its body is read;
 a file's connect, neither; POP3's body, IMAP's literal, APPEND and request without a body, and
 SMTP's mail body and request without one.
@@ -4431,7 +4431,7 @@ protocol's phases (the drive, below).
   with the time to answer ("server response timeout", the transfer's own limit among it),
   polls at most a second, then checks the progress as C does after each poll, and runs the
   step if the poll found it ready; no timer is armed for C to hear of. Whether a transfer goes
-  from DID to PERFORMING is the connection's `recv_idx` as C leaves it: a transfer that set
+  from DID to PERFORMING is the connection's `want_recv` as C leaves it: a transfer that set
   up nothing (a FETCH whose literal came whole, `-I`) goes to DONE, and leaves the next one
   that sets up nothing to go there too (`ImapConn::no_socket`); output the application paused
   is delivered in PERFORMING first, where C goes to DONE and drops it. An APPEND's body is
@@ -4451,7 +4451,7 @@ protocol's phases (the drive, below).
   the application's command of each, or it or `HELP` alone, each line of its answer the body.
   Mailboxes are read as `smtp_parse_address` reads them, the host IDN-converted where it can
   be; one with a CR or LF is refused before any command goes. The connection keeps, as C's
-  `recv_idx` does, whether the last transfer set up nothing after its request
+  `want_recv` and `want_send` do, whether the last transfer set up nothing after its request
   (`SmtpConn::no_socket`), and a reuse says C's let-go of the connection it made to compare
   (`smtp_disconnect(), finished`).
 - **STARTTLS** upgrades in place (`multi::state::tls::upgrade`): the origin's session, made

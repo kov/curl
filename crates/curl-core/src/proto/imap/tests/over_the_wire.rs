@@ -887,7 +887,7 @@ fn the_request_says_what_it_is_set_up_to_move() {
         |_| {},
     );
     assert_eq!(ran.result, Ok(()), "{}", ran.text);
-    assert_eq!(setups(&ran.text), ["xfer_setup: recv_idx=-1, send_idx=-1"]);
+    assert_eq!(setups(&ran.text), ["xfer_setup: want_recv=0, want_send=0"]);
     let talk = Conversation::replies(
         &[GREETING, CAPABILITY, LOGGED_IN, b"+ go\r\n", b"A003 OK\r\n"],
         false,
@@ -904,7 +904,7 @@ fn the_request_says_what_it_is_set_up_to_move() {
         },
     );
     assert_eq!(ran.result, Ok(()), "{}", ran.text);
-    assert_eq!(setups(&ran.text), ["xfer_setup: recv_idx=-1, send_idx=0"]);
+    assert_eq!(setups(&ran.text), ["xfer_setup: want_recv=0, want_send=1"]);
     let talk =
         Conversation::replies(&[GREETING, CAPABILITY, LOGGED_IN, b"A003 OK\r\n"], false).greeting();
     let ran = tracing(
@@ -915,11 +915,11 @@ fn the_request_says_what_it_is_set_up_to_move() {
         |o| o.method = Method::Head,
     );
     assert_eq!(ran.result, Ok(()), "{}", ran.text);
-    assert_eq!(setups(&ran.text), ["xfer_setup: recv_idx=-1, send_idx=-1"]);
+    assert_eq!(setups(&ran.text), ["xfer_setup: want_recv=0, want_send=0"]);
 }
 
 /// A transfer goes from DID to PERFORMING while the connection has a
-/// socket to exchange on, as C's `recv_idx` says: a FETCH whose literal
+/// way to exchange on, as C's `want_recv` says: a FETCH whose literal
 /// came whole sets up nothing and goes to DONE, which reads the answer
 /// after it once `multi_done` has begun, as C's `imap_done` does; one
 /// after it that sets up nothing goes to DONE too, one on a fresh

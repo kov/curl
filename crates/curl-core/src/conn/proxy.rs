@@ -131,8 +131,8 @@ fn cidr4(ip: &[u8], net: &[u8], bits: Option<u32>) -> bool {
             let mask = u32::MAX << (32 - bits);
             (ip ^ net) & mask == 0
         }
-        // 0.0.0.0/0 holds every address; another /0 only itself.
-        Some(0) if net == 0 => true,
+        // A /0 holds every address, whatever the network says.
+        Some(0) => true,
         _ => ip == net,
     }
 }

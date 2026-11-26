@@ -1107,3 +1107,11 @@ witness: curl-core conn::h2proxy::tests::a_tunnel_holding_the_origin_s_data_has_
                 input_pending: !self.tunnel.held().is_empty(),
 --- new
                 input_pending: false && !self.tunnel.held().is_empty(),
+
+=== an IPv4 /0 holds only the network it names
+file: crates/curl-core/src/conn/proxy.rs
+witness: curl-core conn::proxy::tests::unit1614_ranges_hold_addresses
+--- old
+        Some(0) => true,
+--- new
+        Some(0) => ip == net,

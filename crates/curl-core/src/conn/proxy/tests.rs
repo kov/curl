@@ -29,14 +29,14 @@ fn truth(v: &crate::c_source::Value) -> bool {
 fn unit1614_ranges_hold_addresses() {
     let bits = |b: &crate::c_source::Value| u32::try_from(b.int()).ok();
     let list4 = unit1614_rows("list4[] =");
-    assert_eq!(list4.len(), 17);
+    assert_eq!(list4.len(), 44);
     for row in &list4 {
         let (ip, net, want) = (row[0].str(), row[1].str(), truth(&row[3]));
         let got = cidr4(ip, net, bits(&row[2]));
         assert_eq!(got, want, "{row:?}");
     }
     let list6 = unit1614_rows("list6[] =");
-    assert_eq!(list6.len(), 8);
+    assert_eq!(list6.len(), 139);
     for row in &list6 {
         let (ip, net, want) = (row[0].str(), row[1].str(), truth(&row[3]));
         let got = cidr6(ip, net, bits(&row[2]));

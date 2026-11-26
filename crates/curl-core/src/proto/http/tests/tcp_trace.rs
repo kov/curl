@@ -119,7 +119,7 @@ fn a_socket_s_setup_is_traced_as_c() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
               Trying 127.0.0.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 40000...
+            [TCP] local address 127.0.0.1 port 40000
             [TCP] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to 127.0.0.1 (127.0.0.1) port {PORT}
@@ -143,7 +143,7 @@ fn a_refused_socket_is_traced_as_c() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
               Trying 127.0.0.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 40000...
+            [TCP] local address 127.0.0.1 port 40000
             [TCP] poll/select error on fd=1000
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             connect to 127.0.0.1 port {PORT} from 127.0.0.1 port 40000 failed: Connection refused
@@ -167,7 +167,7 @@ fn a_socket_hung_up_without_an_error_fails() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
               Trying 127.0.0.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 40000...
+            [TCP] local address 127.0.0.1 port 40000
             [TCP] poll/select error on fd=1000
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             connect to 127.0.0.1 port {PORT} from 127.0.0.1 port 40000 failed: {NO_ERROR}
@@ -201,7 +201,7 @@ fn a_refused_family_gives_way_to_the_next() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
               Trying [::1]:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address ::1 port 40000...
+            [TCP] local address ::1 port 40000
             [TCP] poll/select error on fd=1000
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             connect to ::1 port {PORT} from ::1 port 40000 failed: Connection refused
@@ -209,7 +209,7 @@ fn a_refused_family_gives_way_to_the_next() {
             [HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
               Trying 127.0.0.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 40000...
+            [TCP] local address 127.0.0.1 port 40000
             [TCP] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to dual.example (127.0.0.1) port {PORT}
@@ -242,14 +242,14 @@ fn a_losing_attempt_is_closed_as_c_closes_it() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
               Trying 192.0.2.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 40000...
+            [TCP] local address 127.0.0.1 port 40000
             [TCP] not connected yet on fd=1000
             [HAPPY-EYEBALLS] happy eyeballs timeout expired, start next attempt
             [HAPPY-EYEBALLS] starting next attempt for ipv4 -> 0
             [TCP] not connected yet on fd=1000
               Trying 127.0.0.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1001
-            [TCP] local address 127.0.0.1 port 40001...
+            [TCP] local address 127.0.0.1 port 40001
             [TCP] not connected yet on fd=1000
             [TCP] connected on fd=1001
             [HAPPY-EYEBALLS] connect attempt #1 successful
@@ -286,7 +286,7 @@ fn a_redial_closes_the_socket_as_c() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
               Trying 127.0.0.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 40000...
+            [TCP] local address 127.0.0.1 port 40000
             [TCP] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to 127.0.0.1 (127.0.0.1) port {PORT}"
@@ -329,7 +329,7 @@ fn a_connect_failing_at_once_is_traced_as_c() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
               Trying [::1]:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address :: port 0...
+            [TCP] local address :: port 0
             Immediate connect fail for ::1: Connection refused
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             connect to ::1 port {PORT} from :: port 0 failed: Connection refused
@@ -632,7 +632,7 @@ fn an_opener_may_change_the_address() {
             "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
               Trying 127.0.0.1:{PORT}...
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 40000..."
+            [TCP] local address 127.0.0.1 port 40000"
         ))
     );
     // The application's socket is made nonblocking once set: here after

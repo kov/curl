@@ -122,7 +122,7 @@ fn a_port_in_use_gives_way_to_the_next_of_the_range() {
             Bind to local port 18700 failed, trying next
             Local port: 18701
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.1 port 18701...
+            [TCP] local address 127.0.0.1 port 18701
             [TCP] connected on fd=1000
             Established connection to 127.0.0.1 (127.0.0.1 port {PORT}) from 127.0.0.1 port 18701"
         ))
@@ -194,7 +194,7 @@ fn an_interface_is_bound_to_by_its_address() {
             Local Interface eth9 is ip 127.0.0.5 using address family 2
             Local port: 0
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.5 port 40000..."
+            [TCP] local address 127.0.0.5 port 40000"
         ))
     );
 }
@@ -277,7 +277,7 @@ fn a_host_s_name_is_bound_to_as_resolved() {
             Name 'bindhost' family 2 resolved to '127.0.0.7' family 2
             Local port: 0
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.7 port 40000..."
+            [TCP] local address 127.0.0.7 port 40000"
         ))
     );
 }
@@ -298,7 +298,7 @@ fn an_interface_with_a_host_binds_to_both() {
             Name '127.0.0.7' family 2 resolved to '127.0.0.7' family 2
             Local port: 0
             [TCP] cf_socket_open() -> 0, fd=1000
-            [TCP] local address 127.0.0.7 port 40000..."
+            [TCP] local address 127.0.0.7 port 40000"
         ))
     );
 }

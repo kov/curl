@@ -1867,10 +1867,7 @@ impl ConnectMachine {
         let connect = socket.connect(&remote);
         let local = asked_local(&self.route, &*socket);
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
-        cx.of(
-            component,
-            format_args!("local address {lip} port {lport}..."),
-        );
+        cx.of(component, format_args!("local address {lip} port {lport}"));
         let socket = Sock::new(socket, self.closer.clone());
         match connect {
             Ok(connect) => {

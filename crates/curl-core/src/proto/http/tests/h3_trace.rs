@@ -2545,7 +2545,7 @@ fn a_tcp_second_leads_beside_a_quic_first_until_it_wins() {
         [0-0] [HAPPY-EYEBALLS] attempt [CHAIN]...[!TCP]
         [0-0]   Trying 127.0.0.1:8990...
         [0-0] [TCP] cf_socket_open() -> 0, fd=1001
-        [0-0] [TCP] local address 127.0.0.1 port 40001...
+        [0-0] [TCP] local address 127.0.0.1 port 40001
         [0-0] [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
         [0-0] [DNS] get 1th result for 127.0.0.1:8990, family=2, dns=1
         [0-0] [DNS] get 0th result for 127.0.0.1:8990, family=10, dns=1

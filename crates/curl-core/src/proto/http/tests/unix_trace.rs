@@ -127,7 +127,7 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
             [HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
             Trying /tmp/t.sock:0...
             [UNIX] cf_socket_open() -> 0, fd=1000
-            [UNIX] local address  port 0...
+            [UNIX] local address  port 0
             [HAPPY-EYEBALLS] checked connect attempts: 1 ongoing, 0 inconclusive
             [DNS] get 1th result for /tmp/t.sock:0, family=1, dns=1
             [DNS] get 1th result for /tmp/t.sock:0, family=1, dns=1

@@ -179,3 +179,26 @@ witness: curl-core proto::http::tests::ws::a_decode_failure_in_a_replay_fails_th
                     self.buf = Err(e);
 --- new
                     self.buf = Ok(ChunkQueue::new(CHUNK_SIZE, 1));
+
+=== an empty frame's write paused on is taken as given
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::ws::an_empty_frame_paused_on_is_given_again
+--- old
+            wrote(cx, kind, 0, w);
+            Ok(if verdict(cx, w, 0, reasons, pausable)? {
+                Took::All
+            } else {
+                Took::Part(0)
+            })
+--- new
+            wrote(cx, kind, 0, w);
+            verdict(cx, w, 0, reasons, pausable)?;
+            Ok(Took::All)
+
+=== a held empty frame not taken on replay is dropped
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::ws::an_empty_frame_paused_on_is_given_again
+--- old
+                Took::Part(0) => {}
+--- new
+                Took::Part(0) => held.consume(0),

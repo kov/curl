@@ -52,11 +52,13 @@ pub(crate) const MAX_WRITE: usize = 65536;
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_header_line_goes_out_whole
 --- old
-            Ok(0)
+                Took::Part(0)
+            })
         }
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
 --- new
-            Ok(0)
+                Took::Part(0)
+            })
         }
         OutKind::Header(_) | OutKind::Status(_) if bytes.len() > MAX_WRITE => {
             deliver(cx, kind, &bytes[..MAX_WRITE], pausable, None)?;
@@ -159,12 +161,9 @@ witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_receive
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::held_output_is_replayed_in_the_order_it_came
 --- old
-            let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
-            held.consume(delivered);
+                Took::Part(delivered) => held.consume(delivered),
 --- new
-            let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
-            let n = bytes.len().min(delivered + MAX_WRITE);
-            held.consume(n);
+                Took::Part(delivered) => held.consume(n.min(delivered + MAX_WRITE)),
 
 === an included header line is held apart from the body
 file: crates/curl-core/src/deliver/held.rs

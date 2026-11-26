@@ -1131,8 +1131,9 @@ impl ClientOut {
                 self.replay(cx, pausable)
             }
             OutState::Direct => {
-                let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
-                if delivered < bytes.len() {
+                let took = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
+                if let Took::Part(delivered) = took {
+                    // What is left, an empty body's write among it.
                     let mut held = HeldOutput::default();
                     buffering(cx, bytes.len() - delivered, 0);
                     held.append(kind, &bytes[delivered..])?;
@@ -1156,8 +1157,13 @@ impl ClientOut {
             let Some((kind, bytes)) = held.front() else {
                 break;
             };
-            let delivered = deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())?;
-            held.consume(delivered);
+            let n = bytes.len();
+            match deliver(cx, kind, bytes, pausable, self.listing.as_deref_mut())? {
+                Took::All => held.consume(n),
+                // An empty body's write not taken stays held.
+                Took::Part(0) => {}
+                Took::Part(delivered) => held.consume(delivered),
+            }
         }
         if held.is_empty() {
             self.state = OutState::Direct;
@@ -1264,44 +1270,67 @@ pub(crate) fn rtp<H: Host>(cx: &mut StepCx<'_, H>, message: &[u8]) -> Result<(),
     }
 }
 
+/// How much of an entry the handlers took.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Took {
+    All,
+    /// This much, fewer bytes than it holds or, of an empty body, its
+    /// write not taken: a pause stopped it.
+    Part(usize),
+}
+
 /// Give `bytes` to the handler for `kind`, body in pieces, until a handler
 /// pauses; how much it took. A paused piece is not taken: it is given
-/// again, whole, when the transfer goes on (`cw_out_ptr_flush`).
+/// again, whole, when the transfer goes on (`cw_out_ptr_flush`), an empty
+/// body's write as well.
 fn deliver<H: Host>(
     cx: &mut StepCx<'_, H>,
     kind: OutKind,
     bytes: &[u8],
     pausable: bool,
     listing: Option<&mut Matching>,
-) -> Result<usize, ErrorKind> {
+) -> Result<Took, ErrorKind> {
     match kind {
-        OutKind::Body => deliver_body(cx, bytes, pausable, listing),
+        OutKind::Body => {
+            let n = deliver_body(cx, bytes, pausable, listing)?;
+            Ok(if n == bytes.len() {
+                Took::All
+            } else {
+                Took::Part(n)
+            })
+        }
         OutKind::EmptyBody => {
+            if app_paused(cx, pausable) {
+                return Ok(Took::Part(0));
+            }
             let Some(handler) = cx.easy().options().callbacks.write.clone() else {
-                return Ok(0);
+                return Ok(Took::All);
             };
             let reasons = cx.easy().report().reasons();
             let w = handler.write(&mut WriteCx::new(cx), &[]);
             wrote(cx, kind, 0, w);
-            verdict(cx, w, 0, reasons, pausable)?;
-            Ok(0)
+            Ok(if verdict(cx, w, 0, reasons, pausable)? {
+                Took::All
+            } else {
+                Took::Part(0)
+            })
         }
         OutKind::Header(_) | OutKind::Status(_) | OutKind::Info => {
             if app_paused(cx, pausable) {
-                return Ok(0);
+                return Ok(Took::Part(0));
             }
             // A line protocol's lines are told as a head's.
             let origin = kind.origin().unwrap_or(HeaderOrigin::Header);
             let Some(handler) = cx.easy().options().callbacks.header.clone() else {
-                return Ok(bytes.len());
+                return Ok(Took::All);
             };
             let reasons = cx.easy().report().reasons();
             let w = handler.header(&mut WriteCx::new(cx), bytes, origin);
             wrote(cx, kind, bytes.len(), w);
             Ok(if verdict(cx, w, bytes.len(), reasons, pausable)? {
-                bytes.len()
+                Took::All
             } else {
-                0
+                Took::Part(0)
             })
         }
     }

@@ -241,6 +241,68 @@ fn frames_held_by_a_pause_are_delivered_with_their_meta() {
     );
 }
 
+/// Each write it is given, after pausing at the calls `at` names (from
+/// 0).
+#[derive(Clone)]
+struct PausesAt {
+    at: &'static [usize],
+    calls: Arc<crate::test_cell::Cell<usize>>,
+    got: Arc<curl_alloc::Lock<Vec<Vec<u8>>>>,
+}
+
+impl crate::handler::WriteHandler for PausesAt {
+    fn write(&self, _: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> crate::handler::Write {
+        let n = self.calls.get();
+        self.calls.set(n + 1);
+        if self.at.contains(&n) {
+            return crate::handler::Write::Pause;
+        }
+        self.got.lock().unwrap().push(body.to_vec());
+        crate::handler::Write::Accepted
+    }
+}
+
+/// An empty frame's write the handler pauses on is held and given again
+/// once it unpauses, before the frames after it, and held again if it
+/// pauses on it again (`cw_out`'s `CW_OUT_BODY_0LEN`, #24094).
+#[test]
+fn an_empty_frame_paused_on_is_given_again() {
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x81\x02ab\x81\x00\x82\x02cd");
+    let (mut m, _talk, _) = server(&[&reply], true);
+    let mut e = Easy::new();
+    let handler = PausesAt {
+        at: &[1, 2],
+        calls: Arc::new(crate::test_cell::Cell::new(0)),
+        got: Arc::default(),
+    };
+    let o = e.options_mut();
+    o.set_url(Some(format!("ws://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.callbacks.write = Some(Handler::write(handler.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "held by the pause");
+    assert_eq!(*handler.got.lock().unwrap(), [b"ab".to_vec()]);
+    let mut result = None;
+    for _ in 0..100 {
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            result = Some(msg.result);
+            break;
+        }
+    }
+    assert_eq!(result, Some(Ok(())));
+    assert_eq!(
+        *handler.got.lock().unwrap(),
+        [b"ab".to_vec(), Vec::new(), b"cd".to_vec()]
+    );
+}
+
 /// A frame that fails to decode as held output is replayed fails the
 /// transfer, though the replay came from outside its step and told only
 /// the unpause: the failure stays, and every later write and flush meets

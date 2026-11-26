@@ -1,5 +1,5 @@
 {
- "c-commit": "a3630a386ee94e8643b666b57bc71c8a63990d09",
+ "c-commit": "f9998de722ed845ab3abc2927000736f7580b6e7",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
@@ -84835,124 +84835,6 @@
    },
    {
     "attr_values": [
-     "mode=text"
-    ],
-    "bytes": 829,
-    "command": "-sS --cacert %CERTDIR/certs/test-client-cert.crt https://localhost:%HTTPSPORT/%TESTNUMBER",
-    "command_option": null,
-    "command_type": null,
-    "disable": [],
-    "eol": "lf",
-    "errorcode": "60",
-    "features": [
-     "SSL",
-     "local-http"
-    ],
-    "has_command": true,
-    "has_precheck": false,
-    "keywords": [
-     "HTTP GET",
-     "HTTPS"
-    ],
-    "killserver": [],
-    "macros": [],
-    "name": "HTTPS with a peer that fails verification says where to learn more",
-    "non_ascii": false,
-    "nul": false,
-    "number": 2120,
-    "parts": [
-     "client/command",
-     "client/features",
-     "client/name",
-     "client/server",
-     "info/keywords",
-     "verify/errorcode",
-     "verify/stderr"
-    ],
-    "postcheck": false,
-    "precheck": null,
-    "runner": "curl",
-    "server_names": [
-     "https"
-    ],
-    "servers": [
-     "https"
-    ],
-    "setenv": [],
-    "tool": null,
-    "tool_name": null,
-    "variables": [
-     "CERTDIR",
-     "HTTPSPORT",
-     "TESTNUMBER"
-    ]
-   },
-   {
-    "attr_values": [
-     "crlf=headers"
-    ],
-    "bytes": 1559,
-    "command": "--anyauth -u : http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
-    "command_option": null,
-    "command_type": null,
-    "disable": [],
-    "eol": "lf",
-    "errorcode": null,
-    "features": [
-     "Debug",
-     "GSS-API"
-    ],
-    "has_command": true,
-    "has_precheck": false,
-    "keywords": [
-     "--anyauth",
-     "HTTP",
-     "HTTP GET",
-     "HTTP Negotiate auth (stub krb5)"
-    ],
-    "killserver": [],
-    "macros": [
-     "b64"
-    ],
-    "name": "HTTP Negotiate picked from a 401 by --anyauth (stub krb5)",
-    "non_ascii": false,
-    "nul": false,
-    "number": 2121,
-    "parts": [
-     "client/command",
-     "client/features",
-     "client/name",
-     "client/server",
-     "client/setenv",
-     "info/keywords",
-     "reply/data",
-     "reply/data1",
-     "reply/datacheck",
-     "verify/protocol"
-    ],
-    "postcheck": false,
-    "precheck": null,
-    "runner": "curl",
-    "server_names": [
-     "http"
-    ],
-    "servers": [
-     "http"
-    ],
-    "setenv": [
-     "CURL_STUB_GSS_CREDS"
-    ],
-    "tool": null,
-    "tool_name": null,
-    "variables": [
-     "HOSTIP",
-     "HTTPPORT",
-     "TESTNUMBER",
-     "VERSION"
-    ]
-   },
-   {
-    "attr_values": [
      "crlf=headers"
     ],
     "bytes": 1726,
@@ -108789,6 +108671,124 @@
      "HOSTIP",
      "HTTPPORT",
      "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "mode=text"
+    ],
+    "bytes": 829,
+    "command": "-sS --cacert %CERTDIR/certs/test-client-cert.crt https://localhost:%HTTPSPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "60",
+    "features": [
+     "SSL",
+     "local-http"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP GET",
+     "HTTPS"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "HTTPS with a peer that fails verification says where to learn more",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3706,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "verify/errorcode",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "https"
+    ],
+    "servers": [
+     "https"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "CERTDIR",
+     "HTTPSPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 1559,
+    "command": "--anyauth -u : http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "GSS-API"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--anyauth",
+     "HTTP",
+     "HTTP GET",
+     "HTTP Negotiate auth (stub krb5)"
+    ],
+    "killserver": [],
+    "macros": [
+     "b64"
+    ],
+    "name": "HTTP Negotiate picked from a 401 by --anyauth (stub krb5)",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3707,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "client/setenv",
+     "info/keywords",
+     "reply/data",
+     "reply/data1",
+     "reply/datacheck",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [
+     "CURL_STUB_GSS_CREDS"
+    ],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
      "TESTNUMBER",
      "VERSION"
     ]
@@ -150264,8 +150264,6 @@
   "tests/data/test2118",
   "tests/data/test2119",
   "tests/data/test212",
-  "tests/data/test2120",
-  "tests/data/test2121",
   "tests/data/test2122",
   "tests/data/test214",
   "tests/data/test215",
@@ -150693,6 +150691,8 @@
   "tests/data/test3703",
   "tests/data/test3704",
   "tests/data/test3705",
+  "tests/data/test3706",
+  "tests/data/test3707",
   "tests/data/test371",
   "tests/data/test372",
   "tests/data/test373",

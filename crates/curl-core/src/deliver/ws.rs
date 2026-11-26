@@ -19,19 +19,37 @@ use crate::proto::ws::{CHUNK_SIZE, Said, Stop};
 use crate::trace;
 use crate::ws::{FrameKind, FrameType};
 
-/// The body not yet decoded into frames, and whether frames are handed on
-/// as they came, undecoded (`ws_cw_ctx`, `CURLWS_RAW_MODE`).
+/// The body not yet decoded into frames, or the failure that ended its
+/// decoding, which every later write and flush meets (`ws_cw_ctx`'s
+/// `result`); and whether frames are handed on as they came, undecoded
+/// (`CURLWS_RAW_MODE`).
 #[derive(Debug)]
 pub(crate) struct WsStage {
-    buf: ChunkQueue,
+    buf: Result<ChunkQueue, ErrorKind>,
     raw: bool,
 }
 
 impl WsStage {
     pub(crate) fn new(raw: bool) -> WsStage {
         WsStage {
-            buf: ChunkQueue::new(CHUNK_SIZE, 1),
+            buf: Ok(ChunkQueue::new(CHUNK_SIZE, 1)),
             raw,
+        }
+    }
+
+    /// The body held, unless decoding failed: then the failure, said.
+    fn held<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        what: &str,
+    ) -> Result<&mut ChunkQueue, ErrorKind> {
+        match &mut self.buf {
+            Ok(buf) => Ok(buf),
+            Err(e) => {
+                let e = *e;
+                write_trace(cx, format_args!("[WS] failing {what} due to earlier error"));
+                Err(e)
+            }
         }
     }
 }
@@ -86,7 +104,7 @@ impl WsStage {
                 after.write(cx, bytes)
             };
         }
-        if self.buf.write(bytes).is_err() {
+        if self.held(cx, "write")?.write(bytes).is_err() {
             let code = ErrorKind::OutOfMemory.number();
             trace::info(cx, format_args!("[WS] error adding data to buffer {code}"));
             return Err(ErrorKind::OutOfMemory);
@@ -98,7 +116,8 @@ impl WsStage {
         if result.is_ok() {
             result = send_pending(cx);
         }
-        if result.is_ok() && eos && (!self.buf.is_empty() || decoding(cx)) {
+        if result.is_ok() && eos && (self.buf.as_ref().is_ok_and(|b| !b.is_empty()) || decoding(cx))
+        {
             result = Err(trace::fail(
                 cx,
                 ErrorKind::RecvError,
@@ -117,6 +136,7 @@ impl WsStage {
     ) -> Result<(), ErrorKind> {
         write_trace(cx, format_args!("[ws] flush"));
         if !self.raw {
+            self.held(cx, "flush")?;
             after.out.flush(cx, after.pausable)?;
             self.decode(cx, after)?;
         }
@@ -124,19 +144,21 @@ impl WsStage {
     }
 
     /// Decode what is held, while the handler takes it (`ws_dec_pass`
-    /// in `ws_cw_write`'s loop); a frame cut short waits for more.
+    /// in `ws_cw_write`'s loop); a frame cut short waits for more. A
+    /// failure ends the decoding for good.
     fn decode<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         after: &mut After<'_, H>,
     ) -> Result<(), ErrorKind> {
-        while !self.buf.is_empty() && !handler_paused(cx) {
+        let buf = self.held(cx, "flush")?;
+        while !buf.is_empty() && !handler_paused(cx) {
             // Out of the connection while it decodes, for the handler to
             // reach the rest of it.
             let mut dec = std::mem::take(&mut ws_of(cx).dec);
             let auto_pong = cx.easy().options().ws.auto_pong();
             let passed = dec.pass(
-                &mut self.buf,
+                buf,
                 &mut Pass {
                     cx,
                     after,
@@ -151,7 +173,8 @@ impl WsStage {
                 Err(Stop::Failed(kind)) => {
                     let code = kind.number();
                     let e = trace::fail(cx, kind, format_args!("[WS] decode payload error {code}"));
-                    self.buf.reset();
+                    // What was held goes, and the failure stays.
+                    self.buf = Err(e);
                     return Err(e);
                 }
             }

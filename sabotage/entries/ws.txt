@@ -100,9 +100,9 @@ witness: curl-core proto::http::tests::ws::a_ping_delivered_is_answered_with_a_p
 file: crates/curl-core/src/deliver/ws.rs
 witness: curl-core proto::http::tests::ws::a_frame_cut_short_by_the_end_fails
 --- old
-        if result.is_ok() && eos && (!self.buf.is_empty() || decoding(cx)) {
+        if result.is_ok() && eos && (self.buf.as_ref().is_ok_and(|b| !b.is_empty()) || decoding(cx))
 --- new
-        if result.is_ok() && eos && false {
+        if result.is_ok() && eos && false
 
 === a WebSocket's handler is told of no frame before the first comes
 file: crates/curl-core/src/multi/state/cx.rs
@@ -171,3 +171,11 @@ witness: curl-core proto::ws::tests::a_ping_too_long_for_a_pong_is_refused_where
         .filter(|&(_, end)| end <= total);
 --- new
         .filter(|&(_, end)| end <= total || true);
+
+=== a WebSocket decode failure is forgotten, the stage decoding afresh
+file: crates/curl-core/src/deliver/ws.rs
+witness: curl-core proto::http::tests::ws::a_decode_failure_in_a_replay_fails_the_transfer
+--- old
+                    self.buf = Err(e);
+--- new
+                    self.buf = Ok(ChunkQueue::new(CHUNK_SIZE, 1));

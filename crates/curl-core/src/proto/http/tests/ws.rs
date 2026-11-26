@@ -241,6 +241,51 @@ fn frames_held_by_a_pause_are_delivered_with_their_meta() {
     );
 }
 
+/// A frame that fails to decode as held output is replayed fails the
+/// transfer, though the replay came from outside its step and told only
+/// the unpause: the failure stays, and every later write and flush meets
+/// it (`ws_cw_ctx`'s `result`).
+#[test]
+fn a_decode_failure_in_a_replay_fails_the_transfer() {
+    let mut reply = SWITCH.to_vec();
+    reply.extend_from_slice(b"\x81\x02ab\x81\x02cd\xf1\x00");
+    let (mut m, _talk, _) = server(&[&reply], true);
+    let mut e = Easy::new();
+    let handler = MetaWrites::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("ws://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+    o.callbacks.write = Some(Handler::write(handler.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "held by the pause");
+    assert_eq!(
+        m.pause(id, PauseRequest::CONT, &mut NoEvents),
+        Err(ErrorKind::RecvError),
+        "the replay meets the bad frame"
+    );
+    let mut result = None;
+    for _ in 0..100 {
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            result = Some(msg.result);
+            break;
+        }
+    }
+    assert_eq!(result, Some(Err(ErrorKind::RecvError)));
+    let got: Vec<_> = handler
+        .got
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(b, _)| b.clone())
+        .collect();
+    assert_eq!(got, [b"ab".to_vec(), b"cd".to_vec()]);
+}
+
 /// A write's length and what `curl_ws_meta` said of it.
 type MetaLen = (usize, Option<crate::ws::Meta>);
 

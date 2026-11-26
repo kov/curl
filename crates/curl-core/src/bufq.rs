@@ -128,7 +128,8 @@ impl ChunkQueue {
     }
 
     /// Everything held is let go (`Curl_bufq_reset`), its chunks kept as
-    /// spares.
+    /// spares: what unit2601 drives.
+    #[cfg(test)]
     pub(crate) fn reset(&mut self) {
         for c in &mut self.chunks[..self.used] {
             c.bytes.clear();

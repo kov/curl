@@ -439,3 +439,11 @@ witness: curl-core proto::http1::response::tests::a_line_after_the_final_head_is
         if self.phase != Phase::Head && false {
             return Err(HeadError::AfterHead);
         }
+
+=== a 1xx response's Location is kept as the answer's
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_1xx_location_is_not_the_answer_s
+--- old
+        if status.code >= 200 && value_of(line, b"Location:").is_some() {
+--- new
+        if value_of(line, b"Location:").is_some() {

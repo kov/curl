@@ -2304,6 +2304,23 @@ fn a_location_not_followed_is_kept_resolved() {
     assert_eq!(ran.easy.report().redirect_url(), None);
 }
 
+/// A 1xx's `Location:` is no answer's: the final response's is the one
+/// kept, and the two are not taken as two Location headers (test 1816).
+#[test]
+fn a_1xx_location_is_not_the_answer_s() {
+    let reply = b"HTTP/1.1 103 Early Hints\r\nLocation: tricky-thing\r\n\r\n\
+HTTP/1.1 301 OK\r\nContent-Length: 6\r\nLocation: over-there\r\n\r\n12345\n";
+    let ran = run("/", reply, false, |_| {});
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let shown = format!("http://127.0.0.1:{PORT}/over-there");
+    assert_eq!(ran.easy.report().redirect_url(), Some(shown.as_bytes()));
+    let early = b"HTTP/1.1 103 Early Hints\r\nLocation: /elsewhere\r\n\r\n\
+HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let ran = run("/", early, false, |_| {});
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    assert_eq!(ran.easy.report().redirect_url(), None);
+}
+
 /// A `Location:` not followed is read back as C's build reads it, paths
 /// as is or not: its dots removed and an empty query dropped
 /// (`follow_fake` parses with `CURLU_NON_SUPPORT_SCHEME` alone).

@@ -517,9 +517,10 @@ impl Meta {
             self.doc_time = date::parse(v).unwrap_or(0);
             return Ok(None);
         }
-        if value_of(line, b"Location:").is_some() {
-            // An empty one, or the same again, is passed over
-            // (`http_header_l`).
+        // A 1xx's is no answer's location: only a final response's is
+        // kept (`http_header_l`).
+        if status.code >= 200 && value_of(line, b"Location:").is_some() {
+            // An empty one, or the same again, is passed over.
             let v = fields::header_value(line).unwrap_or(&[]);
             if v.is_empty() || self.location.as_deref() == Some(v) {
                 return Ok(None);

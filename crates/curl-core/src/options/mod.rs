@@ -1647,45 +1647,31 @@ impl Default for FileMode {
 ///
 /// The entries given are shared, never changed in place: a copy of the
 /// list, and the one a transfer reads while its debug handler may set the
-/// list again, cost no copy of them. Entries a source gives are read from
-/// it as they are used, and only then, as C walks the application's list
-/// in place. It is not `Clone`: a list given to a handle is set on it
-/// (`set_from`), a new setting it reads.
+/// list again, cost no copy of them; they are the list's own from the
+/// moment it is set, as C's frozen list is. It is not `Clone`: a list
+/// given to a handle is set on it (`set_from`), a new setting it reads.
 #[derive(Debug, Default)]
 pub struct ResolveList {
-    entries: Entries,
+    /// As given; none for an empty list.
+    entries: Option<TryArc<Packed>>,
     /// Which setting of the list this is: a transfer reads each once.
     stamp: u64,
 }
 
-#[derive(Clone, Debug)]
-enum Entries {
-    /// As given; none for an empty list.
-    Given(Option<TryArc<Packed>>),
-    /// Read from the source each time they are used.
-    Read(Handler<dyn LineSource>),
-}
-
-impl Default for Entries {
-    fn default() -> Entries {
-        Entries::Given(None)
-    }
-}
-
 impl ResolveList {
     /// Give each entry, in order, to `entry`, stopping at its first error,
-    /// which is returned: those given, or those the source gives now.
-    pub fn try_each<E>(&self, mut entry: impl FnMut(&[u8]) -> Result<(), E>) -> Result<(), E> {
-        match &self.entries {
-            Entries::Given(given) => given.iter().flat_map(|p| p.lines()).try_for_each(entry),
-            Entries::Read(source) => source.try_lines(&mut entry),
-        }
+    /// which is returned.
+    pub fn try_each<E>(&self, entry: impl FnMut(&[u8]) -> Result<(), E>) -> Result<(), E> {
+        self.entries
+            .iter()
+            .flat_map(|p| p.lines())
+            .try_for_each(entry)
     }
 
     /// Whether there is a list to read at all, as C's `state.resolve` is
-    /// set: entries given, or a source, whatever it gives.
+    /// set.
     pub(crate) fn is_set(&self) -> bool {
-        !matches!(self.entries, Entries::Given(None))
+        self.entries.is_some()
     }
 
     /// The list as the application sets it again, replacing what it was:
@@ -1698,7 +1684,7 @@ impl ResolveList {
         for entry in entries {
             packed.push(entry)?;
         }
-        self.entries = Entries::Given(packed.shared()?);
+        self.entries = packed.shared()?;
         self.stamp += 1;
         Ok(())
     }
@@ -1707,14 +1693,6 @@ impl ResolveList {
     /// and given to many handles is not copied for each.
     pub fn set_from(&mut self, list: &ResolveList) {
         self.entries = list.entries.clone();
-        self.stamp += 1;
-    }
-
-    /// The list `source` gives, as `set` sets one: what it gives when the
-    /// next transfer starts is read, and only then (`Curl_loadhostpairs`),
-    /// from the source itself.
-    pub fn set_source(&mut self, source: Handler<dyn LineSource>) {
-        self.entries = Entries::Read(source);
         self.stamp += 1;
     }
 
@@ -3819,10 +3797,7 @@ mod tests {
         let mut given = ResolveList::default();
         given.set([&b"a:1:127.0.0.1"[..], b"-b:2", b""]).unwrap();
         assert_eq!(given.entries(), [&b"a:1:127.0.0.1"[..], b"-b:2", b""]);
-        let shared = |l: &ResolveList| match &l.entries {
-            Entries::Given(given) => given.as_ref().map(TryArc::count),
-            Entries::Read(_) => panic!("given"),
-        };
+        let shared = |l: &ResolveList| l.entries.as_ref().map(TryArc::count);
         let copy = given.shared();
         let mut handle = ResolveList::default();
         handle.set_from(&given);
@@ -4083,8 +4058,7 @@ mod tests {
     }
 
     /// A list given by a source is read as it is set, and again as it is
-    /// refilled; a resolve list given by one is read only as it is used,
-    /// each time; setting the resolve list either way is a new setting.
+    /// refilled; setting the resolve list is a new setting each time.
     #[test]
     fn a_source_s_lines_are_read_again_as_refilled() {
         let mut lines = Lines::NONE;
@@ -4100,15 +4074,14 @@ mod tests {
 
         let mut list = ResolveList::default();
         assert_eq!(list.stamp(), 0);
-        list.set_source(numbered());
+        assert!(!list.is_set());
+        list.set([&b"a:1:127.0.0.1"[..]]).unwrap();
         assert_eq!(list.stamp(), 1);
         assert!(list.is_set());
-        assert_eq!(list.entries(), [b"line 1"], "read first as it is used");
-        assert_eq!(list.entries(), [b"line 2"]);
+        assert_eq!(list.entries(), [b"a:1:127.0.0.1"]);
         assert_eq!(list.stamp(), 1, "the same setting");
         list.set([&b"a:1:127.0.0.1"[..]]).unwrap();
-        list.set_source(numbered());
-        assert_eq!(list.stamp(), 3);
+        assert_eq!(list.stamp(), 2, "the same entries set again");
     }
 
     /// A group's option set makes the group; cleared, it is cleared, and

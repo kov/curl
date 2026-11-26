@@ -242,7 +242,8 @@ struct Slist(NonNull<ffi::curl_slist>);
 
 // SAFETY: the list is the application's, walked only by the transfers of
 // the handle it was given to and of its copies (`curl_easy_duphandle`
-// copies the pointer, as C's does); C lets one thread use a handle at a
+// copies the pointer, as C's does), or, for the lists copied as they are
+// set, by the setopt call alone; C lets one thread use a handle at a
 // time, and makes the application keep its list from changing while
 // another handle reads it, as C reads it too.
 unsafe impl Send for Slist {}
@@ -252,12 +253,12 @@ unsafe impl Sync for Slist {}
 impl LineSource for Slist {
     fn lines(&self, line: &mut dyn FnMut(&[u8]) -> ControlFlow<()>) {
         // SAFETY: the application keeps the list and its strings alive,
-        // changed only by appending, while the handle has it and through
-        // each of its transfers, the debug handler and the other callbacks
-        // a line given here reaches included: the option's contract ("you
-        // must keep it around until you no longer use this handle for a
-        // transfer", CURLOPT_CONNECT_TO.md; the others alike), as C reads
-        // the list in place, calling back between its nodes.
+        // changed only by appending, through the setopt call that copies
+        // it, or, for the lists not copied, while the handle has it and
+        // through each of its transfers, the debug handler and the other
+        // callbacks a line given here reaches included: the options'
+        // contract (CURLOPT_HTTPHEADER.md and the others alike), as C
+        // reads those lists in place, calling back between their nodes.
         for text in unsafe { list_lines(self.0.as_ptr().cast()) } {
             if line(text).is_break() {
                 return;
@@ -266,7 +267,6 @@ impl LineSource for Slist {
     }
 }
 
-/// A source of the list at `p`, or none for NULL.
 /// The lines of the application's list at `p`, copied now: what the
 /// handle keeps of it, no longer the application's after the call
 /// returns (`Curl_frzn_strs_from_slist`); none for NULL.
@@ -283,6 +283,7 @@ fn slist_copied(p: *mut c_void) -> Result<Option<Vec<Vec<u8>>>, OutOfMemory> {
     Ok(Some(lines))
 }
 
+/// A source of the list at `p`, or none for NULL.
 fn slist(p: *mut c_void) -> Result<Option<Handler<dyn LineSource>>, OutOfMemory> {
     NonNull::new(p.cast::<ffi::curl_slist>())
         .map(|list| Handler::lines(Slist(list)))

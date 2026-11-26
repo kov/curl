@@ -513,10 +513,12 @@ pub unsafe extern "C" fn curl_mime_subparts(
     {
         return CURLE_OK;
     }
-    clear_content(p);
     let Some(sub) = sub else {
+        clear_content(p);
         return CURLE_OK;
     };
+    // The new tree is checked before the part's content is let go of: a
+    // tree nested in the subparts the part holds is freed with them.
     // SAFETY: as the caller guarantees.
     let tree = unsafe { &mut *sub.as_ptr() };
     if tree.parent != Parent::None {
@@ -536,6 +538,7 @@ pub unsafe extern "C" fn curl_mime_subparts(
     if !rewind_tree(tree) {
         return CURLE_SEND_FAIL_REWIND;
     }
+    clear_content(p);
     // The part itself, not a pointer made from `p`: the write through `p`
     // below would invalidate one.
     let at = NonNull::new(part.cast::<ShimPart>()).expect("a part was found at it");
@@ -1336,6 +1339,42 @@ mod tests {
             assert_eq!(held(subpart), subsub);
             assert!(held(second).is_null());
             curl_mime_free(mime);
+        }
+    }
+
+    /// A part refused a tree nested in the subparts it holds keeps them,
+    /// the tree not read once freed (lib643's `t643_nested_add`); so does
+    /// one refused a tree attached elsewhere.
+    #[test]
+    fn a_refused_tree_leaves_the_part_s_subparts() {
+        // SAFETY: live trees and parts throughout.
+        unsafe {
+            let mime = curl_mime_init(ptr::null_mut());
+            let part = curl_mime_addpart(mime);
+            let sub = curl_mime_init(ptr::null_mut());
+            let subpart = curl_mime_addpart(sub);
+            let subsub = curl_mime_init(ptr::null_mut());
+            assert_eq!(curl_mime_subparts(part, sub), CURLE_OK);
+            assert_eq!(curl_mime_subparts(subpart, subsub), CURLE_OK);
+            assert_eq!(
+                curl_mime_subparts(part, subsub),
+                CURLE_BAD_FUNCTION_ARGUMENT
+            );
+            assert_eq!(held(part), sub);
+            assert_eq!(held(subpart), subsub);
+            let other = curl_mime_init(ptr::null_mut());
+            let elsewhere = curl_mime_init(ptr::null_mut());
+            assert_eq!(
+                curl_mime_subparts(curl_mime_addpart(other), elsewhere),
+                CURLE_OK
+            );
+            assert_eq!(
+                curl_mime_subparts(part, elsewhere),
+                CURLE_BAD_FUNCTION_ARGUMENT
+            );
+            assert_eq!(held(part), sub);
+            curl_mime_free(mime);
+            curl_mime_free(other);
         }
     }
 

@@ -317,3 +317,17 @@ witness: curl-core mime::tests::a_tree_of_any_depth_is_measured_and_dropped_with
                 continue;
             }
 --- new
+
+=== a part lets go of its subparts before the tree it is given is checked
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::a_refused_tree_leaves_the_part_s_subparts
+--- old
+    let Some(sub) = sub else {
+        clear_content(p);
+        return CURLE_OK;
+    };
+--- new
+    clear_content(p);
+    let Some(sub) = sub else {
+        return CURLE_OK;
+    };

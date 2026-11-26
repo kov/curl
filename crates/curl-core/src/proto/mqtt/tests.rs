@@ -226,6 +226,26 @@ fn a_publish_may_come_before_the_suback() {
     assert_eq!(ran.body, DELIVERED);
 }
 
+/// A SUBACK read in two parts is finished as its rest comes, and the
+/// PUBLISH after it delivered (upstream 4087abe08a, test 4998).
+#[test]
+fn a_suback_read_in_parts_is_finished() {
+    let (first, rest) = SUBACK.split_at(4);
+    let talk = Conversation::replies(&[CONNACK, first, &then(&[rest, PUBLISH, DISCONNECT])], true)
+        .per_send()
+        .volunteering(1);
+    let (_, ran) = against(talk, "mqtt://127.0.0.1:PORT/topic", |_| {});
+    assert_eq!(ran.result, Some(Ok(())), "{}", ran.text);
+    assert_eq!(ran.body, DELIVERED);
+    if cfg!(feature = "debug-hooks") {
+        assert!(
+            ran.text.contains("MQTT_SUBACK_COMING"),
+            "the SUBACK read whole: {}",
+            ran.text
+        );
+    }
+}
+
 /// The server's close cuts a PUBLISH short.
 #[test]
 fn a_short_publish_is_a_partial_file() {

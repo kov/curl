@@ -61,3 +61,14 @@ witness: curl-core proto::mqtt::tests::the_application_s_login_stays_with_the_fi
 addressed(url, b"mqtt", first, cx)?
 --- new
 addressed(url, b"mqtt", &mut crate::auth::gate::FirstOrigin::fresh(), cx)?
+
+=== a SUBACK read in parts ends the transfer
+file: crates/curl-core/src/proto/mqtt.rs
+witness: curl-core proto::mqtt::tests::a_suback_read_in_parts_is_finished
+--- old
+            State::Suback | State::PubWait | State::PubRemain | State::SubackComing => {
+                self.read_publish(cx, lease)
+            }
+--- new
+            State::SubackComing => Ok(true),
+            State::Suback | State::PubWait | State::PubRemain => self.read_publish(cx, lease),

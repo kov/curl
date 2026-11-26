@@ -1707,3 +1707,12 @@ witness: curl-core proto::http::tests::a_digest_challenge_the_build_cannot_answe
                 ..cx.easy().libraries().hashes()
             },
 
+
+=== a body of unknown size is said done as a request without one
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::an_empty_body_of_unknown_size_ends_with_the_head
+--- old
+                .is_some_and(|b| b.size() != Some(chain::WireSize::EMPTY));
+--- new
+                .and_then(chain::Body::size)
+                .is_some_and(|n| n != chain::WireSize::EMPTY);

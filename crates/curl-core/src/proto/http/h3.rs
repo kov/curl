@@ -1175,7 +1175,11 @@ fn open<H: Host>(
             body.size()
         }
     };
-    let body = size != Some(crate::upload::chain::WireSize::EMPTY);
+    // The body's bytes that came with the head; with the send's `eos`
+    // and none, the head ends the stream (`h3_stream_open`'s
+    // `sendbuf_eos`).
+    let rest = start + head..range.end;
+    let body = size != Some(crate::upload::chain::WireSize::EMPTY) && !(eos && rest.is_empty());
     let url = step.cx.easy().report().url().map(copied).transpose()?;
     let url = url.as_deref().unwrap_or_default();
     let Some(stream) = quic.submit(step, &pairs, body, url)? else {
@@ -1202,7 +1206,6 @@ fn open<H: Host>(
     // The body's bytes that came with the head are taken with it: into
     // ngtcp2's buffer as the stream opens, to quiche once it is said
     // opened (`h3_stream_open`, `h3_open_stream`).
-    let rest = start + head..range.end;
     let mut taken = 0;
     if body && !rest.is_empty() && step.flavour == Flavour::Ngtcp2 {
         taken = add_body(step, quic, stream, rest.clone(), eos, true)?;

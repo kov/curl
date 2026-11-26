@@ -2341,11 +2341,12 @@ impl Request {
         } else if n > 0 {
             trace::info(cx, format_args!("upload completely sent off: {n} bytes"));
         } else if !matches!(self.stage, Stage::Done) {
+            // A body of unknown size counts as one with bytes, as C's
+            // `Curl_creader_total_length` of -1 does.
             let sized = self
                 .body
                 .as_ref()
-                .and_then(chain::Body::size)
-                .is_some_and(|n| n != chain::WireSize::EMPTY);
+                .is_some_and(|b| b.size() != Some(chain::WireSize::EMPTY));
             let said = if sized {
                 "We are completely uploaded and fine"
             } else {

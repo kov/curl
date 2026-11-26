@@ -2095,6 +2095,34 @@ fn an_empty_body_is_none() {
     assert!(!script.lock().unwrap().body.ended);
 }
 
+/// A body of unknown size whose reader ends before the first send is
+/// none on the wire: the head ends the stream, and the library never
+/// reads one (`h3_stream_open`'s `sendbuf_eos` with no body bytes). It
+/// is said as a body, as C's reader of unknown length is
+/// (`req_set_upload_done`).
+#[test]
+fn an_empty_body_of_unknown_size_ends_with_the_head() {
+    let script = post_script(b"0\n", 1);
+    let ran = h3_with(&script, 1, |o| {
+        o.method = Method::Post;
+        o.upload = super::pieces(&[]);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    assert_eq!(
+        lines(
+            &ran,
+            &[
+                "[HTTP/3] [0] read req",
+                "[HTTP/3] [0] cf_send, add",
+                "We are completely",
+                "Request completely",
+            ]
+        ),
+        ["We are completely uploaded and fine"]
+    );
+    assert!(!script.lock().unwrap().body.ended);
+}
+
 /// Whether the response's writer reaches its connection's TLS session.
 #[derive(Clone, Default)]
 struct Natives(Arc<Lock<Vec<bool>>>);

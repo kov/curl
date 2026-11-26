@@ -96,6 +96,12 @@ exclude_re = [
     # such goodbye, so the two never meet on one connection. (By line: the
     # layers' guard below it, at the same column, is tested.)
     'curl-core/src/conn/shutdown\.rs:309:43: replace match guard self\.once with false in Shutting::run_once$',
+    # SFTP's close is reached with the close itself next only after a
+    # postquote's end, which takes it (`SftpNextQuote`): the failures that
+    # come to the close (`goto_close`, `quote_failed`) come before `done`
+    # sets a next, or clear it. The guard is C's (`myssh_in_SFTP_CLOSE`),
+    # and true changes nothing any run reaches.
+    'curl-core/src/proto/ssh/mod\.rs:\d+:\d+: replace match guard next != State::SftpClose with true in Request::machine$',
     # No early data taken leaves an empty skip with `>=`, which the first
     # send drops having skipped nothing: every send goes as without it.
     'curl-core/src/conn/tls\.rs:\d+:24: replace > with >= in TlsLayer::go_on$',

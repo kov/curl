@@ -165,8 +165,6 @@ pub(crate) struct FtpConn {
     prev_path: Option<Vec<u8>>,
     /// The server's system, once asked (`server_os`).
     server_os: Option<Vec<u8>>,
-    /// The control connection is in a state to go on with (`ctl_valid`).
-    ctl_valid: bool,
     /// Passive data connections are asked for with `EPSV`
     /// (`bits.ftp_use_epsv`).
     use_epsv: bool,
@@ -626,7 +624,6 @@ impl Request {
             entry_path: None,
             prev_path: None,
             server_os: None,
-            ctl_valid: false,
             use_epsv: options.line.ftp.use_epsv,
             use_eprt: options.line.ftp.use_eprt,
             data_tls: false,
@@ -1263,7 +1260,6 @@ impl Request {
         pc: &mut FtpConn,
         reused: bool,
     ) -> Step {
-        pc.ctl_valid = false;
         self.cwd_fail = false;
         let method = cx.easy().options().line.ftp.method;
         self.parsed = Some(match Path::parse(&self.encoded, method) {
@@ -2435,7 +2431,6 @@ impl Request {
         crate::progress::reset(cx);
         let started = {
             let (pc, mut carrier) = ftp_of(lease);
-            pc.ctl_valid = true;
             let state = pc.state.name();
             trace::of(
                 cx,
@@ -2503,8 +2498,6 @@ impl Request {
         } else if !connected {
             self.do_more = true;
         }
-        let (pc, _) = ftp_of(lease);
-        pc.ctl_valid = true;
         Ok(if self.do_more {
             DoStep::More
         } else {
@@ -2703,12 +2696,7 @@ impl Request {
         self.done_path(cx, lease, result);
         result = self.done_data(cx, lease, result);
         let (pc, _) = ftp_of(lease);
-        if result.is_ok()
-            && self.transfer == Transfer::Body
-            && pc.ctl_valid
-            && pc.pp.pending_resp()
-            && !premature
-        {
+        if result.is_ok() && self.transfer == Transfer::Body && pc.pp.pending_resp() && !premature {
             // The server's verdict, its time to answer from now.
             pc.pp.restart_response_timer(cx.now());
             self.ending = Some(Ending::Reply);
@@ -2751,8 +2739,6 @@ impl Request {
         if harmless && !premature {
             return Ok(());
         }
-        let (pc, _) = ftp_of(lease);
-        pc.ctl_valid = false;
         // Not remembered: the connection goes.
         self.cwd_fail = true;
         trace::of(
@@ -2775,7 +2761,6 @@ impl Request {
         let method = cx.easy().options().line.ftp.method;
         if result.is_err() {
             let (pc, _) = ftp_of(lease);
-            pc.ctl_valid = false;
             pc.prev_path = None;
             lease.get().mark_close();
             return;
@@ -2817,7 +2802,6 @@ impl Request {
                     e,
                     format_args!("Failure sending ABOR command: {why}"),
                 ));
-                pc.ctl_valid = false;
                 carrier.mark_close();
             }
         }
@@ -2897,8 +2881,6 @@ impl Request {
             && e == ErrorKind::OperationTimedout
         {
             trace::fail(cx, e, format_args!("control connection looks dead"));
-            let (pc, _) = ftp_of(lease);
-            pc.ctl_valid = false;
             lease.get().mark_close();
         }
         self.ending = None;

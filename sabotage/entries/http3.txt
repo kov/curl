@@ -1897,3 +1897,21 @@ witness: curl-core proto::http::tests::h3_trace::an_upload_cut_short_never_ends_
             quic.write_body(id, &[], true).ok();
         }
         let r = f(&mut step, quic);
+
+=== an HTTP/3 stream's window opens before the body that came with its head is buffered
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_of_known_size_ends_with_its_last_bytes
+--- old
+    let rest = start + head..range.end;
+    let mut taken = 0;
+    if body && !rest.is_empty() && step.flavour == Flavour::Ngtcp2 {
+        taken = add_body(step, quic, stream, rest.clone(), eos, true)?;
+    }
+    rx_window(step, quic);
+--- new
+    rx_window(step, quic);
+    let rest = start + head..range.end;
+    let mut taken = 0;
+    if body && !rest.is_empty() && step.flavour == Flavour::Ngtcp2 {
+        taken = add_body(step, quic, stream, rest.clone(), eos, true)?;
+    }

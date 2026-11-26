@@ -1199,7 +1199,6 @@ fn open<H: Host>(
     s.id = Some(stream);
     s.send_closed = !body;
     s.body_eos = !body;
-    rx_window(step, quic);
     // The body's bytes that came with the head are taken with it: into
     // ngtcp2's buffer as the stream opens, to quiche once it is said
     // opened (`h3_stream_open`, `h3_open_stream`).
@@ -1208,6 +1207,7 @@ fn open<H: Host>(
     if body && !rest.is_empty() && step.flavour == Flavour::Ngtcp2 {
         taken = add_body(step, quic, stream, rest.clone(), eos, true)?;
     }
+    rx_window(step, quic);
     if step.cx.verbose() {
         let id = curl_alloc::try_format(format_args!("{}", stream.0))
             .map_err(|_| ErrorKind::OutOfMemory)?;

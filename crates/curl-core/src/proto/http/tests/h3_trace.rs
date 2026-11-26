@@ -2000,6 +2000,19 @@ fn a_body_of_known_size_ends_with_its_last_bytes() {
             "[MULTI] [DID] -> [PERFORMING]",
         ]
     );
+    // The body goes into the buffer before the stream's receive window
+    // opens, as C's `h3_stream_open` traces it.
+    let opened = lines(
+        &ran,
+        &["[HTTP/3] [0] stream open", "[HTTP/3] [0] rx window"],
+    );
+    assert_eq!(
+        opened[..2],
+        [
+            "[HTTP/3] [0] stream open, adding to sendbuf(len=5, eos=1) -> 0, 5",
+            "[HTTP/3] [0] rx window, extend by 10452992 bytes",
+        ]
+    );
     let s = script.lock().unwrap();
     assert_eq!((&s.body.bytes[..], s.body.ended), (&b"hello"[..], true));
 }

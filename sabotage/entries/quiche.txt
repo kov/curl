@@ -77,15 +77,6 @@ openssl-fork: quiche
 --- new
             for piece in self.body.chunks(BODY_ROOM) {
 
-=== the peer of a connection over quiche is taken as checked
-file: crates/curl-quiche/src/lib.rs
-witness: curl-quiche an_untrusted_peer_fails_the_handshake_inside_quiche
-openssl-fork: quiche
---- old
-        let checked = call.handshake_done();
---- new
-        let checked = Ok(());
-
 === a cancelled stream over quiche is read on
 file: crates/curl-quiche/src/lib.rs
 witness: curl-quiche a_cancelled_get_is_heard_of_no_more

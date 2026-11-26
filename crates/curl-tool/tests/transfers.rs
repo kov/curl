@@ -2838,8 +2838,8 @@ fn a_session_file_s_bad_lines_are_warned_of() {
     );
 }
 
-/// A session of a date before 1970 cannot go out: the transfer ran, and the
-/// run ends with the bad argument, as C's. A line too long ends the run
+/// A session whose date does not fit 63 bits is refused as it is read,
+/// warned of, and the transfer runs, as C's. A line too long ends the run
 /// before any transfer. A blank name is refused, and a file that cannot be
 /// made is warned of. No file yet is no failure.
 #[test]
@@ -2850,7 +2850,9 @@ fn a_session_file_s_failures_end_as_c_s_do() {
     let salted = "A".repeat(86) + "==";
     s.write("neg", format!("{salted}:AQQAAU4D//////////8=\n").as_bytes());
     let r = curl(&s, &["--no-progress-meter", "--ssl-sessions", "neg", &src]);
-    assert_eq!((r.code, &r.stdout[..]), (43, &b"x"[..]));
+    assert_eq!((r.code, &r.stdout[..]), (0, &b"x"[..]));
+    let said = "Warning: import of session from line 1 rejected(26)\n";
+    assert!(r.stderr.contains(said), "{}", r.stderr);
     s.write("long", &[b'a'; 70000]);
     let r = curl(&s, &["--no-progress-meter", "--ssl-sessions", "long", &src]);
     assert_eq!((r.code, &r.stdout[..]), (2, &b""[..]));

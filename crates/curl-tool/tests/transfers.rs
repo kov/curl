@@ -1794,10 +1794,8 @@ fn silent_server() -> std::net::SocketAddr {
 }
 
 /// `--parallel` runs the transfers in the order given, each ending as it
-/// would one at a time, and exits with the first failure. C forgets a
-/// failure while transfers are left to add (`tool_operate.c`,
-/// `s->result = add_parallel_transfers(...)` in `parallel_transfers`):
-/// its exit status here is 0 (DIVERGENCE.md).
+/// would one at a time, and exits with the first failure, though more
+/// were left to add after it (`parallel_transfers`; test 3150).
 #[test]
 fn parallel_transfers_keep_the_first_failure() {
     let s = Scratch::new("parallel");

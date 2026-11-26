@@ -41,14 +41,6 @@ so: weaknesses kept because C has them.
   `a_refused_copy_is_out_of_memory` (`crates/curl-os/tests/env_oom.rs`) and
   `finds_the_file_as_c` (`crates/curl-core/src/netrc.rs`).
 
-- **`--parallel` exits with the first failure.** A transfer that fails while more are waiting
-  to be added is not forgotten. C's `parallel_transfers` (`src/tool_operate.c:2059`) assigns
-  `s->result = add_parallel_transfers(...)` on each pass while transfers are left to add, so a
-  failure recorded before that pass is overwritten. `curl -sS -Z --parallel-max 1 -f` with a
-  URL answering 404 and then two answering 200 prints the 404's error and exits 0; without the
-  cap, or with the failing URL last, it exits 22. Pinned by
-  `parallel_transfers_keep_the_first_failure` (`crates/curl-tool/tests/transfers.rs`).
-
 - **`-f` keeps a failure it gives up retrying for its wait.** With `--fail` or
   `--fail-with-body`, `--retry` and `--retry-max-time`, a response that would be tried again
   but whose `Retry-After:` would go past the limit fails the command, 22, as the same response

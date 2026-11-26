@@ -373,8 +373,8 @@ impl Parallel<'_, '_, '_> {
                     }
                 }
             } else if more {
-                // C sets its result to what this adding comes to, which
-                // forgets a failure before it (DIVERGENCE.md).
+                // A failure before this adding is kept: the adding's own
+                // counts only if none came first (`parallel_transfers`).
                 match self.add_more() {
                     Ok((left, _)) => more = left,
                     Err(e) => {

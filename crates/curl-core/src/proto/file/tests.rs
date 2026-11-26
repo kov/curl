@@ -350,6 +350,49 @@ fn a_file_cut_short_is_a_partial_file() {
     }
 }
 
+/// A file cut short once all it had was read has not ended early: a
+/// range past its end, read whole, or one read up to its last byte, is
+/// done though the file is shorter now (`file_check_eof`, which asks
+/// only while more is expected than was delivered).
+#[test]
+fn a_file_cut_short_after_all_it_had_was_read_is_done() {
+    struct Cutter {
+        path: PathBuf,
+        seen: Seen,
+        at: usize,
+    }
+    impl WriteHandler for Cutter {
+        fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
+            let written = self.seen.write(cx, body);
+            if self.seen.body().len() >= self.at {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&self.path)
+                    .unwrap()
+                    .set_len(50)
+                    .unwrap();
+            }
+            written
+        }
+    }
+    let s = Scratch::new("cut-after");
+    for (range, at, len) in [(&b"0-99999"[..], 20000, 20000), (b"0-99", 100, 100)] {
+        s.file("f", &[0; 20000], Y2K_NOON);
+        let (mut e, seen) = easy(&s.url("f"));
+        e.options_mut().range = Some(range.to_vec());
+        e.options_mut().callbacks.write = Some(
+            Handler::write(Cutter {
+                path: s.0.join("f"),
+                seen: seen.clone(),
+                at,
+            })
+            .unwrap(),
+        );
+        assert_eq!(run(e).0, Ok(()), "{range:?}");
+        assert_eq!(seen.body().len(), len, "{range:?}");
+    }
+}
+
 /// An empty file has its headers and nothing more: progress at the end of
 /// the read, not after a write.
 #[test]

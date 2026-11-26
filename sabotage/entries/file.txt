@@ -389,3 +389,12 @@ witness: curl-core proto::file::tests::an_upload_s_failed_close_fails_it
                 check: true,
                 written: None,
             }
+
+=== a file cut short once all it had was read is a partial file
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_cut_short_after_all_it_had_was_read_is_done
+--- old
+    sized.size - sized.from > read && file.metadata().is_ok_and(|m| m.len() < sized.size)
+--- new
+    let _ = read;
+    file.metadata().is_ok_and(|m| m.len() < sized.size)

@@ -1940,3 +1940,12 @@ features: test-util
 --- new
             if true {
                 let (id, code, len) = (s.shown_id(), kind.number(), line.len());
+
+=== a body piece ngtcp2's full buffer took none of is said as taken
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_piece_a_full_buffer_takes_none_of_is_said_again
+features: test-util
+--- old
+            let code = if took == 0 && len > 0 {
+--- new
+            let code = if took == 0 && len == 0 {

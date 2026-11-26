@@ -6790,6 +6790,46 @@ fn a_body_over_quiche_is_said_as_quiche_takes_it() {
     }
 }
 
+/// A piece of the body that finds ngtcp2's stream buffer full is said
+/// as C says a full `sendbuf`, taken none of and AGAIN, and its send
+/// waits (`cf_ngtcp2_send`'s `Curl_bufq_write`).
+#[test]
+fn a_body_piece_a_full_buffer_takes_none_of_is_said_again() {
+    let script = post_script(b"5\n", 4);
+    {
+        let mut s = script.lock().unwrap();
+        // Room for the first piece alone, none of it acknowledged.
+        s.body.held_max = Some(13);
+        let response = s.on_read.back_mut().unwrap();
+        assert!(matches!(response.pop(), Some(Told::QuicClosed(..))));
+        s.out.extend([
+            vec![5; 20],
+            vec![],
+            vec![6; 20],
+            vec![],
+            vec![7; 20],
+            vec![],
+        ]);
+    }
+    let ran = h3_with(&script, 4, |o| {
+        o.method = Method::Post;
+        o.upload = super::pieces(&[b"streamed body", b"more"]);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let said = lines(
+        &ran,
+        &["[HTTP/3] [0] cf_send(len=4", "[HTTP/3] [0] cf_send, add"],
+    );
+    assert_eq!(
+        said[..2],
+        [
+            "[HTTP/3] [0] cf_send, add to sendbuf(len=4, eos=0) -> 81, 0",
+            "[HTTP/3] [0] cf_send(len=4, eos=0) -> 81, 0",
+        ],
+        "{said:#?}"
+    );
+}
+
 /// A body quiche refuses fails the transfer, the refusal said as
 /// quiche's filter says it and failed as it fails it: a stream in no
 /// state to send with an HTTP/3 error, any other refusal as a send that

@@ -2131,10 +2131,10 @@ impl Request {
                         );
                         sent?;
                         // An end the stream did not take is sent again, as
-                        // C's `req_flush` waits until `eos_sent`.
-                        if self.wire.h2().is_some_and(|s| !s.body_eos())
-                            || self.wire.h3().is_some_and(|s| !s.body_eos())
-                        {
+                        // C's `req_flush` waits until `eos_sent`. HTTP/2's
+                        // always takes an end sent with no bytes; quiche's
+                        // may not.
+                        if self.wire.h3().is_some_and(|s| !s.body_eos()) {
                             return Ok(false);
                         }
                     }

@@ -2071,6 +2071,44 @@ fn a_body_of_unknown_size_ends_once_it_is_sent() {
     );
 }
 
+/// The body's end quiche does not take holds the stream back as bytes
+/// it cannot take do: said as its window exhausted, and sent again once
+/// quiche says the stream may go, not taken for sent
+/// (`cf_quiche_send_body`'s AGAIN, `req_flush` waiting for `eos_sent`).
+#[test]
+fn a_body_end_quiche_holds_back_is_sent_again() {
+    let script = post_script(b"13\n", 4);
+    {
+        let mut s = script.lock().unwrap();
+        s.flavour = crate::http3::Flavour::Quiche;
+        s.body.end_held = 1;
+        s.on_read[3].push(Told::Unblocked(0));
+        // The packets the body and its end go in, each answered.
+        s.out
+            .extend([vec![5; 20], vec![], vec![6; 20], vec![], vec![7; 20]]);
+    }
+    let ran = h3_with(&script, 4, |o| {
+        o.method = Method::Post;
+        o.upload = super::pieces(&[b"streamed body"]);
+    });
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.text());
+    let said = lines(&ran, &["[HTTP/3] [0] send", "upload completely"]);
+    assert_eq!(
+        said,
+        [
+            "[HTTP/3] [0] send body(len=13, eos=0) -> 13",
+            "[HTTP/3] [0] send_body(len=0) -> window exhausted",
+            "[HTTP/3] [0] send body(len=0, eos=1) -> 0",
+            "upload completely sent off: 13 bytes",
+        ]
+    );
+    let s = script.lock().unwrap();
+    assert_eq!(
+        (&s.body.bytes[..], s.body.ended),
+        (&b"streamed body"[..], true)
+    );
+}
+
 /// A body of no bytes is none: the head ends the stream, and the library
 /// never reads one (`h3_stream_open`'s `upload_left`).
 #[test]

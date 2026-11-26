@@ -2130,6 +2130,13 @@ impl Request {
                             format_args!("Curl_xfer_send(len=0, eos=1) -> {code}, 0"),
                         );
                         sent?;
+                        // An end the stream did not take is sent again, as
+                        // C's `req_flush` waits until `eos_sent`.
+                        if self.wire.h2().is_some_and(|s| !s.body_eos())
+                            || self.wire.h3().is_some_and(|s| !s.body_eos())
+                        {
+                            return Ok(false);
+                        }
                     }
                     break;
                 }

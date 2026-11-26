@@ -39,7 +39,7 @@ use curl_core::error::ErrorKind;
 use curl_core::http3::{
     BODY_HELD, BodyRefused, ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed,
     EarlyStart, Event, Events, Expiry, H3Error, H3Failed, Heard, Http3, Layer, QuicError,
-    StreamEvent, StreamId, SubmitFailed,
+    StreamEvent, StreamId, SubmitFailed, Took,
 };
 use curl_core::time::Instant;
 use curl_core::tls::{DriveCall, QuicTls, TlsCx, TlsKind, TlsNative};
@@ -1502,16 +1502,17 @@ impl curl_core::http3::Connection for Connection {
         stream: StreamId,
         bytes: &[u8],
         eos: bool,
-    ) -> Result<usize, BodyRefused> {
+    ) -> Result<Took, BodyRefused> {
         // SAFETY: the state, between calls.
         let bodies = unsafe { &mut (*self.inner.ptr()).bodies };
         let body =
             body_of(bodies, stream.0).expect("a body is written to a stream submitted with one");
         let n = body.write(bytes)?;
-        if eos && n == bytes.len() {
+        let ended = eos && n == bytes.len();
+        if ended {
             body.ended = true;
         }
-        Ok(n)
+        Ok(Took { bytes: n, ended })
     }
 
     fn body_in_flight(&self, stream: StreamId) -> usize {

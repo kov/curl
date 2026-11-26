@@ -187,6 +187,9 @@ pub struct FakeBody {
     pub held_max: Option<usize>,
     /// What each write is refused with, if anything.
     pub refused: Option<BodyRefused>,
+    /// The body's end is not taken this many times first, as quiche's
+    /// flow control may hold it back (`QUICHE_H3_ERR_DONE`).
+    pub end_held: usize,
 }
 
 impl FakeBody {
@@ -822,7 +825,7 @@ impl Connection for FakeConnection {
         _stream: StreamId,
         bytes: &[u8],
         eos: bool,
-    ) -> Result<usize, BodyRefused> {
+    ) -> Result<crate::http3::Took, BodyRefused> {
         let mut s = self.script.lock().unwrap_or_else(PoisonError::into_inner);
         let b = &mut s.body;
         if let Some(refused) = b.refused {
@@ -833,10 +836,15 @@ impl Connection for FakeConnection {
             .map_or(usize::MAX, |max| max - (b.bytes.len() - b.acked));
         let n = bytes.len().min(room);
         own(|| b.bytes.extend_from_slice(&bytes[..n]));
-        if eos && n == bytes.len() {
+        let mut ended = eos && n == bytes.len();
+        if ended && b.end_held > 0 {
+            b.end_held -= 1;
+            ended = false;
+        }
+        if ended {
             b.ended = true;
         }
-        Ok(n)
+        Ok(crate::http3::Took { bytes: n, ended })
     }
 
     fn body_in_flight(&self, _stream: StreamId) -> usize {

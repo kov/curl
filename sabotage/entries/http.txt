@@ -1716,3 +1716,14 @@ witness: curl-core proto::http::tests::h3_trace::an_empty_body_of_unknown_size_e
 --- new
                 .and_then(chain::Body::size)
                 .is_some_and(|n| n != chain::WireSize::EMPTY);
+
+=== an HTTP/2 or HTTP/3 upload is done though its stream did not take the end
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_end_quiche_holds_back_is_sent_again
+--- old
+                        if self.wire.h2().is_some_and(|s| !s.body_eos())
+                            || self.wire.h3().is_some_and(|s| !s.body_eos())
+                        {
+                            return Ok(false);
+                        }
+--- new

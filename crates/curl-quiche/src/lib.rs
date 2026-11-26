@@ -31,7 +31,7 @@ use curl_core::error::ErrorKind;
 use curl_core::http3::{
     BodyRefused, ClientSetup, CloseError, CloseKind, ConnEvent, ConnectFailed, EarlyStart, Event,
     Events, Expiry, Flavour, H3Error, H3Failed, Heard, Http3, Layer, QuicError, StreamEvent,
-    StreamId, SubmitFailed,
+    StreamId, SubmitFailed, Took,
 };
 use curl_core::time::Instant;
 use curl_core::tls::{DriveCall, QuicTls, TlsCx, TlsKind, TlsNative};
@@ -398,15 +398,13 @@ struct Streams {
     /// Those quiche held a body back on, told when packets next came
     /// (`cf_quiche_do_resume`).
     blocked: Vec<StreamId>,
-    /// Those whose body ends once quiche takes the end.
-    ends: Vec<StreamId>,
 }
 
 impl Streams {
     /// Room for one more stream in each list, made before it opens.
     fn make_room(&mut self) -> Result<(), OutOfMemory> {
         let want = self.live.len() + 1;
-        for list in [&mut self.live, &mut self.blocked, &mut self.ends] {
+        for list in [&mut self.live, &mut self.blocked] {
             list.try_reserve(want - list.len())
                 .map_err(|_| OutOfMemory)?;
         }
@@ -428,13 +426,9 @@ impl Streams {
         Self::join(&self.live, &mut self.blocked, stream);
     }
 
-    fn end(&mut self, stream: StreamId) {
-        Self::join(&self.live, &mut self.ends, stream);
-    }
-
     /// quiche is done with `stream`, or the request with it.
     fn ended(&mut self, stream: StreamId) {
-        for list in [&mut self.live, &mut self.blocked, &mut self.ends] {
+        for list in [&mut self.live, &mut self.blocked] {
             list.retain(|&s| s != stream);
         }
     }
@@ -811,14 +805,6 @@ impl curl_core::http3::Connection for Connection {
         let (tls, _, parts) = self.parts();
         let mut wrote = Ok(None);
         tls.drive(cx, &mut || None, &mut |_| {
-            if let Some(h3) = parts.h3.as_mut() {
-                parts.streams.ends.retain(|&stream| {
-                    matches!(
-                        quiet(|| h3.send_body(parts.quic, quiche_id(stream), &[], true)),
-                        Err(quiche::h3::Error::Done)
-                    )
-                });
-            }
             wrote = match quiet(|| parts.quic.send(buf)) {
                 // A packet of no bytes is none to send.
                 Ok((n, _)) => Ok(std::num::NonZeroUsize::new(n)),
@@ -1024,14 +1010,14 @@ impl curl_core::http3::Connection for Connection {
     /// What of `bytes` quiche takes of the body now: it holds them, none
     /// if its flow control holds the stream back; with `eos` the body's
     /// end goes with the last of them, quiche ending it once it takes
-    /// them all (`cf_quiche_send_body`). An end of no bytes it does not
-    /// take now is offered again as packets are written.
+    /// them all (`cf_quiche_send_body`). An end quiche does not take is
+    /// held back as bytes are, for the transfer to send again.
     fn write_body(
         &mut self,
         stream: StreamId,
         bytes: &[u8],
         eos: bool,
-    ) -> Result<usize, BodyRefused> {
+    ) -> Result<Took, BodyRefused> {
         use quiche::h3::Error as H;
         let quic = &mut *self.quic;
         let h3 = self.h3.as_mut().expect("bodies go once HTTP/3 is set up");
@@ -1040,11 +1026,13 @@ impl curl_core::http3::Connection for Connection {
         // refused, or the body would be offered again for ever.
         let n = match quiet(|| h3.send_body(quic, quiche_id(stream), bytes, eos)) {
             Ok(n) => n,
-            Err(H::Done) if eos && bytes.is_empty() => {
-                self.streams.end(stream);
-                0
+            Err(H::Done) => {
+                self.streams.block(stream);
+                return Ok(Took {
+                    bytes: 0,
+                    ended: false,
+                });
             }
-            Err(H::Done) => 0,
             Err(H::TransportError(quiche::Error::InvalidStreamState(_))) => {
                 return Err(BodyRefused::StreamState);
             }
@@ -1056,7 +1044,10 @@ impl curl_core::http3::Connection for Connection {
         if n == 0 && !bytes.is_empty() {
             self.streams.block(stream);
         }
-        Ok(n)
+        Ok(Took {
+            bytes: n,
+            ended: eos && n == bytes.len(),
+        })
     }
 
     /// quiche holds what it took: none in flight but it.
@@ -1178,23 +1169,22 @@ mod tests {
             s.make_room().unwrap();
             s.opened(StreamId(id * 4));
         }
-        let room = (s.blocked.capacity(), s.ends.capacity());
+        let room = s.blocked.capacity();
         for id in 0..5 {
-            s.end(StreamId(id * 4));
             s.block(StreamId(id * 4));
-            s.end(StreamId(id * 4));
+            s.block(StreamId(id * 4));
         }
-        assert_eq!((s.blocked.capacity(), s.ends.capacity()), room);
-        assert_eq!(s.ends.len(), 5, "each once");
+        assert_eq!(s.blocked.capacity(), room);
+        assert_eq!(s.blocked.len(), 5, "each once");
         s.ended(StreamId(8));
         assert!(
-            ![&s.live, &s.blocked, &s.ends]
+            ![&s.live, &s.blocked]
                 .iter()
                 .any(|l| l.contains(&StreamId(8)))
         );
-        s.end(StreamId(8));
+        s.block(StreamId(8));
         s.block(StreamId(99));
-        assert_eq!((s.blocked.len(), s.ends.len()), (4, 4));
+        assert_eq!(s.blocked.len(), 4);
     }
 
     /// A field with CR, LF or NUL in it is not handed on; its status's

@@ -656,7 +656,7 @@ impl H3Proxy {
             return (Err(ErrorKind::SendError), 0);
         };
         let took = match self.quic.write_body(stream, bytes, false) {
-            Ok(took) => took,
+            Ok(took) => took.bytes,
             Err(refused) => return (self.send_ended(cx, socket, Err(refused.kind())), 0),
         };
         let (id, len) = (stream.0, bytes.len());

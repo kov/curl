@@ -1273,14 +1273,13 @@ fn add_body<H: Host>(
 ) -> Result<usize, ErrorKind> {
     let id = stream.0;
     let len = range.len();
-    let took = match quic.write_body(stream, &step.req.out[range], eos) {
-        Ok(took) => took,
+    let (took, ends) = match quic.write_body(stream, &step.req.out[range], eos) {
+        Ok(took) => (took.bytes, took.ended),
         Err(refused) => {
             refused_traced(&mut *step.cx, id, len, refused);
             return Err(refused.kind());
         }
     };
-    let ends = eos && took == len;
     match step.flavour {
         Flavour::Ngtcp2 => {
             let code = if took == 0 && len > 0 {
@@ -1311,7 +1310,7 @@ fn add_body<H: Host>(
                 step.stream().body_eos = true;
             }
         }
-        Flavour::Quiche if took == 0 && len > 0 => {
+        Flavour::Quiche if took == 0 && !ends => {
             trace::of(
                 &mut *step.cx,
                 Component::Http3,

@@ -633,14 +633,15 @@ pub trait Connection: fmt::Debug + Send {
     /// None taken is the peer's flow control holding the stream back; a
     /// stream that takes no more is refused, never taken for one held
     /// back. With `eos`, `bytes` are the last of the body, none at all
-    /// possibly: taken whole, the body ends after them; an upload cut
-    /// short never says so.
+    /// possibly, and the body ends after them if the library takes them
+    /// and the end: whether it did is said, as quiche may take neither;
+    /// an upload cut short never says so.
     fn write_body(
         &mut self,
         stream: StreamId,
         bytes: &[u8],
         eos: bool,
-    ) -> Result<usize, BodyRefused>;
+    ) -> Result<Took, BodyRefused>;
 
     /// The bytes of `stream`'s body it holds: handed to the HTTP/3
     /// library and not yet acknowledged, and not yet handed.
@@ -657,6 +658,14 @@ pub trait Connection: fmt::Debug + Send {
     /// Open `stream`'s receive window by `n`
     /// (`ngtcp2_conn_extend_max_stream_offset`).
     fn extend_stream_window(&mut self, stream: StreamId, n: u64);
+}
+
+/// What of a body's bytes the library took, and whether it took the
+/// body's end with them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Took {
+    pub bytes: usize,
+    pub ended: bool,
 }
 
 /// Why a stream's body bytes were refused (`cf_quiche_send_body`).

@@ -1119,13 +1119,14 @@ impl Quic {
     }
 
     /// Take what of `bytes` it holds room for of `stream`'s body: how
-    /// many; with `eos`, the last of it, which ends the body taken whole.
+    /// many; with `eos`, the last of it, and whether the body's end was
+    /// taken with it.
     pub(crate) fn write_body(
         &mut self,
         stream: StreamId,
         bytes: &[u8],
         eos: bool,
-    ) -> Result<usize, crate::http3::BodyRefused> {
+    ) -> Result<crate::http3::Took, crate::http3::BodyRefused> {
         self.conn.write_body(stream, bytes, eos)
     }
 

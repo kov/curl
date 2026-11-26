@@ -268,9 +268,9 @@ witness: curl-core proto::http::tests::h3_trace::a_body_of_unknown_size_ends_onc
 file: crates/curl-core/src/proto/http/h3.rs
 witness: curl-core proto::http::tests::h3_trace::a_body_of_known_size_ends_with_its_last_bytes
 --- old
-    let took = match quic.write_body(stream, &step.req.out[range], eos) {
+    let (took, ends) = match quic.write_body(stream, &step.req.out[range], eos) {
 --- new
-    let took = match quic.write_body(stream, &step.req.out[range], false) {
+    let (took, ends) = match quic.write_body(stream, &step.req.out[range], false) {
 
 === an HTTP/3 body that came with the head waits for the next send
 file: crates/curl-core/src/proto/http/h3.rs
@@ -1921,3 +1921,11 @@ witness: curl-core proto::http::tests::h3_trace::an_empty_body_of_unknown_size_e
     let body = size != Some(crate::upload::chain::WireSize::EMPTY) && !(eos && rest.is_empty());
 --- new
     let body = size != Some(crate::upload::chain::WireSize::EMPTY);
+
+=== a body's end quiche held back is taken for sent
+file: crates/curl-core/src/proto/http/h3.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_end_quiche_holds_back_is_sent_again
+--- old
+        Ok(took) => (took.bytes, took.ended),
+--- new
+        Ok(took) => (took.bytes, eos && took.bytes == len),

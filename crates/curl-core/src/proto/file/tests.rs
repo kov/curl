@@ -359,12 +359,12 @@ fn a_file_cut_short_after_all_it_had_was_read_is_done() {
     struct Cutter {
         path: PathBuf,
         seen: Seen,
-        at: usize,
+        cut_at: usize,
     }
     impl WriteHandler for Cutter {
         fn write(&self, cx: &mut crate::handler::WriteCx<'_>, body: &[u8]) -> Write {
             let written = self.seen.write(cx, body);
-            if self.seen.body().len() >= self.at {
+            if self.seen.body().len() >= self.cut_at {
                 std::fs::File::options()
                     .write(true)
                     .open(&self.path)
@@ -376,7 +376,13 @@ fn a_file_cut_short_after_all_it_had_was_read_is_done() {
         }
     }
     let s = Scratch::new("cut-after");
-    for (range, at, len) in [(&b"0-99999"[..], 20000, 20000), (b"0-99", 100, 100)] {
+    // The last starts past the file's first bytes, which count against
+    // its size and not against what was read.
+    for (range, cut_at, len) in [
+        (&b"0-99999"[..], 20000, 20000),
+        (b"0-99", 100, 100),
+        (b"100-99999", 19900, 19900),
+    ] {
         s.file("f", &[0; 20000], Y2K_NOON);
         let (mut e, seen) = easy(&s.url("f"));
         e.options_mut().range = Some(range.to_vec());
@@ -384,13 +390,31 @@ fn a_file_cut_short_after_all_it_had_was_read_is_done() {
             Handler::write(Cutter {
                 path: s.0.join("f"),
                 seen: seen.clone(),
-                at,
+                cut_at,
             })
             .unwrap(),
         );
         assert_eq!(run(e).0, Ok(()), "{range:?}");
         assert_eq!(seen.body().len(), len, "{range:?}");
     }
+}
+
+/// A file the system sizes past what it reads, as sysfs does at a page,
+/// has not been cut short: it ends where its reads end, its size
+/// unchanged (`file_check_eof`'s "virtual files").
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_sized_past_what_it_reads_is_done() {
+    let path = "/sys/devices/system/cpu/online";
+    let size = std::fs::metadata(path).unwrap().len();
+    let content = std::fs::read(path).unwrap();
+    assert!(
+        content.len() < usize::try_from(size).unwrap(),
+        "sized past it"
+    );
+    let (e, seen) = easy(format!("file://{path}").as_bytes());
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(seen.body(), content);
 }
 
 /// An empty file has its headers and nothing more: progress at the end of

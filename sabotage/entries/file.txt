@@ -398,3 +398,11 @@ witness: curl-core proto::file::tests::a_file_cut_short_after_all_it_had_was_rea
 --- new
     let _ = read;
     file.metadata().is_ok_and(|m| m.len() < sized.size)
+
+=== a file sized past what it reads is a partial file
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_sized_past_what_it_reads_is_done
+--- old
+    sized.size - sized.from > read && file.metadata().is_ok_and(|m| m.len() < sized.size)
+--- new
+    sized.size - sized.from > read && file.metadata().is_ok_and(|m| m.len() <= sized.size)

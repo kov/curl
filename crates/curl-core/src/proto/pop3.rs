@@ -470,9 +470,8 @@ impl Request {
         let limit = cx.easy().options().line.server_response;
         self.in_place = crate::multi::state::tls::InPlace::of(lease.conn());
         let (pc, mut carrier) = pop3_of(lease);
-        if drive::runs(cx, &pc.pp, &mut carrier, limit)? {
-            self.machine(cx, pc, &mut carrier)?;
-        }
+        drive::timed(cx, &pc.pp, limit)?;
+        self.machine(cx, pc, &mut carrier)?;
         Ok(pc.state == State::Stop)
     }
 

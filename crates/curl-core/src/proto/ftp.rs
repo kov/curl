@@ -688,9 +688,8 @@ impl Request {
             // the server's to answer.
             self.clear_tls(cx, pc, &mut carrier)
         } else {
-            match drive::runs(cx, &pc.pp, &mut carrier, limit) {
-                Ok(true) => self.machine(cx, pc, &mut carrier),
-                Ok(false) => Ok(()),
+            match drive::timed(cx, &pc.pp, limit) {
+                Ok(()) => self.machine(cx, pc, &mut carrier),
                 Err(e) => Err(e),
             }
         };

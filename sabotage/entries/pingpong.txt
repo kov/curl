@@ -144,15 +144,6 @@ features: test-util
 --- new
         if got == READ_SIZE {
 
-=== lines held past a reply wait on the socket
-file: crates/curl-core/src/proto/pingpong/drive.rs
-witness: curl-core proto::pop3::tests::over_the_wire::lines_past_a_reply_answer_the_next_command
-features: test-util
---- old
-    if carrier.reborrow().data_pending() || pp.unscanned() {
---- new
-    if carrier.reborrow().data_pending() && pp.unscanned() {
-
 === a line protocol's drive arms no timer for the server's time to answer
 file: crates/curl-core/src/proto/pingpong/drive.rs
 witness: curl-core proto::pop3::tests::over_the_wire::the_server_s_time_to_answer_is_its_own_timer
@@ -266,3 +257,16 @@ witness: curl-core proto::pingpong::tests::the_back_and_forth_rests_only_between
         self.turn = Turn::Server;
 --- new
         self.pending = true;
+
+=== a pingpong pass runs its machine only once the socket is ready
+file: crates/curl-core/src/proto/pop3.rs
+witness: curl-core proto::pop3::tests::over_the_wire::a_silent_server_is_read_each_pass_for_nothing
+features: test-util
+--- old
+        drive::timed(cx, &pc.pp, limit)?;
+        self.machine(cx, pc, &mut carrier)?;
+--- new
+        drive::timed(cx, &pc.pp, limit)?;
+        if carrier.ready_now(drive::waits(&pc.pp)) {
+            self.machine(cx, pc, &mut carrier)?;
+        }

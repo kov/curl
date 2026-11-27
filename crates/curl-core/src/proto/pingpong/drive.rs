@@ -330,19 +330,17 @@ fn read_failed<H: Host>(cx: &mut StepCx<'_, H>, e: super::ReadError) -> ErrorKin
     }
 }
 
-/// Whether the protocol's step is to run now, and not wait on the
-/// connection (`Curl_pp_statemach` without blocking): failed if the
-/// server's time to answer, `limit` or a minute, is out already, else
-/// the transfer's `SERVER_RESPONSE` timer armed for what is left of it
-/// (its `Curl_expire`). It runs if bytes wait where a poll cannot see them, or are
-/// held unread, or the socket is ready for what the back and forth waits
-/// for, a poll that does not wait.
-pub(crate) fn runs<H: Host>(
+/// The server's time to answer before a pass that does not block
+/// (`Curl_pp_statemach` without `block`): failed if it, `limit` or a
+/// minute, is out already, else the transfer's `SERVER_RESPONSE` timer
+/// armed for what is left of it (its `Curl_expire`). The protocol's step
+/// runs after it, whether or not the connection has anything for it, as
+/// C's runs its state machine without polling (upstream 13fce6c1d5).
+pub(crate) fn timed<H: Host>(
     cx: &mut StepCx<'_, H>,
     pp: &Pingpong,
-    carrier: &mut Carrier<'_>,
     limit: Option<TimeLimit>,
-) -> Result<bool, ErrorKind> {
+) -> Result<(), ErrorKind> {
     let left = cx.time_left();
     let now = cx.now();
     match pp.time_left(now, limit, left) {
@@ -355,10 +353,7 @@ pub(crate) fn runs<H: Host>(
             ));
         }
     };
-    if carrier.reborrow().data_pending() || pp.unscanned() {
-        return Ok(true);
-    }
-    Ok(carrier.ready_now(waits(pp)))
+    Ok(())
 }
 
 /// Where C's blocking drive is in its round (`Curl_pp_statemach` with

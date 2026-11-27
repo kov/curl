@@ -552,9 +552,8 @@ impl Request {
         let limit = cx.easy().options().line.server_response;
         self.in_place = crate::multi::state::tls::InPlace::of(lease.conn());
         let (pc, mut carrier) = smtp_of(lease);
-        let ran = match drive::runs(cx, &pc.pp, &mut carrier, limit) {
-            Ok(true) => self.machine(cx, pc, &mut carrier),
-            Ok(false) => Ok(()),
+        let ran = match drive::timed(cx, &pc.pp, limit) {
+            Ok(()) => self.machine(cx, pc, &mut carrier),
             Err(e) => Err(e),
         };
         ran.map(|()| pc.state == State::Stop)

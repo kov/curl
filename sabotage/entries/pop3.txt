@@ -170,9 +170,9 @@ features: test-util
 --- new
     const INFO: u16 = 1 >> 1;
 
-=== the back and forth reads a socket that has said nothing
+=== a blocking back and forth reads a socket that has said nothing
 file: crates/curl-core/src/conn/mux.rs
-witness: curl-core proto::pop3::tests::over_the_wire::a_silent_server_is_not_read
+witness: curl-core proto::ftp::tests::done_reads_once_before_it_waits
 features: test-util
 --- old
             Ok(_) => !watch[0].revents().is_empty(),

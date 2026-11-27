@@ -1386,11 +1386,12 @@ mod over_the_wire {
         assert!(marked(b"RETR", MESSAGE));
     }
 
-    /// The back and forth reads only once the socket says something
-    /// came: a server that has said nothing is not read (C's
-    /// `Curl_socket_check` before `Curl_pp_readresp`).
+    /// The back and forth reads on every pass without polling first: a
+    /// server that has said nothing is read, and each read comes to
+    /// nothing (`Curl_pp_statemach` without `block`, upstream
+    /// 13fce6c1d5), until the time to answer is out.
     #[test]
-    fn a_silent_server_is_not_read() {
+    fn a_silent_server_is_read_each_pass_for_nothing() {
         let talk = Conversation::replies(&[GREETING], false).greeting().held();
         let mut m = serving(&[&talk]);
         let url = format!("pop3://u:p@127.0.0.1:{PORT}/1");
@@ -1399,7 +1400,16 @@ mod over_the_wire {
         });
         assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
         assert!(ran.text.contains("server response timeout"), "{}", ran.text);
-        assert!(!ran.text.contains("[TCP] recv("), "{}", ran.text);
+        let reads: Vec<&str> = ran
+            .text
+            .lines()
+            .filter(|l| l.starts_with("[TCP] recv("))
+            .collect();
+        assert!(!reads.is_empty(), "{}", ran.text);
+        assert!(
+            reads.iter().all(|l| *l == "[TCP] recv(len=900) -> 81, 0"),
+            "{reads:#?}"
+        );
     }
 
     /// The server's time to answer wakes the transfer as it runs out,

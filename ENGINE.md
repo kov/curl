@@ -1290,7 +1290,7 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   protocol's state, it is derived after every step from `TransferState::due`, as `Directions`
   is, and armed or cleared there.
 - `ServerResponse` (EXPIRE_SERVER_RESPONSE) is a line protocol's server's time to answer: each
-  time `pingpong::drive::runs` drives the back and forth it sets it for what is left
+  time `pingpong::drive::timed` drives the back and forth it sets it for what is left
   (`StepCx::server_response_in`, traced `set for` as C's `Curl_pp_statemach` does), armed as the
   step ends. Like C's it is never cleared: it lasts until it fires or the transfer completes, so
   a POP3 body's PERFORMING still lists it and COMPLETED says `[TIMEOUT] all cleared`. A DONE
@@ -4414,10 +4414,10 @@ protocol's phases (the drive, below).
   pass, traces each line as HEADER_IN and delivers it to the header handler as INFO
   (`Pipeline::info`, C's `CLIENTWRITE_INFO`), counting it in the header bytes; a line starts
   the response's time only once the request's sending is done (`upload_done`), which a
-  command's never is, so POP3 marks it with its body alone; `runs` fails
-  the transfer once the time to answer is out ("server response timeout"), gives the instant
-  it runs out as the step's due, and runs the step without waiting while bytes are held or
-  the socket already polls ready (`Carrier::ready_now`). The connection's protocol state is
+  command's never is, so POP3 marks it with its body alone; `timed` fails
+  the transfer once the time to answer is out ("server response timeout") and gives the instant
+  it runs out as the step's due, and the step then runs without polling the socket, its read
+  coming to nothing where nothing came, as C's `Curl_pp_statemach` runs its state machine. The connection's protocol state is
   its `LineConn` (POP3's `Pop3Conn`: its `Pingpong`, state, SASL and what CAPA offered, and a
   key to the route's cold group for its credentials; IMAP's `ImapConn` also its tag count and
   the mailbox selected; SMTP's `SmtpConn` what EHLO offered and the domain it greets with);

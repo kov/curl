@@ -38,6 +38,15 @@ pub(crate) struct DataTls {
     pub(crate) resume: Option<crate::tls::TlsTicket>,
 }
 
+/// How far the data connection's shutdown got.
+#[derive(Clone, Copy, Debug)]
+struct Shut {
+    /// Its layers shut down so far.
+    layers: usize,
+    /// When it started, its time counted from then (`shutdown_start_ms`).
+    since: crate::time::Instant,
+}
+
 /// The data connection.
 #[derive(Debug)]
 pub(crate) struct DataConn {
@@ -48,8 +57,8 @@ pub(crate) struct DataConn {
     tls: Option<DataTls>,
     /// What its socket's sends and receives are traced as.
     socket: Component,
-    /// Its layers shut down so far, once its shutdown started.
-    shut: Option<usize>,
+    /// How far its shutdown got, once it started.
+    shut: Option<Shut>,
     /// When it began to be made, its connect limit counted from then
     /// (C's `connect_start_ms`, set by the first connect call).
     started: crate::time::Instant,
@@ -579,7 +588,7 @@ impl DataConn {
             Some(Phase::Listening { sock, .. }) => (None, Some((sock.socket(), Events::IN))),
             Some(Phase::Up { stream, shaken, .. }) => {
                 let events = match self.shut {
-                    Some(shut) => stream.shutdown_pollset(shut, Events::NONE),
+                    Some(shut) => stream.shutdown_pollset(shut.layers, Events::NONE),
                     // A handshake waits for what its layer says.
                     None if !*shaken => stream.adjust_pollset(Events::IN),
                     None if transfer.is_empty() => Events::NONE,
@@ -598,24 +607,45 @@ impl DataConn {
     }
 
     /// Move the shutdown of its direction the transfer used on, once it
-    /// moved all its bytes (`Curl_cshutdn_try_once_idx`): whether it is
-    /// done.
+    /// moved all its bytes (`Curl_cshutdn_cfchain_try_once`): whether it
+    /// is done. Its time, counted from its first try, is a connection
+    /// shutdown's: a try once it is out fails, and one not done arms the
+    /// transfer's `SHUTDOWN` timer for what is left of it.
     pub(crate) fn shutdown<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
         let Some(Phase::Up { stream, .. }) = self.phase.as_mut() else {
             return Ok(true);
         };
         let socket = self.socket;
+        let now = cx.now();
+        let limit = ConnSettings::DEFAULT.shutdown_time();
         let started = self.shut.is_some();
-        let shut = self.shut.get_or_insert(0);
-        cx.as_second(|cx| {
+        let shut = self.shut.get_or_insert(Shut {
+            layers: 0,
+            since: now,
+        });
+        let spent =
+            std::time::Duration::from_millis(u64::try_from(now.ms_since(shut.since)).unwrap_or(0));
+        // Out of time with not a millisecond left, as C's counts it.
+        let left = limit.saturating_sub(spent);
+        if started && left.is_zero() {
+            // Said as information: a goodbye that never comes may be
+            // acceptable.
+            trace::info(cx, format_args!("shutdown timeout"));
+            return Err(ErrorKind::OperationTimedout);
+        }
+        let done = cx.as_second(|cx| {
             if !started {
                 crate::multi::mstate::trace(
                     cx,
                     format_args!("shutdown start on secondary connection"),
                 );
             }
-            Ok(stream.shutdown(cx, socket, shut)? == Handshake::Done)
-        })
+            Ok::<_, ErrorKind>(stream.shutdown(cx, socket, &mut shut.layers)? == Handshake::Done)
+        })?;
+        if !done {
+            cx.side_shutdown_in(left);
+        }
+        Ok(done)
     }
 
     /// Close it at once for the transfer (`Curl_conn_cf_discard_all`),
@@ -767,7 +797,10 @@ mod tests {
                 name: DataName::default(),
                 tls: None,
                 socket: Component::Tcp,
-                shut: shutdown.then_some(0),
+                shut: shutdown.then(|| Shut {
+                    layers: 0,
+                    since: crate::time::Clock::now(&clock),
+                }),
                 started: crate::time::Clock::now(&clock),
             };
             // The transfer's own wants, before any chain adds to them.

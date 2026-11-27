@@ -1673,13 +1673,25 @@ pub(crate) enum SideTimer {
     Clear,
 }
 
-/// What a second connection's setup, which holds no timers, asks of the
-/// transfer's: its next attempt's and its resolver's next try, as the
-/// transfer's own setup arms them.
+/// What a second connection, which holds no timers, asks of the
+/// transfer's: its setup's next attempt and its resolver's next try, as
+/// the transfer's own setup arms them, and what is left of its shutdown's
+/// time.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct SideDue {
     pub(super) eyeballs: SideTimer,
     pub(super) name: SideTimer,
+    pub(super) shutdown: Option<Duration>,
+}
+
+impl<H: Host> StepCx<'_, H> {
+    /// A second connection's shutdown moved on, not done, with `left` of
+    /// its time: the transfer's `SHUTDOWN` timer armed for it once the
+    /// step is over, unless it fires sooner (`Curl_expire_latest`).
+    pub(crate) fn side_shutdown_in(&mut self, left: Duration) {
+        let due = &mut self.side_due.shutdown;
+        *due = Some(due.map_or(left, |d| d.min(left)));
+    }
 }
 
 /// A second connection's setup over `route` moved on as `progress` says:
@@ -1739,7 +1751,11 @@ pub(crate) fn side_won<H: Host>(
 /// What the step's second connection asked of the timers, now that `run`
 /// is at hand: armed as the transfer's own setup arms them.
 pub(crate) fn side_timers<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
-    let SideDue { eyeballs, name } = std::mem::take(&mut cx.side_due);
+    let SideDue {
+        eyeballs,
+        name,
+        shutdown,
+    } = std::mem::take(&mut cx.side_due);
     match eyeballs {
         SideTimer::Keep => {}
         SideTimer::Arm(at) => cx.as_second(|cx| eyeballs_due(run, cx, at)),
@@ -1749,6 +1765,12 @@ pub(crate) fn side_timers<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
         SideTimer::Keep => {}
         SideTimer::Arm(at) => cx.as_second(|cx| name_retry(run, cx, at)),
         SideTimer::Clear => run.deadlines.clear(TimerKind::AsyncName),
+    }
+    if let Some(left) = shutdown {
+        let now = cx.now();
+        if let Some(at) = run.deadlines.arm_no_later(TimerKind::Shutdown, now, left) {
+            trace_set(cx, TimerKind::Shutdown, at);
+        }
     }
 }
 

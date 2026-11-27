@@ -789,3 +789,21 @@ features: test-util
                 let cmd = self.postquote.iter().nth(at);
 --- new
                 let cmd = cx.easy().options().line.postquote.iter().nth(at);
+
+=== a data connection's goodbye never answered is waited for without end
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::an_upload_s_goodbye_never_answered_ends_once_its_time_is_out
+features: test-util
+--- old
+        if started && left.is_zero() {
+--- new
+        if started && left.is_zero() && false {
+
+=== a data connection's shutdown not done arms no SHUTDOWN timer
+file: crates/curl-core/src/proto/ftp/data.rs
+witness: curl-core proto::ftp::tests::an_upload_s_goodbye_never_answered_ends_once_its_time_is_out
+features: test-util
+--- old
+            cx.side_shutdown_in(left);
+--- new
+            let _ = left;

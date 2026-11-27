@@ -1052,6 +1052,67 @@ fn a_data_connection_whose_goodbye_waits_is_not_read_again() {
     );
 }
 
+/// A protected upload's data connection whose peer never answers its
+/// goodbye gives up on it once a shutdown's time is out, woken by the
+/// transfer's `SHUTDOWN` timer, and the upload ends as the server says
+/// it went (`Curl_cshutdn_cfchain_try_once`, `cf_ftp_data_send`; checked
+/// against the C build with a server that keeps the connection open).
+#[test]
+fn an_upload_s_goodbye_never_answered_ends_once_its_time_is_out() {
+    use crate::tls::fake::{self, WELCOME};
+    let tls = |plain: &[u8]| fake::records(plain).unwrap();
+    let control = [
+        WELCOME.to_vec(),
+        tls(b"220 hi\r\n"),
+        tls(b"331 password?\r\n"),
+        tls(b"230 in\r\n"),
+        tls(b"200 PBSZ\r\n"),
+        tls(b"200 PROT\r\n"),
+        tls(b"257 \"/\" is it\r\n"),
+        tls(b"229 Entering Extended Passive Mode (|||8022|)\r\n"),
+        tls(b"200 binary\r\n"),
+        tls(b"150 go on\r\n226 stored\r\n"),
+    ];
+    let control: Vec<&[u8]> = control.iter().map(Vec::as_slice).collect();
+    let control = Conversation::replies(&control, false).per_send();
+    // The peer finishes its handshake, then says nothing and stays open.
+    let file = [WELCOME.to_vec()];
+    let file: Vec<&[u8]> = file.iter().map(Vec::as_slice).collect();
+    let file = Conversation::replies(&file, false).per_send();
+    let (mut m, _, clock) = clocked(&[&control], &[&file]);
+    let url = "ftps://127.0.0.1:PORT/f";
+    let mut e = Easy::new();
+    e.set_libraries(with_tls());
+    let (id, _, text) = added_tracing(&mut m, url, e, b"all", |o| {
+        o.method = crate::options::Method::Upload;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"up".to_vec()).unwrap(),
+        );
+    });
+    let start = crate::time::Clock::now(&clock);
+    let result = crate::multi::drive_within(&mut m, id, 20, &mut NoEvents).unwrap();
+    let said = text.text();
+    assert_eq!(result, Ok(()), "{said}");
+    let took = crate::time::Clock::now(&clock).since(start);
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?} {said}");
+    said_in_order(
+        &said,
+        &[
+            "shutdown start on secondary connection\n",
+            "[SSL-1] shut down not done yet\n",
+            "[TIMER] [SHUTDOWN] set for 2000000us\n",
+            // A second's poll later, set again for what is left.
+            "[TIMER] [SHUTDOWN] set for 1000000us\n",
+            "shutdown timeout\n",
+            "upload completely sent off: 2 bytes\n",
+            "[MULTI] [PERFORMING] -> [DONE]\n",
+            "[WRITE] download_write header(type=2, blen=12) -> 0\n",
+            "[FTP] [STOP] done, result=0\n",
+        ],
+    );
+    assert!(!said.contains("Broken server"), "{said}");
+}
+
 /// The lines of a trace that say how the data connection's chain is set
 /// up, each call of its connect and what it reached, as C's build says
 /// them, without the transfer's ids.

@@ -1332,6 +1332,12 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   joining arms nothing. `due`, `multi_timeout` and the timer announcement take the earlier of
   it and the queue's head; once past, it marks the set dirty as an expired transfer is. Nothing
   traces it, as C's internal handle has no debug function.
+  A transfer's own `Shutdown` timer is for its second connection, FTP's data connection, whose
+  shutdown it drives itself (`Curl_cshutdn_cfchain_try_once`): each try that is not done asks,
+  through `SideDue`, for what is left of a connection shutdown's 2 s counted from the first,
+  armed at the step's end unless it fires sooner (`arm_no_later`); a try once that is out says
+  "shutdown timeout" and fails with `OperationTimedout`, which an upload ignores, as C's send
+  does, and a download's end returns.
 - **`TimerQueue`** is an indexed binary min-heap with one entry per transfer, holding
   `deadlines.wake_at()` of that transfer, keyed by its `Key` with the position index by row.
   Capacity is reserved at `add`, and `update(key, Option<Instant>)` is O(log n) with no

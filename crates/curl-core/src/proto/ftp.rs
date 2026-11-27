@@ -2318,20 +2318,11 @@ impl<H: Host> crate::upload::sending::Outlet<H> for DataOutlet<'_> {
         cx.as_second(|cx| carrier.send(cx, bytes))
     }
 
+    /// The data connection's shutdown, a failure of it ignored, its
+    /// time's running out among them: the server's answer says how the
+    /// upload went (`cf_ftp_data_send`).
     fn shut(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
-        match self.0.shutdown(cx) {
-            Ok(done) => Ok(done),
-            Err(e) => {
-                let code = e.number();
-                trace::info(
-                    cx,
-                    format_args!(
-                        "Shutdown send direction error: {code}. Broken server? Proceeding as if everything is ok."
-                    ),
-                );
-                Ok(true)
-            }
-        }
+        Ok(self.0.shutdown(cx).unwrap_or(true))
     }
 }
 

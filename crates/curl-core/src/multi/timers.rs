@@ -53,6 +53,10 @@ pub(crate) enum TimerKind {
     /// The resolver's next try at starting a thread for queries that
     /// wait for one (`EXPIRE_ASYNC_NAME`).
     AsyncName,
+    /// A second connection's shutdown is out of time, armed each time it
+    /// is moved on and not done, no later than it was (`EXPIRE_SHUTDOWN`,
+    /// set by `Curl_cshutdn_cfchain_try_once`).
+    Shutdown,
     /// A line protocol's server's time to answer, armed each time its
     /// back and forth is driven (`EXPIRE_SERVER_RESPONSE`, set by
     /// `Curl_pp_statemach`).
@@ -61,7 +65,7 @@ pub(crate) enum TimerKind {
 
 impl TimerKind {
     /// The kinds there are.
-    const COUNT: usize = 11;
+    const COUNT: usize = 12;
 
     /// The name C's trace gives it (`Curl_trc_timer_name`).
     pub(crate) fn name(self) -> &'static str {
@@ -76,6 +80,7 @@ impl TimerKind {
             TimerKind::FtpAccept => "FTP_ACCEPT",
             TimerKind::AlpnEyeballs => "ALPN_EYEBALLS",
             TimerKind::AsyncName => "ASYNC_NAME",
+            TimerKind::Shutdown => "SHUTDOWN",
             TimerKind::ServerResponse => "SERVER_RESPONSE",
         }
     }
@@ -93,6 +98,7 @@ impl TimerKind {
         TimerKind::FtpAccept,
         TimerKind::AlpnEyeballs,
         TimerKind::AsyncName,
+        TimerKind::Shutdown,
         TimerKind::ServerResponse,
     ];
 

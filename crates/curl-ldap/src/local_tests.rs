@@ -127,19 +127,20 @@ fn the_tls_options_are_taken() {
     assert_eq!(session.set_tls_hard(), Ok(()));
 }
 
-/// The vendor is the headers' and the version the library's, Apple's
-/// marked as C marks it.
+/// The vendor is the headers' and the version the library's; Apple's
+/// fork is named as C names it, without asking it.
 #[test]
 fn the_vendor_and_version_are_the_library_s() {
     let (name, number) = LEGACY.vendor();
     assert!(!name.is_empty());
     assert!(number >= 20000, "{number}");
     let v = version();
-    let (vendor, rest) = v.split_once('/').expect(v);
+    if cfg!(target_vendor = "apple") {
+        assert_eq!(v, "AppleLDAP");
+        return;
+    }
+    let (vendor, number) = v.split_once('/').expect(v);
     assert_eq!(vendor, name, "{v}");
-    let apple = cfg!(target_vendor = "apple");
-    assert_eq!(rest.ends_with("/Apple"), apple, "{v}");
-    let number = rest.trim_end_matches("/Apple");
     let parts: Vec<u32> = number.split('.').map(|p| p.parse().unwrap()).collect();
     assert_eq!(parts.len(), 3, "{v}");
 }

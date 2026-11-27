@@ -29,13 +29,16 @@ pub struct Legacy;
 pub static LEGACY: Legacy = Legacy;
 
 /// The library's version, as `curl -V` names it (`Curl_ldap_version`):
-/// its vendor's name and its number, Apple's marked so,
-/// `OpenLDAP/2.4.28/Apple`.
+/// its vendor's name and its number; Apple's fork named `AppleLDAP`
+/// without asking it, as the asking may go to the network and its number
+/// is the same 2.4.28 on every release (upstream 7f351e1163).
 pub fn version() -> &'static str {
     static WORDS: common::Words = common::Words::new();
     // SAFETY: a constant C defines.
-    let apple = unsafe { sys::curl_ldap_apple } != 0;
-    common::version(&WORDS, if apple { "/Apple" } else { "" }, "LDAP/1")
+    if unsafe { sys::curl_ldap_apple } != 0 {
+        return "AppleLDAP";
+    }
+    common::version(&WORDS, "", "LDAP/1")
 }
 
 /// A parameter the library could not be given (`LDAP_PARAM_ERROR`).

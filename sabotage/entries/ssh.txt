@@ -388,3 +388,23 @@ witness: curl-core proto::ssh::tests::an_sftp_file_whose_close_fails_fails_the_t
                         let kind = sc.actual.err().unwrap_or(ErrorKind::Ssh);
 --- new
                         let kind = sc.actual.err().unwrap_or(ErrorKind::RecvError);
+
+=== an SCP send is not said as C's scp_send says it
+file: crates/curl-core/src/proto/ssh/mod.rs
+witness: curl-core proto::ssh::libssh2::tests::scp_s_sends_are_said_as_c_says_them
+features: test-util
+--- old
+    cx.ssh(format_args!(
+        "scp_send(len={len}, eos={eos}) -> {code}, {n}"
+    ));
+--- new
+    let _ = (cx, len, eos, code, n);
+
+=== a failed libssh2 SCP write is not said in C's words
+file: crates/curl-core/src/proto/ssh/libssh2.rs
+witness: curl-core proto::ssh::libssh2::tests::scp_s_sends_are_said_as_c_says_them
+features: test-util
+--- old
+                    trace::fail_with(cx, kind, &[b"libssh2_channel_write failed: ", &text]);
+--- new
+                    let _ = text;

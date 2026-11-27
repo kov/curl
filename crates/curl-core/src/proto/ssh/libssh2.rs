@@ -3311,7 +3311,17 @@ struct Ssh2Outlet<'s> {
 }
 
 impl<H: Host> Outlet<H> for Ssh2Outlet<'_> {
-    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent> {
+    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8], eos: bool) -> std::io::Result<Sent> {
+        let sent = self.write(cx, bytes);
+        if !self.sc.sftp {
+            super::scp_sent(cx, bytes.len(), eos, &sent, self.failed);
+        }
+        sent
+    }
+}
+
+impl Ssh2Outlet<'_> {
+    fn write<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent> {
         let sc = &mut *self.sc;
         let wrote = loop {
             let s = sc.session.as_deref_mut().expect("a live session");
@@ -3329,10 +3339,16 @@ impl<H: Host> Outlet<H> for Ssh2Outlet<'_> {
         match wrote {
             Err(rc) if rc.again() => Ok(Sent::WouldBlock),
             Err(rc) => {
-                self.failed = match session_failure(rc) {
-                    Err(Halt::Fail(kind)) => Some(kind),
-                    _ => Some(ErrorKind::Ssh),
+                let kind = match session_failure(rc) {
+                    Err(Halt::Fail(kind)) => kind,
+                    _ => ErrorKind::Ssh,
                 };
+                if !sc.sftp {
+                    // SFTP's write fails without a word (`sftp_send`).
+                    let text = sc.error_text();
+                    trace::fail_with(cx, kind, &[b"libssh2_channel_write failed: ", &text]);
+                }
+                self.failed = Some(kind);
                 Err(std::io::Error::other("SSH write failed"))
             }
             Ok(n) => Ok(std::num::NonZeroUsize::new(n).map_or(Sent::WouldBlock, Sent::Bytes)),

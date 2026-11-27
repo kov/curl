@@ -2704,14 +2704,28 @@ fn a_download_reads_the_size_the_file_says() {
     );
 }
 
-/// An SCP write that fails fails the upload as an SSH error.
+/// An SCP write that fails fails the upload as an SSH error. Each send
+/// is said as C's `scp_send` says it as it returns (upstream
+/// 4b25afa16e).
 #[test]
 fn a_failing_scp_write_is_an_ssh_error() {
-    let w = world_with(&[], |w| w.writes_fail = true);
+    let w = world_with(&[], |w| {
+        w.writes_fail = true;
+        w.trace_ssh = true;
+    });
     let (result, _, said, _) = run_in(&w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
         uploads(o, b"over scp");
     });
     assert_eq!(result, Err(ErrorKind::Ssh), "{said}");
+    let line = "[SSH] scp_send(len=8, eos=1) -> 79, 0\n";
+    assert!(said.contains(line), "{line:?} in {said}");
+    let w = world_with(&[], |w| w.trace_ssh = true);
+    let (result, _, said, _) = run_in(&w, "scp://u@127.0.0.1:PORT/tmp/f", |o| {
+        uploads(o, b"over scp");
+    });
+    assert_eq!(result, Ok(()), "{said}");
+    let line = "[SSH] scp_send(len=8, eos=1) -> 0, 8\n";
+    assert!(said.contains(line), "{line:?} in {said}");
 }
 
 /// A key login that fails is said with libssh's number for its answer.

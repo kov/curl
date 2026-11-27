@@ -950,10 +950,13 @@ so: weaknesses kept because C has them.
   the same order, the same result and a failed close failing the upload as C's does. Two things
   differ: where its lines fall in a verbose trace, and the count of bytes sent, which C's last
   chunk adds only once the channel has closed (`*pnwritten` stays 0 until then), so a failed
-  close leaves C's count short by that chunk. Moving it would have the upload pipeline tell
+  close leaves C's count short by that chunk. The same goes for the `scp_send` trace: here the
+  last send's line says the write's result alone, where C's carries the close's, says
+  `-> 81, 0` while the close blocks and "N already sent" on its retry, and an empty last chunk
+  is a send of its own in C and none here. Moving it would have the upload pipeline tell
   the protocol which chunk is its last. Upstream: #23774. Pinned by `scp_s_channel_as_c_drives_it`
-  (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`) and
-  `an_scp_close_that_fails_fails_the_upload` (`crates/curl-core/src/proto/ssh/tests.rs`).
+  and `scp_s_sends_are_said_as_c_says_them` (`crates/curl-core/src/proto/ssh/libssh2/tests.rs`)
+  and `an_scp_close_that_fails_fails_the_upload` (`crates/curl-core/src/proto/ssh/tests.rs`).
 
 ## Bytes C counts as sent
 

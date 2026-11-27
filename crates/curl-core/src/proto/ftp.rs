@@ -2309,6 +2309,7 @@ impl<H: Host> crate::upload::sending::Outlet<H> for DataOutlet<'_> {
         &mut self,
         cx: &mut StepCx<'_, H>,
         bytes: &[u8],
+        _: bool,
     ) -> std::io::Result<crate::conn::io::Sent> {
         let mut close = false;
         let mut carrier = self

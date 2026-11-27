@@ -3393,6 +3393,32 @@ fn an_upload_s_lines_are_converted_as_asked() {
     }
 }
 
+/// SCP's sends are said as C's `scp_send` says them as it returns, the
+/// last of the body among them; a write that fails is said in C's words
+/// with the library's, and fails the upload as the library's code says
+/// (upstream 4b25afa16e).
+#[test]
+fn scp_s_sends_are_said_as_c_says_them() {
+    let url = "scp://u@127.0.0.1:PORT/home/u/up";
+    let w = world_with(&[], |w| w.trace_ssh = true);
+    let (r, _, said, _) = run_in(&w, url, |o| uploads(o, b"scp up"));
+    assert_eq!(r, Ok(()), "{said}");
+    says(&said, &["[SSH] scp_send(len=6, eos=1) -> 0, 6"]);
+    let w = world_with(&[], |w| {
+        w.fails = vec![("write", Code(-7))];
+        w.trace_ssh = true;
+    });
+    let (r, _, said, _) = run_in(&w, url, |o| uploads(o, b"scp up"));
+    assert_eq!(r, Err(ErrorKind::SendError), "{said}");
+    says(
+        &said,
+        &[
+            "libssh2_channel_write failed: fake failure",
+            "[SSH] scp_send(len=6, eos=1) -> 55, 0",
+        ],
+    );
+}
+
 /// SCP: the upload's channel opened at the file's size and mode, written
 /// and ended in C's order; a failed EOF said and passed over, a channel
 /// that fails to close or to be freed failing the upload, the end not

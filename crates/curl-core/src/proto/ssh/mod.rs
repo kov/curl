@@ -3111,15 +3111,18 @@ struct SshOutlet<'s> {
 }
 
 impl<H: Host> Outlet<H> for SshOutlet<'_> {
-    fn put(&mut self, _: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent> {
+    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8], eos: bool) -> std::io::Result<Sent> {
         let sc = &mut *self.sc;
         let n = std::num::NonZeroUsize::new(bytes.len()).expect("a write of something");
         if !sc.sftp {
-            if sc.session().scp_write(bytes) == Rc::Ok {
-                return Ok(Sent::Bytes(n));
-            }
-            self.failed = Some(ErrorKind::Ssh);
-            return Err(std::io::Error::other("SCP write failed"));
+            let sent = if sc.session().scp_write(bytes) == Rc::Ok {
+                Ok(Sent::Bytes(n))
+            } else {
+                self.failed = Some(ErrorKind::Ssh);
+                Err(std::io::Error::other("SCP write failed"))
+            };
+            scp_sent(cx, bytes.len(), eos, &sent, self.failed);
+            return sent;
         }
         if !sc.writing {
             sc.session().file_nonblocking();
@@ -3144,6 +3147,29 @@ impl<H: Host> Outlet<H> for SshOutlet<'_> {
             }
         }
     }
+}
+
+/// What an SCP send came to, said as C's `scp_send` says it as it
+/// returns, for either library: what it is given, the last of the body
+/// or not, and its result and what it sent. The channel closes in DONE
+/// here, not in the last send (`DIVERGENCE.md`), so a last send says
+/// the write's result alone, and an empty last chunk is no send.
+pub(super) fn scp_sent<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    len: usize,
+    eos: bool,
+    sent: &std::io::Result<Sent>,
+    failed: Option<ErrorKind>,
+) {
+    let (code, n) = match sent {
+        Ok(Sent::Bytes(n)) => (0, n.get()),
+        Ok(_) => (crate::error::AGAIN_NUMBER, 0),
+        Err(_) => (failed.unwrap_or(ErrorKind::SendError).number(), 0),
+    };
+    let eos = u8::from(eos);
+    cx.ssh(format_args!(
+        "scp_send(len={len}, eos={eos}) -> {code}, {n}"
+    ));
 }
 
 /// The connection's SSH state.

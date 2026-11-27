@@ -94,7 +94,7 @@ impl Sending {
                 let (n, failed) = if len == 0 {
                     (0, None)
                 } else {
-                    match out.put(cx, piece) {
+                    match out.put(cx, piece, eos) {
                         Ok(Sent::Bytes(n)) => (n.get(), None),
                         Ok(_) => (0, None),
                         Err(_) => (0, Some(ErrorKind::SendError)),
@@ -179,8 +179,9 @@ impl Sending {
 
 /// Where a body goes, and what is done there once it is all sent.
 pub(crate) trait Outlet<H: Host> {
-    /// Send from `bytes` what the connection takes now.
-    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent>;
+    /// Send from `bytes` what the connection takes now, the last of the
+    /// body if `eos`.
+    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8], eos: bool) -> std::io::Result<Sent>;
 
     /// The direction shut down once the body is all sent, if it is to be
     /// (`Curl_xfer_send_shutdown`): whether that is done.
@@ -193,7 +194,7 @@ pub(crate) trait Outlet<H: Host> {
 struct Lease<'l>(&'l mut ConnLease);
 
 impl<H: Host> Outlet<H> for Lease<'_> {
-    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> std::io::Result<Sent> {
+    fn put(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8], _: bool) -> std::io::Result<Sent> {
         self.0.get().send(cx, bytes)
     }
 }

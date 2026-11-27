@@ -1966,9 +1966,7 @@ fn a_wildcard_download_gets_each_file_the_listing_matches() {
 
 /// A listing that starts with its total, as `ls -l` writes it and Unix
 /// servers send it, is read past it, its lines ending in CRLF or a bare
-/// line feed: the files it names are got. C fails the download with 87,
-/// "Unable to parse FTP file list", once the listing is read
-/// (DIVERGENCE.md).
+/// line feed: the files it names are got, as C's parser reads it.
 #[test]
 fn a_wildcard_download_reads_past_the_listing_s_total() {
     let lf: Vec<u8> = LISTING.iter().copied().filter(|&b| b != b'\r').collect();

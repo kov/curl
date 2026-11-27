@@ -296,10 +296,9 @@ fn a_listing_keeps_at_most_c_s_files() {
 }
 
 /// A listing that starts `total N`, as `ls -l` writes it, is read past
-/// its total, whatever its line ends and however it comes. C's reader
-/// takes the line feed that ends the total for the next line's file
-/// type, and fails every such listing (DIVERGENCE.md). A first line
-/// that only starts with a `t` still fails.
+/// its total, whatever its line ends and however it comes, the line feed
+/// that ends it no file type (`parse_unix_totalsize`). A first line that
+/// only starts with a `t` still fails.
 #[test]
 fn a_listing_that_starts_with_its_total_is_read() {
     let lf: Vec<u8> = UNIX.iter().copied().filter(|&b| b != b'\r').collect();

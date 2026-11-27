@@ -422,8 +422,8 @@ impl Request {
         let most = buf.len();
         let want = left.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
         let file = self.file.as_mut().expect("opened to read");
-        // C ends the transfer, successfully, where a read fails; here it
-        // fails (DIVERGENCE.md).
+        // A read that fails fails the transfer (`file_do`'s
+        // `CURLE_READ_ERROR`).
         let read = file.read(&mut buf[..want]);
         #[cfg(test)]
         let read = injected(cx, &self.pipeline).map_or(read, Err);

@@ -380,12 +380,8 @@ impl QlogDir {
     /// Create the qlog of the connection of source id `scid`, to write
     /// it from its start: `<dir>/<scid in hex>.sqlog`. None if the name
     /// is too long or the file will not open, which leaves the
-    /// connection without one and says nothing.
-    ///
-    /// C opens the file to write without cutting it (`O_WRONLY |
-    /// O_CREAT`); it is opened here to write anew, which differs only for
-    /// a file there already, which a source id of random bytes does not
-    /// name.
+    /// connection without one and says nothing. The file is written anew,
+    /// as C opens it (`O_WRONLY | O_CREAT | O_TRUNC`).
     pub fn open(&self, scid: &[u8]) -> Option<std::fs::File> {
         const HEX: &[u8; 16] = b"0123456789abcdef";
         const EXT: &[u8] = b".sqlog";

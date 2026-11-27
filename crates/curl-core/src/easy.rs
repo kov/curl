@@ -718,9 +718,9 @@ impl Easy {
             copy.caches_made()?.hsts_mode = self.hsts_mode();
         }
         if let Some(original) = self.alt_svc() {
-            // A cache of its own, which reads the file named, as C's copy
-            // does; it keeps the original's control, which C's copy
-            // loses (DIVERGENCE.md).
+            // A cache of its own, which reads the file named and keeps
+            // the original's control, as C's copy does
+            // (`curl_easy_duphandle`).
             let mut a = original.copy_empty();
             if let Some(file) = &copy.options.http.alt_svc.file {
                 let now = crate::date::cache_now(SystemClock::new().unix_time());
@@ -1164,8 +1164,8 @@ impl Easy {
     /// the lock functions of any of it.
     pub fn save_hsts(&mut self) -> Result<(), SaveError> {
         let options = &*self.options.http.hsts;
-        // C never sets the flag it tests, so writes a read-only file back
-        // (DIVERGENCE.md).
+        // A file the control makes read-only is not written back
+        // (`CURLHSTS_READONLYFILE`).
         let written = self.hsts_mode() == CacheFile::ReadWrite;
         let taken = self.read_hsts(|hsts| -> Result<_, OutOfMemory> {
             let file = options.file.as_deref().or(hsts.file());

@@ -33,6 +33,8 @@ struct Rec {
     /// `None`.
     takes: Option<usize>,
     draws: u8,
+    /// How many times random bytes were drawn.
+    draw_calls: usize,
     /// What the server sent and is not received yet; the connection's
     /// end once it is all received if `ends`.
     incoming: Vec<u8>,
@@ -58,6 +60,7 @@ impl Said for Rec {
 
 impl Wire for Rec {
     fn random(&mut self, out: &mut [u8]) -> Result<(), ErrorKind> {
+        self.draw_calls += 1;
         for b in out {
             self.draws = self.draws.wrapping_add(1);
             *b = self.draws;
@@ -423,6 +426,31 @@ fn a_frame_is_masked_and_sized() {
             .unwrap();
         assert_eq!(out.len(), head + 4, "{len}");
     }
+}
+
+/// The masks are taken in turn from 256 random bytes drawn at once, the
+/// next 256 drawn once fewer than a mask's are left (`maskpool`, upstream
+/// de3969f8fe): the debug build's `CURL_ENTROPY` numbers spent as C's.
+#[test]
+fn masks_are_taken_from_a_pool_drawn_at_once() {
+    let mut rec = Rec::default();
+    let mut enc = Encoder::default();
+    let mut masks = Vec::new();
+    for _ in 0..65 {
+        let mut out = ChunkQueue::new(CHUNK_SIZE, 2);
+        enc.add_frame(&mut rec, text(), 0, &mut out, false).unwrap();
+        let mut head = vec![0u8; out.len()];
+        out.read(&mut head);
+        masks.push([head[2], head[3], head[4], head[5]]);
+        if masks.len() == 64 {
+            assert_eq!(rec.draw_calls, 1, "a pool lasts 64 masks");
+        }
+    }
+    assert_eq!(rec.draw_calls, 2);
+    assert_eq!(masks[..2], [[1, 2, 3, 4], [5, 6, 7, 8]]);
+    // The last of the first pool, and the first of the next.
+    assert_eq!(masks[63], [253, 254, 255, 0]);
+    assert_eq!(masks[64], [1, 2, 3, 4]);
 }
 
 /// A control frame longer than 125 bytes is not sent.

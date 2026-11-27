@@ -256,3 +256,12 @@ features: test-util
                 self.seen_close = true;
             }
             if self.len == 0 {
+
+=== a WebSocket draws random bytes for each mask
+file: crates/curl-core/src/proto/ws/frame.rs
+witness: curl-core proto::ws::tests::masks_are_taken_from_a_pool_drawn_at_once
+features: test-util
+--- old
+        if self.left < 4 {
+--- new
+        if self.left < MASK_POOL {

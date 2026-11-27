@@ -474,6 +474,45 @@ pub(crate) struct Encoder {
     /// The last data frame sent was not its message's last
     /// (`contfragment`).
     pub(crate) cont: bool,
+    /// The random bytes the masks are taken from.
+    pool: MaskPool,
+}
+
+/// How many random bytes are drawn at once for masks (`maskpool`).
+const MASK_POOL: usize = 256;
+
+/// Random bytes drawn ahead for the frames' masks, a pool's worth at a
+/// time, and how many of them are not taken yet (`maskpool`,
+/// `maskpool_left`, upstream de3969f8fe).
+#[derive(Clone, Debug)]
+struct MaskPool {
+    bytes: [u8; MASK_POOL],
+    left: usize,
+}
+
+impl Default for MaskPool {
+    fn default() -> MaskPool {
+        MaskPool {
+            bytes: [0; MASK_POOL],
+            left: 0,
+        }
+    }
+}
+
+impl MaskPool {
+    /// The next frame's mask, the pool drawn again from `wire` once it
+    /// has less than a mask left.
+    fn take(&mut self, wire: &mut dyn Wire) -> Result<[u8; 4], ErrorKind> {
+        if self.left < 4 {
+            wire.random(&mut self.bytes)?;
+            self.left = MASK_POOL;
+        }
+        let at = MASK_POOL - self.left;
+        self.left -= 4;
+        let mut mask = [0; 4];
+        mask.copy_from_slice(&self.bytes[at..at + 4]);
+        Ok(mask)
+    }
 }
 
 impl Encoder {
@@ -539,7 +578,7 @@ impl Encoder {
         self.len = len;
         self.remain = len;
         self.info(wire, "sending");
-        wire.random(&mut self.mask)?;
+        self.mask = self.pool.take(wire)?;
         if zero_mask {
             self.mask = [0; 4];
         }

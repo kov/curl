@@ -78,12 +78,7 @@ impl<H: Host> Wire for StepWire<'_, '_, H> {
         if n > 0 {
             self.cx.report_mut().sizes_mut().request += n as u64;
         }
-        let code = failed.map_or(0, ErrorKind::number);
-        let len = bytes.len();
-        trace::debug_info(
-            self.cx,
-            format_args!("Curl_xfer_send(len={len}, eos=0) -> {code}, {n}"),
-        );
+        trace::xfer_sent(self.cx, bytes.len(), false, n, failed);
         match failed {
             Some(kind) => Err(kind),
             None => Ok(n),

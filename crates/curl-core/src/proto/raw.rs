@@ -76,12 +76,7 @@ pub(crate) fn xfer_send<H: Host>(
         Ok(Sent::WouldBlock) => (0, None),
         Err(_) => (0, Some(ErrorKind::SendError)),
     };
-    let code = failed.map_or(0, ErrorKind::number);
-    let len = bytes.len();
-    trace::debug_info(
-        cx,
-        format_args!("Curl_xfer_send(len={len}, eos=0) -> {code}, {n}"),
-    );
+    trace::xfer_sent(cx, bytes.len(), false, n, failed);
     match failed {
         Some(kind) => Err(kind),
         None => Ok(n),

@@ -1612,8 +1612,7 @@ fn an_append_s_body_is_sent_and_timed_as_c_s() {
     let text = &ran.text;
     if cfg!(feature = "debug-hooks") {
         let sends = "sending last upload chunk of 5 bytes\n\
-                     Curl_xfer_send(len=5, eos=1) -> 0, 0\n\
-                     Curl_req_flush(len=5) -> EAGAIN\n";
+                     Curl_xfer_send(len=5, eos=1) -> 81, 0\n";
         assert!(text.contains(sends), "{text}");
         let sent = "sending last upload chunk of 5 bytes\n\
                     Curl_xfer_send(len=5, eos=1) -> 0, 5\n\

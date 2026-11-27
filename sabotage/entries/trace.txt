@@ -577,23 +577,13 @@ features: debug-hooks
                 || matches!(
 
 === a failed send is said as one that took nothing
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/trace.rs
 witness: curl-core proto::http::tests::debug_lines::a_failed_send_is_said_after_its_failure
 features: debug-hooks
 --- old
-            let code = failed.map_or(0, ErrorKind::number);
+        Some(kind) => kind.number(),
 --- new
-            let code = 0;
-
-=== a blocked send says nothing of what is left
-file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::debug_lines::a_blocked_send_leaves_the_rest_buffered
-features: debug-hooks
---- old
-                // Nothing went: what is left waits (`req_flush`).
-                let left = self.filled - self.sent;
-                trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
---- new
+        Some(_) => 0,
 
 === a body passed on after the 100 is not said
 file: crates/curl-core/src/proto/http.rs
@@ -839,3 +829,12 @@ witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- new
         let at = (!cx.verbose())
             .then(|| Text::<8>::clipped(format_args!(":{port}")).0);
+
+=== a send that took nothing is said as sent
+file: crates/curl-core/src/trace.rs
+witness: curl-core proto::http::tests::debug_lines::a_blocked_send_leaves_the_rest_buffered
+features: test-util,debug-hooks
+--- old
+        None if n == 0 && len > 0 => crate::error::AGAIN_NUMBER,
+--- new
+        None if n == 0 && len > 0 => 0,

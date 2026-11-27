@@ -2154,6 +2154,17 @@ fn a_body_end_quiche_holds_back_is_sent_again() {
             "upload completely sent off: 13 bytes",
         ]
     );
+    // The end not taken is the send's AGAIN, said before it is taken for
+    // nothing sent (`Curl_xfer_try_send`, upstream eda23d0405).
+    if cfg!(feature = "debug-hooks") {
+        assert_eq!(
+            lines(&ran, &["Curl_xfer_send(len=0"]),
+            [
+                "Curl_xfer_send(len=0, eos=1) -> 81, 0",
+                "Curl_xfer_send(len=0, eos=1) -> 0, 0",
+            ]
+        );
+    }
     let s = script.lock().unwrap();
     assert_eq!(
         (&s.body.bytes[..], s.body.ended),

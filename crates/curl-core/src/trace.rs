@@ -53,6 +53,29 @@ pub(crate) fn debug_info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'
     }
 }
 
+/// What a send of `len` bytes, the last of the body if `eos`, came to,
+/// as C's debug build says it before an AGAIN is taken for nothing sent
+/// (`Curl_xfer_try_send`, upstream eda23d0405): `n` sent, or the failure;
+/// one that took none of its bytes said as AGAIN.
+pub(crate) fn xfer_sent<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    len: usize,
+    eos: bool,
+    n: usize,
+    failed: Option<ErrorKind>,
+) {
+    let code = match failed {
+        Some(kind) => kind.number(),
+        None if n == 0 && len > 0 => crate::error::AGAIN_NUMBER,
+        None => 0,
+    };
+    let eos = u8::from(eos);
+    debug_info(
+        cx,
+        format_args!("Curl_xfer_send(len={len}, eos={eos}) -> {code}, {n}"),
+    );
+}
+
 /// `debug_info` with a line made of `parts`, which need not be text.
 pub(crate) fn debug_info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
     if cfg!(feature = "debug-hooks") {

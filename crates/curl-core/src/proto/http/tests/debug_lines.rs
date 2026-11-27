@@ -221,8 +221,10 @@ fn a_failed_send_is_said_after_its_failure() {
     );
 }
 
-/// A send that would block leaves what is buffered to the next pass
-/// (`req_flush`).
+/// A send that would block leaves what is buffered to the next pass, its
+/// AGAIN said as C's debug build says it before taking it for nothing
+/// sent, and the flush's AGAIN returned unsaid (`Curl_xfer_try_send`,
+/// `req_flush`, upstream eda23d0405).
 #[test]
 fn a_blocked_send_leaves_the_rest_buffered() {
     let (mut m, talk, _) = server(&[OK], false);
@@ -236,12 +238,11 @@ fn a_blocked_send_leaves_the_rest_buffered() {
     let lines = lines(&ran);
     // The next pass reads first, then sends what is left.
     assert_eq!(
-        lines[..6],
+        lines[..5],
         [
             format!("sending last upload chunk of {n} bytes"),
             format!("[TCP] send(len={n}) -> 81, 0"),
-            format!("Curl_xfer_send(len={n}, eos=1) -> 0, 0"),
-            format!("Curl_req_flush(len={n}) -> EAGAIN"),
+            format!("Curl_xfer_send(len={n}, eos=1) -> 81, 0"),
             "[TCP] recv(len=16384) -> 81, 0".to_owned(),
             format!("sending last upload chunk of {n} bytes"),
         ]
@@ -264,17 +265,14 @@ fn a_bodyless_request_blocked_at_once_is_sent_again_before_it_waits() {
     let once = [
         format!("sending last upload chunk of {n} bytes"),
         format!("[TCP] send(len={n}) -> 81, 0"),
-        format!("Curl_xfer_send(len={n}, eos=1) -> 0, 0"),
+        format!("Curl_xfer_send(len={n}, eos=1) -> 81, 0"),
     ];
     assert_eq!(
-        lines[..8],
+        lines[..7],
         [
             &once[..],
             &once[..],
-            &[
-                format!("Curl_req_flush(len={n}) -> EAGAIN"),
-                "[TCP] recv(len=16384) -> 81, 0".to_owned(),
-            ],
+            &["[TCP] recv(len=16384) -> 81, 0".to_owned()],
         ]
         .concat(),
         "{lines:#?}"
@@ -309,7 +307,8 @@ fn a_bodyless_request_sent_short_at_once_is_sent_on_once() {
 
 /// What C does not send at once, it buffers and flushes once: a request
 /// chunked though it has no body, or one whose head is larger than the
-/// upload buffer, blocked at its first send, waits at once.
+/// upload buffer, blocked at its first send, waits at once: the pass reads
+/// next, sending nothing again.
 #[test]
 fn a_request_c_buffers_blocked_at_once_waits_at_once() {
     let after_first_send = |name: &str, set: &dyn Fn(&mut Options)| {
@@ -323,7 +322,7 @@ fn a_request_c_buffers_blocked_at_once_waits_at_once() {
             .position(|l| l.starts_with("Curl_xfer_send("))
             .unwrap_or_else(|| panic!("{name}: {lines:#?}"));
         assert!(
-            lines[at + 1].starts_with("Curl_req_flush(len="),
+            lines[at].ends_with("-> 81, 0") && lines[at + 1].starts_with("[TCP] recv("),
             "{name}: {lines:#?}"
         );
     };
@@ -472,18 +471,12 @@ fn what_a_send_leaves_is_said_after_what_went() {
     let sends: Vec<usize> = seen.of("dataout").iter().map(Vec::len).collect();
     assert_eq!(sends, [RATE; 4]);
     // The burst of 32 KiB read, a second's worth sent; the tokens left
-    // read behind what waits as the send blocks, and the buffer's last
-    // room the pass after; then a second's worth a pass until the tokens
-    // are spent.
+    // read behind what waits as the send blocks, which says no flush of
+    // its own, and the buffer's last room the pass after; then a second's
+    // worth a pass until the tokens are spent.
     let left = |n: usize| format!("Curl_req_flush(len={n}) -> EAGAIN\n");
     assert_eq!(
         flushes,
-        [
-            left(22_768),
-            left(45_536),
-            left(45_536),
-            left(35_536),
-            left(25_536),
-        ]
+        [left(22_768), left(45_536), left(35_536), left(25_536)]
     );
 }

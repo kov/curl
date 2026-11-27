@@ -1725,3 +1725,16 @@ witness: curl-core proto::http::tests::h3_trace::a_body_end_quiche_holds_back_is
                             return Ok(false);
                         }
 --- new
+
+=== a flush where nothing went says its EAGAIN
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_blocked_send_leaves_the_rest_buffered
+features: test-util,debug-hooks
+--- old
+                // returned as it is, unsaid (`req_flush`).
+                return Ok(false);
+--- new
+                // returned as it is, unsaid (`req_flush`).
+                let left = self.filled - self.sent;
+                trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                return Ok(false);

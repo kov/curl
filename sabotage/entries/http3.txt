@@ -1949,3 +1949,12 @@ features: test-util
             let code = if took == 0 && len > 0 {
 --- new
             let code = if took == 0 && len == 0 {
+
+=== an HTTP/3 end the stream did not take is said as sent
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::h3_trace::a_body_end_quiche_holds_back_is_sent_again
+features: test-util,debug-hooks
+--- old
+                            Ok(_) if self.wire.h3().is_some_and(|s| !s.body_eos()) => {
+--- new
+                            Ok(_) if false => {

@@ -100,14 +100,7 @@ impl Sending {
                         Err(_) => (0, Some(ErrorKind::SendError)),
                     }
                 };
-                let code = failed.map_or(0, ErrorKind::number);
-                trace::debug_info(
-                    cx,
-                    format_args!(
-                        "Curl_xfer_send(len={len}, eos={}) -> {code}, {n}",
-                        u8::from(eos)
-                    ),
-                );
+                trace::xfer_sent(cx, len, eos, n, failed);
                 if let Some(kind) = failed {
                     return Err(kind);
                 }
@@ -118,8 +111,12 @@ impl Sending {
                 self.at += n;
                 self.sent += n as u64;
                 if n < len {
-                    let left = len - n;
-                    trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                    // Nothing sent is the send's AGAIN, returned unsaid; a
+                    // short send leaves the rest said waiting (`req_flush`).
+                    if n > 0 {
+                        let left = len - n;
+                        trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                    }
                     return Ok(ProtoStep::Blocked);
                 }
                 continue;

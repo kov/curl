@@ -2124,7 +2124,15 @@ impl Request {
                         } else {
                             self.h3_send(cx, lease, self.sent, true)
                         };
-                        let code = sent.as_ref().err().map_or(0, |e| e.number());
+                        // An end the stream did not take is an AGAIN
+                        // (`cf_quiche_send_body`'s, upstream eda23d0405).
+                        let code = match &sent {
+                            Err(e) => e.number(),
+                            Ok(_) if self.wire.h3().is_some_and(|s| !s.body_eos()) => {
+                                crate::error::AGAIN_NUMBER
+                            }
+                            Ok(_) => 0,
+                        };
                         trace::debug_info(
                             cx,
                             format_args!("Curl_xfer_send(len=0, eos=1) -> {code}, 0"),
@@ -2241,15 +2249,8 @@ impl Request {
                     Err(_) => (0, Some(ErrorKind::SendError)),
                 }
             };
-            let code = failed.map_or(0, ErrorKind::number);
             let n = taken;
-            trace::debug_info(
-                cx,
-                format_args!(
-                    "Curl_xfer_send(len={len}, eos={}) -> {code}, {n}",
-                    u8::from(eos)
-                ),
-            );
+            trace::xfer_sent(cx, len, eos, n, failed);
             if let Some(kind) = failed {
                 return Err(kind);
             }
@@ -2278,9 +2279,8 @@ impl Request {
                 if direct {
                     continue;
                 }
-                // Nothing went: what is left waits (`req_flush`).
-                let left = self.filled - self.sent;
-                trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                // Nothing went: what is left waits, the send's AGAIN
+                // returned as it is, unsaid (`req_flush`).
                 return Ok(false);
             }
             self.sent += n;

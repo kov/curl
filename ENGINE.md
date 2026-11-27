@@ -617,7 +617,8 @@ the tunnel's protocol (`http_proxy_cf_connect`). Not traced: the `SOCKS` and `H1
 components' own lines: SOCKS's state changes, which name C's machine's states and source lines
 where the engine's sans-IO handshake has states of its own, and its `adjust pollset in (N)`;
 H1-PROXY's `connect`, `CONNECT send`/`receive`/`response`, `new tunnel state` and its header
-lines, which follow C's byte-at-a-time read of the answer.
+lines, `CONNECT response chunked` and `close-delimited` among them, which follow C's
+byte-at-a-time read of the answer.
 
 `TIMER` names each of a transfer's timers by C's `expire_id` (`TimerKind::name`) where C arms or
 clears it: the leg's limits as it starts, the low-speed check, the rate limits, the next connect
